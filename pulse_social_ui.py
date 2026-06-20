@@ -13,12 +13,16 @@ os.makedirs(APP_DIR, exist_ok=True)
 
 SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
 LOG_FILE = os.path.join(APP_DIR, "deleted_log.txt")
+POST_LOG_FILE = os.path.join(APP_DIR, "post_log.txt")
+REPLY_LOG_FILE = os.path.join(APP_DIR, "reply_log.txt")
+REPOST_LOG_FILE = os.path.join(APP_DIR, "repost_log.txt")
+LIKE_LOG_FILE = os.path.join(APP_DIR, "like_log.txt")
 PROFILE_DIR = r"C:\Users\lenno\brave_x_bot"
 
 BRAVE_EXE = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
 
 DEFAULTS = {
-    "handle": "BROKENfilter___",
+    "handle": "",
     "mode": "posts",
     "dry_run": True,
     "max_actions": 10,
@@ -66,9 +70,23 @@ def is_repost(text):
     )
 
 
-def log_action(action, text):
+def log_action(action, text, mode=None):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     preview = text[:180].replace("\n", " ").strip()
+
+    if mode == "posts":
+        target_file = POST_LOG_FILE
+    elif mode == "replies":
+        target_file = REPLY_LOG_FILE
+    elif mode == "reposts":
+        target_file = REPOST_LOG_FILE
+    elif mode == "likes":
+        target_file = LIKE_LOG_FILE
+    else:
+        target_file = LOG_FILE
+
+    with open(target_file, "a", encoding="utf-8") as f:
+        f.write(f"{timestamp} | {action} | {preview}\n")
 
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{timestamp} | {action} | {preview}\n")
@@ -81,7 +99,7 @@ def close_menu(page):
         pass
 
 
-def delete_own_post(page, article, dry_run, delay):
+def delete_own_post(page, article, dry_run, delay, handle, mode):
     text = safe_text(article)
 
     if not text:
@@ -91,7 +109,7 @@ def delete_own_post(page, article, dry_run, delay):
 
     author_text = safe_text(author)
 
-    if "@BROKENfilter___".lower() not in author_text.lower():
+    if f"@{handle.lower()}" not in author_text.lower():
         return False
 
     if is_repost(text):
@@ -123,12 +141,68 @@ def delete_own_post(page, article, dry_run, delay):
     confirm = page.get_by_text("Delete", exact=True)
     confirm.first.click(timeout=3000)
 
-    log_action("Deleted post", text)
+    log_action(f"Deleted {mode}", text, mode)
 
     ui_log("Deleted post")
     time.sleep(delay)
     return True
 
+def undo_repost(page, article, dry_run, delay):
+    text = safe_text(article)
+
+    if not is_repost(text):
+        return False
+
+    repost_button = article.locator('[data-testid="unretweet"]').first
+
+    if repost_button.count() == 0:
+        return False
+
+    if dry_run:
+        ui_log("DRY RUN repost candidate:")
+        ui_log(text[:220].replace("\n", " "))
+        return True
+
+    repost_button.click(timeout=3000)
+    time.sleep(0.7)
+
+    undo = page.get_by_text("Undo repost")
+
+    if undo.count() == 0:
+        close_menu(page)
+        return False
+
+    undo.first.click(timeout=3000)
+
+    log_action("Undid repost", text, "reposts")
+
+    ui_log("Undid repost")
+    time.sleep(delay)
+
+    return True
+
+def unlike_post(page, article, dry_run, delay):
+    text = safe_text(article)
+
+    unlike = article.locator('[data-testid="unlike"]').first
+
+    if unlike.count() == 0:
+        return False
+
+    if dry_run:
+        ui_log("DRY RUN like candidate:")
+        ui_log(text[:220].replace("\n", " "))
+        return True
+
+    unlike.click(timeout=3000)
+
+    log_action("Removed like", text, "likes")
+
+    ui_log("Removed like")
+
+    time.sleep(delay)
+
+    return True
 
 def cleaner_worker(settings):
     stop_event.clear()
@@ -182,9 +256,27 @@ def cleaner_worker(settings):
             article_count = articles.count()
 
             if article_count == 0:
-                ui_log("No articles found. Scrolling...")
-                page.mouse.wheel(0, 1000)
-                time.sleep(2)
+                ui_log("No articles found. Trying to wake timeline...")
+
+                try:
+                    page.keyboard.press("End")
+                    time.sleep(2)
+                    page.keyboard.press("Home")
+                    time.sleep(2)
+                    page.mouse.wheel(0, 2500)
+                    time.sleep(3)
+                except Exception:
+                    pass
+
+                if page.locator("article").count() == 0:
+                    ui_log("Timeline still blank. Hard reload...")
+                    page.goto(url, wait_until="networkidle")
+                    time.sleep(8)
+                    page.keyboard.press("End")
+                    time.sleep(3)
+                    page.mouse.wheel(0, 2500)
+                    time.sleep(3)
+
                 continue
 
             acted_this_round = False
@@ -199,15 +291,23 @@ def cleaner_worker(settings):
                     did_action = False
 
                     if mode in ("posts", "replies"):
-                        did_action = delete_own_post(page, article, dry_run, delay)
+                        did_action = delete_own_post(page, article, dry_run, delay, handle, mode)
 
                     elif mode == "reposts":
-                        ui_log("Reposts mode not fully enabled yet.")
-                        return
+                        did_action = undo_repost(
+                            page,
+                            article,
+                            dry_run,
+                            delay,
+                        )
 
                     elif mode == "likes":
-                        ui_log("Likes mode not fully enabled yet.")
-                        return
+                        did_action = unlike_post(
+                            page,
+                            article,
+                            dry_run,
+                            delay,
+                        )
 
                     if did_action:
                         actions += 1
@@ -218,6 +318,8 @@ def cleaner_worker(settings):
                             ui_log("Refreshing page to prevent freeze...")
                             page.reload(wait_until="domcontentloaded")
                             time.sleep(5)
+                            page.mouse.wheel(0, 1200)
+                            time.sleep(2)
                             ui_log("Refresh complete")
 
                         if dry_run:
