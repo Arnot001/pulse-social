@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+browser_profile/
+old/
+
+error.png
+
+*.log
+
+settings.json
+
+.env
+
+*.lnk
