@@ -4,6 +4,7 @@ import time
 import queue
 import threading
 from datetime import datetime
+from urllib.parse import urlparse
 import tkinter as tk
 from tkinter import messagebox
 from playwright.sync_api import sync_playwright, TimeoutError
@@ -38,23 +39,40 @@ def safe_text(locator):
     except Exception: return ""
 def is_repost(text):
     lower = text.lower(); return "you reposted" in lower or " reposted " in lower or lower.startswith("reposted")
-def article_belongs_to_handle(article, handle):
-    clean = handle.strip().lstrip("@").lower()
-    if not clean: return False
+
+def parse_status_href(href):
+    if not href: return None
     try:
-        if article.locator(f'a[href="/{clean}"], a[href^="/{clean}/"]').count() > 0: return True
+        path = urlparse(href).path if "://" in href else urlparse("https://x.com" + href).path
+        parts = [part for part in path.split("/") if part]
+        if len(parts) >= 3 and parts[1].lower() == "status" and parts[2].isdigit(): return parts[0].lower(), parts[2]
     except Exception: pass
-    return f"@{clean}" in safe_text(article).lower()
-def article_identity(article):
+    return None
+
+def authored_status(article, handle):
+    clean = handle.strip().lstrip("@").lower()
+    if not clean: return None
     try:
         links = article.locator('a[href*="/status/"]')
         for i in range(links.count()):
-            href = links.nth(i).get_attribute("href") or ""
-            if "/status/" in href:
-                sid = href.split("/status/", 1)[1].split("/", 1)[0].split("?", 1)[0]
-                if sid: return f"status:{sid}"
+            parsed = parse_status_href(links.nth(i).get_attribute("href") or "")
+            if parsed and parsed[0] == clean: return parsed
+    except Exception: pass
+    return None
+
+def article_identity(article, handle=None, require_owned=False):
+    if handle:
+        owned = authored_status(article, handle)
+        if owned: return f"status:{owned[1]}"
+        if require_owned: return None
+    try:
+        links = article.locator('a[href*="/status/"]')
+        for i in range(links.count()):
+            parsed = parse_status_href(links.nth(i).get_attribute("href") or "")
+            if parsed: return f"status:{parsed[1]}"
     except Exception: pass
     text = safe_text(article).strip(); return f"text:{text}" if text else None
+
 def log_action(action, text, mode=None):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); preview = text[:180].replace("\n", " ").strip()
     target = {"posts": POST_LOG_FILE, "replies": REPLY_LOG_FILE, "reposts": REPOST_LOG_FILE, "likes": LIKE_LOG_FILE}.get(mode, LOG_FILE)
@@ -82,22 +100,37 @@ def find_x_page(context, target_url):
 def delete_own_post(page, article, dry_run, delay, handle, mode):
     text = safe_text(article)
     if not text or is_repost(text): return False
-    if not article_belongs_to_handle(article, handle): ui_log("Skipped non-owned post"); return False
+    owned = authored_status(article, handle)
+    if not owned:
+        ui_log("Skipped article: no exact authored status link for your handle")
+        return False
     more = article.locator('[aria-label="More"]').first
     if more.count() == 0: return False
-    if dry_run: ui_log(f"PREVIEW {mode[:-1].upper() if mode.endswith('s') else mode.upper()} candidate:"); ui_log(text[:220].replace("\n", " ")); return True
-    more.click(timeout=3000); time.sleep(0.7); delete_option = page.get_by_text("Delete", exact=True)
-    if delete_option.count() == 0: close_menu(page); return False
-    delete_option.first.click(timeout=3000); time.sleep(0.7); confirm = page.get_by_text("Delete", exact=True)
-    if confirm.count() == 0: close_menu(page); return False
-    confirm.last.click(timeout=3000); log_action(f"Deleted {mode}", text, mode); ui_log(f"Deleted {mode}"); time.sleep(delay); return True
+    if dry_run:
+        ui_log(f"PREVIEW {mode[:-1].upper() if mode.endswith('s') else mode.upper()} candidate [{owned[1]}]:")
+        ui_log(text[:220].replace("\n", " "))
+        return True
+    more.click(timeout=4000)
+    menu_delete = page.get_by_role("menuitem", name="Delete", exact=True)
+    if menu_delete.count() == 0:
+        close_menu(page); ui_log(f"Delete menu item not found for status {owned[1]}"); return False
+    menu_delete.first.click(timeout=4000)
+    confirm = page.locator('[data-testid="confirmationSheetConfirm"]')
+    if confirm.count() == 0:
+        dialog = page.get_by_role("dialog")
+        if dialog.count(): confirm = dialog.get_by_role("button", name="Delete", exact=True)
+    if confirm.count() == 0:
+        close_menu(page); ui_log(f"Delete confirmation not found for status {owned[1]}"); return False
+    confirm.first.click(timeout=4000)
+    log_action(f"Deleted {mode} status {owned[1]}", text, mode); ui_log(f"Deleted {mode} [{owned[1]}]"); time.sleep(delay); return True
+
 def undo_repost(page, article, dry_run, delay):
     text = safe_text(article)
     if not is_repost(text): return False
     button = article.locator('[data-testid="unretweet"]').first
     if button.count() == 0: return False
     if dry_run: ui_log("PREVIEW repost candidate:"); ui_log(text[:220].replace("\n", " ")); return True
-    button.click(timeout=3000); time.sleep(0.7); undo = page.get_by_text("Undo repost")
+    button.click(timeout=3000); time.sleep(0.5); undo = page.get_by_text("Undo repost")
     if undo.count() == 0: close_menu(page); return False
     undo.first.click(timeout=3000); log_action("Undid repost", text, "reposts"); ui_log("Undid repost"); time.sleep(delay); return True
 def unlike_post(page, article, dry_run, delay):
@@ -140,23 +173,41 @@ def cleaner_worker(settings):
                     ui_log("No articles found. Scrolling timeline..."); page.mouse.wheel(0, 1800); time.sleep(3); stale_rounds += 1
                     if stale_rounds >= 3: ui_log("Timeline still empty. Reloading..."); page.reload(wait_until="domcontentloaded"); time.sleep(5); stale_rounds = 0
                     continue
-                acted = False
+                acted = False; requery_after_mutation = False
                 for i in range(count):
                     if actions >= max_actions or stop_event.is_set(): break
                     article = articles.nth(i)
                     try:
-                        identity = article_identity(article)
+                        require_owned = mode in ("posts", "replies")
+                        identity = article_identity(article, handle=handle if require_owned else None, require_owned=require_owned)
+                        if require_owned and not identity: continue
                         if identity and identity in seen_items: continue
-                        if identity: seen_items.add(identity)
-                        did = delete_own_post(page, article, dry_run, delay, handle, mode) if mode in ("posts", "replies") else undo_repost(page, article, dry_run, delay) if mode == "reposts" else unlike_post(page, article, dry_run, delay)
+                        did = delete_own_post(page, article, dry_run, delay, handle, mode) if require_owned else undo_repost(page, article, dry_run, delay) if mode == "reposts" else unlike_post(page, article, dry_run, delay)
                         if did:
+                            if identity: seen_items.add(identity)
                             actions += 1; acted = True; stale_rounds = 0; ui_log(f"{'Previewed' if dry_run else 'Actions'}: {actions}/{max_actions}")
-                            if not dry_run and actions % refresh_every == 0: page.reload(wait_until="domcontentloaded"); time.sleep(5)
-                    except TimeoutError: ui_log("Skipped one: timeout"); close_menu(page)
-                    except Exception as e: ui_log(f"Skipped one: {e}"); close_menu(page)
-                if actions >= max_actions: break
-                page.mouse.wheel(0, 1400); time.sleep(2)
-                if not acted: stale_rounds += 1; ui_log("No new matching actions on this screen. Scrolling...")
+                            if not dry_run:
+                                requery_after_mutation = True
+                                if actions % refresh_every == 0: page.reload(wait_until="domcontentloaded"); time.sleep(4)
+                                break
+                        elif identity:
+                            seen_items.add(identity)
+                    except TimeoutError:
+                        ui_log("Skipped one: X did not respond in time; it can be retried on a later pass"); close_menu(page)
+                    except Exception as e:
+                        ui_log(f"Skipped one: {e}"); close_menu(page)
+                if actions >= max_actions or stop_event.is_set(): break
+                if requery_after_mutation:
+                    time.sleep(0.8); continue
+                try:
+                    articles = page.locator("article"); count = articles.count()
+                    if count:
+                        articles.nth(count - 1).scroll_into_view_if_needed(timeout=3000)
+                        page.evaluate("window.scrollBy(0, Math.max(700, window.innerHeight * 0.8))")
+                    else: page.mouse.wheel(0, 1800)
+                except Exception: page.mouse.wheel(0, 1600)
+                time.sleep(2)
+                if not acted: stale_rounds += 1; ui_log(f"No new matching actions. Scrolling... | unique seen {len(seen_items)}")
                 if dry_run and stale_rounds >= 8: ui_log("Preview stopped: no new candidates found after repeated scrolling."); break
             ui_log(f"Done. {'Previewed' if dry_run else 'Completed'} {actions} unique action(s).")
     finally:
@@ -172,9 +223,11 @@ def start_session():
     worker_active.set(True); set_controls_locked(True); show_run_mode("attaching", s["dry_run"], s["mode"], s["max_actions"])
     threading.Thread(target=cleaner_worker, args=(s,), daemon=True).start()
 def continue_cleanup():
-    if not worker_active.get(): ui_log("Attach Brave first."); return
+    if not worker_active.get(): return
     continue_event.set()
-def stop_cleanup(): stop_event.set(); continue_event.set(); ui_log("Stop requested."); status_var.set("STOP REQUESTED // WAITING FOR CURRENT ACTION")
+def stop_cleanup():
+    if not worker_active.get(): return
+    stop_event.set(); continue_event.set(); ui_log("Stop requested."); status_var.set("STOP REQUESTED // WAITING FOR CURRENT ACTION")
 def copy_handle(): root.clipboard_clear(); root.clipboard_append(handle_var.get().strip()); ui_log("Handle copied.")
 def copy_log():
     text = log_box.get("1.0", tk.END).strip(); root.clipboard_clear(); root.clipboard_append(text); root.update(); status_var.set("LOG COPIED TO CLIPBOARD")
@@ -186,8 +239,10 @@ def poll_logs():
     while not run_state_queue.empty():
         state, dry_run, mode, max_actions = run_state_queue.get()
         if state == "idle":
-            worker_active.set(False); set_controls_locked(False); show_run_mode("idle")
-        else: show_run_mode(state, dry_run, mode, max_actions)
+            worker_active.set(False); set_controls_locked(False); show_run_mode("idle"); arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
+        else:
+            show_run_mode(state, dry_run, mode, max_actions)
+            arm_btn.config(state="normal" if state == "armed" else "disabled"); stop_btn.config(state="normal")
     root.after(150, poll_logs)
 def button(parent, text, command, bg=PANEL_2, fg=TEXT, width=None): return tk.Button(parent, text=text, command=command, bg=bg, fg=fg, activebackground=ACCENT, activeforeground="white", relief="flat", bd=0, padx=14, pady=8, width=width, font=("Segoe UI", 9, "bold"), cursor="hand2")
 def field(parent, var, width=12): return tk.Entry(parent, textvariable=var, width=width, bg="#090d15", fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT, font=("Segoe UI", 10))
@@ -221,4 +276,5 @@ def show_run_mode(state, dry_run=None, mode=None, max_actions=None):
     status_var.set(f"{phase} // {label} // {str(mode).upper()} // MAX {max_actions}")
     status_label.config(fg=SUCCESS if dry_run else DANGER)
 
+arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
 poll_logs(); root.mainloop()
