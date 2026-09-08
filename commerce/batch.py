@@ -11,8 +11,14 @@ from .store import CommerceStore
 from .tiktok import discover_products, normalize_product
 
 
+def _change(current: float | int | None, previous: float | int | None):
+    if current is None or previous is None:
+        return None
+    return current - previous
+
+
 def ingest_discovery_payload(payload: Any, store: CommerceStore | None = None) -> list[dict]:
-    """Discover, normalize, score and persist every usable TikTok product."""
+    """Discover, normalize, compare, score and persist every usable TikTok product."""
     store = store or CommerceStore()
     results: list[dict] = []
 
@@ -28,7 +34,17 @@ def ingest_discovery_payload(payload: Any, store: CommerceStore | None = None) -
             continue
 
         history = store.price_history(item.source, item.product_id)
+        previous = store.latest_observation(item.source, item.product_id)
         score = score_deal(item, history)
+
+        previous_price = previous.get("effective_price") if previous else None
+        previous_sold = previous.get("sold_count") if previous else None
+        price_change = _change(item.effective_price, previous_price)
+        sold_change = _change(item.sold_count, previous_sold)
+        price_change_pct = None
+        if price_change is not None and previous_price:
+            price_change_pct = (price_change / float(previous_price)) * 100
+
         observation_id = store.record(item)
         results.append({
             "status": "recorded",
@@ -36,6 +52,12 @@ def ingest_discovery_payload(payload: Any, store: CommerceStore | None = None) -
             "product_id": item.product_id,
             "title": item.title,
             "price": item.effective_price,
+            "previous_price": previous_price,
+            "price_change": price_change,
+            "price_change_pct": price_change_pct,
+            "sold_count": item.sold_count,
+            "previous_sold_count": previous_sold,
+            "sold_change": sold_change,
             "currency": item.currency,
             "deal_score": score.total,
             "score": asdict(score),
@@ -46,23 +68,16 @@ def ingest_discovery_payload(payload: Any, store: CommerceStore | None = None) -
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Discover and ingest TikTok Shop products from a PDH/category JSON capture"
-    )
+    parser = argparse.ArgumentParser(description="Discover and ingest TikTok Shop products from JSON")
     parser.add_argument("json_file", type=Path)
     args = parser.parse_args()
-
     payload = json.loads(args.json_file.read_text(encoding="utf-8"))
     results = ingest_discovery_payload(payload)
     recorded = [r for r in results if r["status"] == "recorded"]
     skipped = [r for r in results if r["status"] == "skipped"]
-
     print(f"Discovered: {len(results)} | Recorded: {len(recorded)} | Skipped: {len(skipped)}")
     for result in sorted(recorded, key=lambda r: r["deal_score"], reverse=True):
-        print(
-            f"{result['deal_score']:>3}/100 | {result['currency']} {result['price']:.2f} | "
-            f"{result['title']} | {result['product_id']}"
-        )
+        print(f"{result['deal_score']:>3}/100 | {result['currency']} {result['price']:.2f} | {result['title']} | {result['product_id']}")
     for result in skipped:
         print(f"SKIP | {result['product_id']} | {result['error']}")
 
