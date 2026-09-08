@@ -24,7 +24,7 @@ def fetch_category_page(url: str, timeout: int = 30) -> str:
 
 
 def extract_json_payloads(html: str) -> list[Any]:
-    payloads: list[Any] = []
+    payloads = []
     for body in _SCRIPT_RE.findall(html):
         text = body.strip()
         if not text or text[0] not in "[{":
@@ -39,8 +39,7 @@ def extract_json_payloads(html: str) -> list[Any]:
 def collect_category(url: str, store: CommerceStore | None = None, html: str | None = None) -> list[dict]:
     store = store or CommerceStore()
     html = html if html is not None else fetch_category_page(url)
-    results: list[dict] = []
-    seen: set[str] = set()
+    results, seen = [], set()
     for payload in extract_json_payloads(html):
         for result in ingest_discovery_payload(payload, store):
             product_id = result.get("product_id", "")
@@ -56,25 +55,37 @@ def diagnose_category(url: str) -> tuple[list[dict], list[dict]]:
     html = fetch_category_page(url)
     payloads = extract_json_payloads(html)
     results = collect_category(url, html=html)
-    diagnostics: list[dict] = []
-    seen: set[str] = set()
+    diagnostics, seen = [], set()
     for payload in payloads:
         for product in discover_products(payload):
             product_id = str(product.get("product_id") or product.get("productId") or "")
             if not product_id or product_id in seen:
                 continue
             seen.add(product_id)
-            diagnostics.append({
-                "product_id": product_id,
-                "title": product.get("title"),
-                "product_price_info": product.get("product_price_info"),
-                "sku_info": product.get("sku_info"),
-                "sold_info": product.get("sold_info"),
-                "rate_info": product.get("rate_info"),
-                "seller_info": product.get("seller_info"),
-                "product_marketing_info": product.get("product_marketing_info"),
-            })
+            diagnostics.append({k: product.get(k) for k in (
+                "product_id", "title", "product_price_info", "sku_info", "sold_info",
+                "rate_info", "seller_info", "product_marketing_info"
+            )})
     return results, diagnostics
+
+
+def _change_text(item: dict) -> str:
+    bits = []
+    price_change = item.get("price_change")
+    pct = item.get("price_change_pct")
+    if price_change is not None and abs(price_change) >= 0.005:
+        arrow = "DROP" if price_change < 0 else "RISE"
+        bits.append(f"{arrow} {price_change:+.2f} ({pct:+.1f}%)")
+    sold_change = item.get("sold_change")
+    if sold_change is not None and sold_change != 0:
+        bits.append(f"SOLD {sold_change:+d}")
+    return " | ".join(bits)
+
+
+def _print_item(item: dict) -> None:
+    change = _change_text(item)
+    suffix = f" | {change}" if change else ""
+    print(f"{item['deal_score']:>3}/100 | {item['currency']} {item['price']:.2f} | {item['title']} | {item['product_id']}{suffix}")
 
 
 def watch_category(url: str, interval: int = 900, store: CommerceStore | None = None) -> None:
@@ -84,9 +95,10 @@ def watch_category(url: str, interval: int = 900, store: CommerceStore | None = 
         try:
             results = collect_category(url, store)
             recorded = [r for r in results if r.get("status") == "recorded"]
-            print(f"[{started}] recorded {len(recorded)} products from {url}")
-            for item in sorted(recorded, key=lambda r: r["deal_score"], reverse=True)[:10]:
-                print(f"  {item['deal_score']:>3}/100 | {item['currency']} {item['price']:.2f} | {item['title']}")
+            changed = [r for r in recorded if r.get("price_change") not in (None, 0) or r.get("sold_change") not in (None, 0)]
+            print(f"[{started}] recorded {len(recorded)} products | changed {len(changed)}")
+            for item in sorted(changed, key=lambda r: (r.get("price_change_pct") or 0, -r["deal_score"])):
+                _print_item(item)
         except Exception as exc:
             print(f"[{started}] category sweep failed: {exc}")
         time.sleep(max(60, interval))
@@ -108,9 +120,10 @@ def main() -> None:
         results, diagnostics = collect_category(args.url), []
     recorded = [r for r in results if r.get("status") == "recorded"]
     skipped = [r for r in results if r.get("status") == "skipped"]
-    print(f"Recorded: {len(recorded)} | Skipped: {len(skipped)}")
+    changed = [r for r in recorded if r.get("price_change") not in (None, 0) or r.get("sold_change") not in (None, 0)]
+    print(f"Recorded: {len(recorded)} | Skipped: {len(skipped)} | Changed: {len(changed)}")
     for item in sorted(recorded, key=lambda r: r["deal_score"], reverse=True):
-        print(f"{item['deal_score']:>3}/100 | {item['currency']} {item['price']:.2f} | {item['title']} | {item['product_id']}")
+        _print_item(item)
     for item in skipped[:10]:
         print(f"SKIP | {item.get('product_id', '')} | {item.get('error', 'unknown error')}")
     if diagnostics:
