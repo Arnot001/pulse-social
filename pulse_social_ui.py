@@ -3,7 +3,6 @@ import json
 import time
 import queue
 import threading
-import subprocess
 from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox
@@ -17,10 +16,7 @@ POST_LOG_FILE = os.path.join(APP_DIR, "post_log.txt")
 REPLY_LOG_FILE = os.path.join(APP_DIR, "reply_log.txt")
 REPOST_LOG_FILE = os.path.join(APP_DIR, "repost_log.txt")
 LIKE_LOG_FILE = os.path.join(APP_DIR, "like_log.txt")
-CHROME_PROFILE_DIR = os.path.join(APP_DIR, "chrome_profile")
-CHROME_EXE = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-CHROME_EXE_X86 = r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
-CDP_PORT = 9223
+CDP_PORT = 9222
 CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
 
 BG = "#07090f"; PANEL = "#0d111b"; PANEL_2 = "#121827"; BORDER = "#20283a"; TEXT = "#f5f7fb"; MUTED = "#8993a6"; ACCENT = "#ff008c"; SUCCESS = "#35d07f"
@@ -68,27 +64,19 @@ def close_menu(page):
     try: page.keyboard.press("Escape")
     except Exception: pass
 
-def find_chrome():
-    for path in (CHROME_EXE, CHROME_EXE_X86):
-        if os.path.exists(path): return path
-    return None
-
-def launch_social_chrome(url):
-    chrome = find_chrome()
-    if not chrome: raise RuntimeError("Google Chrome was not found in Program Files.")
-    os.makedirs(CHROME_PROFILE_DIR, exist_ok=True)
-    args = [chrome, f"--remote-debugging-port={CDP_PORT}", f"--user-data-dir={CHROME_PROFILE_DIR}", "--no-first-run", "--no-default-browser-check", url]
-    subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    ui_log("Chrome opened in the persistent Pulse Social profile.")
-    ui_log("Log into X normally in this Chrome window if needed.")
-    ui_log("Your X session will remain in this Chrome profile for future runs.")
-
-def connect_cdp(playwright, timeout_seconds=15):
+def connect_cdp(playwright, timeout_seconds=10):
     deadline = time.time() + timeout_seconds; last_error = None
     while time.time() < deadline:
         try: return playwright.chromium.connect_over_cdp(CDP_URL, timeout=3000)
         except Exception as e: last_error = e; time.sleep(0.5)
-    raise RuntimeError(f"Could not attach to Pulse Social Chrome on port {CDP_PORT}: {last_error}")
+    raise RuntimeError(f"Could not attach to Brave on port {CDP_PORT}. Start Brave with --remote-debugging-port={CDP_PORT} first. Last error: {last_error}")
+
+def find_x_page(context, target_url):
+    for page in context.pages:
+        try:
+            if "x.com" in page.url.lower() or "twitter.com" in page.url.lower(): return page
+        except Exception: pass
+    page = context.new_page(); page.goto(target_url, wait_until="domcontentloaded"); return page
 
 def delete_own_post(page, article, dry_run, delay, handle, mode):
     text = safe_text(article)
@@ -122,24 +110,22 @@ def cleaner_worker(settings):
     max_actions = int(settings["max_actions"]); delay = float(settings["delay"]); refresh_every = int(settings["refresh_every"])
     if not handle: ui_log("Enter your X handle first."); return
     url = f"https://x.com/{handle}/likes" if mode == "likes" else f"https://x.com/{handle}/with_replies" if mode == "replies" else f"https://x.com/{handle}"
-    try: launch_social_chrome(url)
-    except Exception as e: ui_log(f"Chrome launch failed: {e}"); return
-    ui_log("Waiting for Chrome, then attaching over CDP...")
+    ui_log(f"Attaching to your existing Brave session on port {CDP_PORT}...")
     with sync_playwright() as p:
         try: browser = connect_cdp(p)
         except Exception as e: ui_log(str(e)); return
         contexts = browser.contexts
-        if not contexts: ui_log("Chrome attached but no browser context was available."); return
-        context = contexts[0]; pages = context.pages; page = pages[-1] if pages else context.new_page()
-        try:
-            if "x.com" not in page.url: page.goto(url, wait_until="domcontentloaded")
-        except Exception: pass
-        ui_log("Attached to Pulse Social Chrome. Log in if required, then click ARM / CONTINUE once.")
+        if not contexts: ui_log("Brave attached but no browser context was available."); return
+        context = contexts[0]
+        try: page = find_x_page(context, url)
+        except Exception as e: ui_log(f"Could not find/open X in Brave: {e}"); return
+        ui_log("Attached to Brave. Your existing browser login/session is being used.")
+        ui_log("Click ARM / CONTINUE once to begin.")
         continue_event.wait()
         if stop_event.is_set(): ui_log("Stopped before cleanup."); return
         try:
             if page.url.rstrip("/") != url.rstrip("/"): page.goto(url, wait_until="domcontentloaded")
-        except Exception: pass
+        except Exception as e: ui_log(f"Could not open target X page: {e}"); return
         ui_log(f"Mode: {mode} | Dry run: {dry_run} | Max actions: {max_actions}"); ui_log("Cleanup started.")
         actions = 0; stale_rounds = 0; seen_items = set()
         while actions < max_actions and not stop_event.is_set():
@@ -197,8 +183,8 @@ field(card, handle_var, 28).grid(row=1, column=1, sticky="w", pady=7); button(ca
 mode_menu = tk.OptionMenu(card, mode_var, "posts", "replies", "reposts", "likes"); mode_menu.config(bg=PANEL_2, fg=TEXT, activebackground=ACCENT, relief="flat", width=13, highlightthickness=0); mode_menu["menu"].config(bg=PANEL_2, fg=TEXT); mode_menu.grid(row=2, column=1, sticky="w", pady=7)
 field(card, max_actions_var).grid(row=3, column=1, sticky="w", pady=7); field(card, delay_var).grid(row=4, column=1, sticky="w", pady=7); field(card, refresh_var).grid(row=5, column=1, sticky="w", pady=7)
 tk.Checkbutton(card, text="  DRY RUN / PREVIEW ONLY", variable=dry_var, fg=SUCCESS, bg=PANEL, activebackground=PANEL, activeforeground=SUCCESS, selectcolor=PANEL_2, font=("Segoe UI", 9, "bold")).grid(row=6, column=0, columnspan=3, sticky="w", padx=14, pady=(8,15))
-actions = tk.Frame(root, bg=BG); actions.pack(fill="x", padx=26, pady=8); button(actions, "01  OPEN CHROME", start_session, bg=ACCENT, width=18).pack(side="left", padx=(0,8)); button(actions, "02  ARM / CONTINUE", continue_cleanup, width=18).pack(side="left", padx=8); button(actions, "STOP", stop_cleanup, bg="#421526", fg="#ffb4c8", width=10).pack(side="right")
-status = tk.Frame(root, bg=PANEL_2); status.pack(fill="x", padx=26, pady=(4,10)); tk.Label(status, textvariable=status_var, fg=SUCCESS, bg=PANEL_2, font=("Consolas", 9, "bold")).pack(side="left", padx=14, pady=8); tk.Label(status, text="BROWSER: CHROME CDP  •  SESSION: PERSISTENT", fg=MUTED, bg=PANEL_2, font=("Consolas", 8)).pack(side="right", padx=14)
+actions = tk.Frame(root, bg=BG); actions.pack(fill="x", padx=26, pady=8); button(actions, "01  ATTACH BRAVE", start_session, bg=ACCENT, width=18).pack(side="left", padx=(0,8)); button(actions, "02  ARM / CONTINUE", continue_cleanup, width=18).pack(side="left", padx=8); button(actions, "STOP", stop_cleanup, bg="#421526", fg="#ffb4c8", width=10).pack(side="right")
+status = tk.Frame(root, bg=PANEL_2); status.pack(fill="x", padx=26, pady=(4,10)); tk.Label(status, textvariable=status_var, fg=SUCCESS, bg=PANEL_2, font=("Consolas", 9, "bold")).pack(side="left", padx=14, pady=8); tk.Label(status, text="BROWSER: EXISTING BRAVE CDP :9222  •  SESSION: YOURS", fg=MUTED, bg=PANEL_2, font=("Consolas", 8)).pack(side="right", padx=14)
 log_card = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER); log_card.pack(fill="both", expand=True, padx=26, pady=(0,22)); log_head = tk.Frame(log_card, bg=PANEL); log_head.pack(fill="x", padx=14, pady=(12,6)); tk.Label(log_head, text="ACTIVITY STREAM", fg=TEXT, bg=PANEL, font=("Segoe UI", 11, "bold")).pack(side="left"); button(log_head, "COPY LOG", copy_log).pack(side="right", padx=(6,0)); button(log_head, "CLEAR VIEW", clear_log_view).pack(side="right")
 log_box = tk.Text(log_card, bg="#080c13", fg="#cbd3df", insertbackground=TEXT, relief="flat", bd=0, font=("Consolas", 9), padx=12, pady=10, wrap="word"); log_box.pack(fill="both", expand=True, padx=14, pady=(0,8)); tk.Label(log_card, text=f"MASTER LOG  //  {LOG_FILE}", fg=MUTED, bg=PANEL, font=("Consolas", 8)).pack(anchor="w", padx=14, pady=(0,10))
 poll_logs(); root.mainloop()
