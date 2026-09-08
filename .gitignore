@@ -13,3 +13,11 @@ settings.json
 .env
 
 *.lnk
+
+# Pulse Commerce local/runtime data
+*.db
+*.db-shm
+*.db-wal
+captures/
+pdh_captures/
+*.har
