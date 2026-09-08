@@ -10,7 +10,6 @@ from playwright.sync_api import sync_playwright, TimeoutError
 
 APP_DIR = os.path.join(os.environ["LOCALAPPDATA"], "Pulse Social")
 os.makedirs(APP_DIR, exist_ok=True)
-
 SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
 LOG_FILE = os.path.join(APP_DIR, "deleted_log.txt")
 POST_LOG_FILE = os.path.join(APP_DIR, "post_log.txt")
@@ -18,354 +17,213 @@ REPLY_LOG_FILE = os.path.join(APP_DIR, "reply_log.txt")
 REPOST_LOG_FILE = os.path.join(APP_DIR, "repost_log.txt")
 LIKE_LOG_FILE = os.path.join(APP_DIR, "like_log.txt")
 PROFILE_DIR = os.path.join(APP_DIR, "browser_profile")
-
 BRAVE_EXE = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
 
-DEFAULTS = {
-    "handle": "",
-    "mode": "posts",
-    "dry_run": True,
-    "max_actions": 10,
-    "delay": 3,
-    "refresh_every": 25,
-}
+BG = "#07090f"
+PANEL = "#0d111b"
+PANEL_2 = "#121827"
+BORDER = "#20283a"
+TEXT = "#f5f7fb"
+MUTED = "#8993a6"
+ACCENT = "#ff008c"
+SUCCESS = "#35d07f"
+DANGER = "#ff416c"
 
+DEFAULTS = {"handle": "", "mode": "posts", "dry_run": True, "max_actions": 10, "delay": 3, "refresh_every": 25}
 log_queue = queue.Queue()
 continue_event = threading.Event()
 stop_event = threading.Event()
 
 
-def ui_log(msg):
-    log_queue.put(msg)
-
+def ui_log(msg): log_queue.put(msg)
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return {**DEFAULTS, **json.load(f)}
-        except Exception:
-            pass
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f: return {**DEFAULTS, **json.load(f)}
+        except Exception: pass
     return DEFAULTS.copy()
 
-
 def save_settings(settings):
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2)
-
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f: json.dump(settings, f, indent=2)
 
 def safe_text(locator):
-    try:
-        return locator.inner_text(timeout=3000)
-    except Exception:
-        return ""
-
+    try: return locator.inner_text(timeout=3000)
+    except Exception: return ""
 
 def is_repost(text):
     lower = text.lower()
     return "you reposted" in lower or " reposted " in lower or lower.startswith("reposted")
 
-
 def article_belongs_to_handle(article, handle):
-    """Require the target account's profile link inside the article before deleting it."""
     clean = handle.strip().lstrip("@").lower()
-    if not clean:
-        return False
+    if not clean: return False
     try:
-        links = article.locator(f'a[href="/{clean}"], a[href^="/{clean}/"]')
-        if links.count() > 0:
-            return True
-    except Exception:
-        pass
-    text = safe_text(article).lower()
-    return f"@{clean}" in text
+        if article.locator(f'a[href="/{clean}"], a[href^="/{clean}/"]').count() > 0: return True
+    except Exception: pass
+    return f"@{clean}" in safe_text(article).lower()
 
+def article_identity(article):
+    """Stable identity for an X timeline item; status ID first, text fallback."""
+    try:
+        links = article.locator('a[href*="/status/"]')
+        for i in range(links.count()):
+            href = links.nth(i).get_attribute("href") or ""
+            if "/status/" in href:
+                status_id = href.split("/status/", 1)[1].split("/", 1)[0].split("?", 1)[0]
+                if status_id: return f"status:{status_id}"
+    except Exception: pass
+    text = safe_text(article).strip()
+    return f"text:{text}" if text else None
 
 def log_action(action, text, mode=None):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     preview = text[:180].replace("\n", " ").strip()
-    target_file = {
-        "posts": POST_LOG_FILE,
-        "replies": REPLY_LOG_FILE,
-        "reposts": REPOST_LOG_FILE,
-        "likes": LIKE_LOG_FILE,
-    }.get(mode, LOG_FILE)
-    with open(target_file, "a", encoding="utf-8") as f:
-        f.write(f"{timestamp} | {action} | {preview}\n")
-    if target_file != LOG_FILE:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{timestamp} | {action} | {preview}\n")
-
+    target = {"posts": POST_LOG_FILE, "replies": REPLY_LOG_FILE, "reposts": REPOST_LOG_FILE, "likes": LIKE_LOG_FILE}.get(mode, LOG_FILE)
+    with open(target, "a", encoding="utf-8") as f: f.write(f"{timestamp} | {action} | {preview}\n")
+    if target != LOG_FILE:
+        with open(LOG_FILE, "a", encoding="utf-8") as f: f.write(f"{timestamp} | {action} | {preview}\n")
 
 def close_menu(page):
-    try:
-        page.keyboard.press("Escape")
-    except Exception:
-        pass
-
+    try: page.keyboard.press("Escape")
+    except Exception: pass
 
 def delete_own_post(page, article, dry_run, delay, handle, mode):
     text = safe_text(article)
-    if not text or is_repost(text):
-        return False
+    if not text or is_repost(text): return False
     if not article_belongs_to_handle(article, handle):
         ui_log("Skipped non-owned post")
         return False
     more = article.locator('[aria-label="More"]').first
-    if more.count() == 0:
-        return False
+    if more.count() == 0: return False
     if dry_run:
         ui_log(f"PREVIEW {mode[:-1].upper() if mode.endswith('s') else mode.upper()} candidate:")
         ui_log(text[:220].replace("\n", " "))
         return True
-
-    more.click(timeout=3000)
-    time.sleep(0.7)
+    more.click(timeout=3000); time.sleep(0.7)
     delete_option = page.get_by_text("Delete", exact=True)
-    ui_log(f"Delete options found: {delete_option.count()}")
     if delete_option.count() == 0:
-        close_menu(page)
-        return False
-    delete_option.first.click(timeout=3000)
-    time.sleep(0.7)
+        close_menu(page); return False
+    delete_option.first.click(timeout=3000); time.sleep(0.7)
     confirm = page.get_by_text("Delete", exact=True)
     if confirm.count() == 0:
-        close_menu(page)
-        return False
+        close_menu(page); return False
     confirm.last.click(timeout=3000)
-    log_action(f"Deleted {mode}", text, mode)
-    ui_log(f"Deleted {mode}")
-    time.sleep(delay)
+    log_action(f"Deleted {mode}", text, mode); ui_log(f"Deleted {mode}"); time.sleep(delay)
     return True
-
 
 def undo_repost(page, article, dry_run, delay):
     text = safe_text(article)
-    if not is_repost(text):
-        return False
-    repost_button = article.locator('[data-testid="unretweet"]').first
-    if repost_button.count() == 0:
-        return False
+    if not is_repost(text): return False
+    button = article.locator('[data-testid="unretweet"]').first
+    if button.count() == 0: return False
     if dry_run:
-        ui_log("PREVIEW repost candidate:")
-        ui_log(text[:220].replace("\n", " "))
-        return True
-    repost_button.click(timeout=3000)
-    time.sleep(0.7)
+        ui_log("PREVIEW repost candidate:"); ui_log(text[:220].replace("\n", " ")); return True
+    button.click(timeout=3000); time.sleep(0.7)
     undo = page.get_by_text("Undo repost")
-    if undo.count() == 0:
-        close_menu(page)
-        return False
-    undo.first.click(timeout=3000)
-    log_action("Undid repost", text, "reposts")
-    ui_log("Undid repost")
-    time.sleep(delay)
-    return True
-
+    if undo.count() == 0: close_menu(page); return False
+    undo.first.click(timeout=3000); log_action("Undid repost", text, "reposts"); ui_log("Undid repost"); time.sleep(delay); return True
 
 def unlike_post(page, article, dry_run, delay):
-    text = safe_text(article)
-    unlike = article.locator('[data-testid="unlike"]').first
-    if unlike.count() == 0:
-        return False
+    text = safe_text(article); unlike = article.locator('[data-testid="unlike"]').first
+    if unlike.count() == 0: return False
     if dry_run:
-        ui_log("PREVIEW like candidate:")
-        ui_log(text[:220].replace("\n", " "))
-        return True
-    unlike.click(timeout=3000)
-    log_action("Removed like", text, "likes")
-    ui_log("Removed like")
-    time.sleep(delay)
-    return True
-
+        ui_log("PREVIEW like candidate:"); ui_log(text[:220].replace("\n", " ")); return True
+    unlike.click(timeout=3000); log_action("Removed like", text, "likes"); ui_log("Removed like"); time.sleep(delay); return True
 
 def cleaner_worker(settings):
-    stop_event.clear()
-    continue_event.clear()
-    handle = settings["handle"].strip().replace("@", "")
-    mode = settings["mode"]
-    dry_run = settings["dry_run"]
-    max_actions = int(settings["max_actions"])
-    delay = float(settings["delay"])
-    refresh_every = int(settings["refresh_every"])
-
-    if not handle:
-        ui_log("Enter your X handle first.")
-        return
-    if mode == "likes":
-        url = f"https://x.com/{handle}/likes"
-    elif mode == "replies":
-        url = f"https://x.com/{handle}/with_replies"
-    else:
-        url = f"https://x.com/{handle}"
-
-    ui_log("Launching Pulse Social browser...")
-    ui_log("Login session is stored in the Pulse Social browser profile.")
-    ui_log("When X has loaded, click Continue Cleanup once to begin.")
-
+    stop_event.clear(); continue_event.clear()
+    handle = settings["handle"].strip().replace("@", ""); mode = settings["mode"]; dry_run = settings["dry_run"]
+    max_actions = int(settings["max_actions"]); delay = float(settings["delay"]); refresh_every = int(settings["refresh_every"])
+    if not handle: ui_log("Enter your X handle first."); return
+    url = f"https://x.com/{handle}/likes" if mode == "likes" else f"https://x.com/{handle}/with_replies" if mode == "replies" else f"https://x.com/{handle}"
+    ui_log("Launching Pulse Social browser..."); ui_log("Login session is stored in the Pulse Social browser profile."); ui_log("When X has loaded, click ARM / CONTINUE once to begin.")
     with sync_playwright() as p:
-        browser = p.chromium.launch_persistent_context(
-            user_data_dir=PROFILE_DIR, executable_path=BRAVE_EXE,
-            headless=False, slow_mo=150,
-        )
-        page = browser.pages[0] if browser.pages else browser.new_page()
-        page.goto(url, wait_until="domcontentloaded")
-        continue_event.wait()
-        if stop_event.is_set():
-            ui_log("Stopped before cleanup.")
-            browser.close()
-            return
-
-        ui_log(f"Mode: {mode} | Dry run: {dry_run} | Max actions: {max_actions}")
-        ui_log("Cleanup started.")
-        actions = 0
-        stale_rounds = 0
-
+        browser = p.chromium.launch_persistent_context(user_data_dir=PROFILE_DIR, executable_path=BRAVE_EXE, headless=False, slow_mo=150)
+        page = browser.pages[0] if browser.pages else browser.new_page(); page.goto(url, wait_until="domcontentloaded"); continue_event.wait()
+        if stop_event.is_set(): ui_log("Stopped before cleanup."); browser.close(); return
+        ui_log(f"Mode: {mode} | Dry run: {dry_run} | Max actions: {max_actions}"); ui_log("Cleanup started.")
+        actions = 0; stale_rounds = 0; seen_items = set()
         while actions < max_actions and not stop_event.is_set():
-            articles = page.locator("article")
-            article_count = articles.count()
+            articles = page.locator("article"); article_count = articles.count()
             if article_count == 0:
-                ui_log("No articles found. Scrolling timeline...")
-                page.mouse.wheel(0, 1800)
-                time.sleep(3)
-                stale_rounds += 1
-                if stale_rounds >= 3:
-                    ui_log("Timeline still empty. Reloading...")
-                    page.reload(wait_until="domcontentloaded")
-                    time.sleep(5)
-                    stale_rounds = 0
+                ui_log("No articles found. Scrolling timeline..."); page.mouse.wheel(0, 1800); time.sleep(3); stale_rounds += 1
+                if stale_rounds >= 3: ui_log("Timeline still empty. Reloading..."); page.reload(wait_until="domcontentloaded"); time.sleep(5); stale_rounds = 0
                 continue
-
-            acted_this_round = False
+            acted = False
             for i in range(article_count):
-                if actions >= max_actions or stop_event.is_set():
-                    break
+                if actions >= max_actions or stop_event.is_set(): break
                 article = articles.nth(i)
                 try:
-                    if mode in ("posts", "replies"):
-                        did_action = delete_own_post(page, article, dry_run, delay, handle, mode)
-                    elif mode == "reposts":
-                        did_action = undo_repost(page, article, dry_run, delay)
-                    else:
-                        did_action = unlike_post(page, article, dry_run, delay)
-
-                    if did_action:
-                        actions += 1
-                        acted_this_round = True
-                        stale_rounds = 0
-                        label = "Previewed" if dry_run else "Actions"
-                        ui_log(f"{label}: {actions}/{max_actions}")
-                        if not dry_run and actions % refresh_every == 0:
-                            ui_log("Refreshing page to prevent freeze...")
-                            page.reload(wait_until="domcontentloaded")
-                            time.sleep(5)
-                except TimeoutError:
-                    ui_log("Skipped one: timeout")
-                    close_menu(page)
-                except Exception as e:
-                    try:
-                        error_path = os.path.join(APP_DIR, "error.png")
-                        page.screenshot(path=error_path)
-                        ui_log(f"Screenshot saved: {error_path}")
-                    except Exception:
-                        pass
-                    ui_log(f"Skipped one: {e}")
-                    close_menu(page)
-
-            if actions >= max_actions:
-                break
-            page.mouse.wheel(0, 1200)
-            time.sleep(2)
-            if not acted_this_round:
-                stale_rounds += 1
-                ui_log("No new matching actions on this screen. Scrolling...")
-            if dry_run and stale_rounds >= 8:
-                ui_log("Preview stopped: no new candidates found after repeated scrolling.")
-                break
-
-        ui_log(f"Done. {'Previewed' if dry_run else 'Completed'} {actions} action(s).")
-        browser.close()
-
+                    identity = article_identity(article)
+                    if identity and identity in seen_items: continue
+                    if identity: seen_items.add(identity)
+                    if mode in ("posts", "replies"): did = delete_own_post(page, article, dry_run, delay, handle, mode)
+                    elif mode == "reposts": did = undo_repost(page, article, dry_run, delay)
+                    else: did = unlike_post(page, article, dry_run, delay)
+                    if did:
+                        actions += 1; acted = True; stale_rounds = 0
+                        ui_log(f"{'Previewed' if dry_run else 'Actions'}: {actions}/{max_actions}")
+                        if not dry_run and actions % refresh_every == 0: ui_log("Refreshing page to prevent freeze..."); page.reload(wait_until="domcontentloaded"); time.sleep(5)
+                except TimeoutError: ui_log("Skipped one: timeout"); close_menu(page)
+                except Exception as e: ui_log(f"Skipped one: {e}"); close_menu(page)
+            if actions >= max_actions: break
+            page.mouse.wheel(0, 1400); time.sleep(2)
+            if not acted: stale_rounds += 1; ui_log("No new matching actions on this screen. Scrolling...")
+            if dry_run and stale_rounds >= 8: ui_log("Preview stopped: no new candidates found after repeated scrolling."); break
+        ui_log(f"Done. {'Previewed' if dry_run else 'Completed'} {actions} unique action(s)."); browser.close()
 
 def start_session():
     try:
-        settings = {
-            "handle": handle_var.get().strip(), "mode": mode_var.get(),
-            "dry_run": dry_var.get(), "max_actions": int(max_actions_var.get()),
-            "delay": float(delay_var.get()), "refresh_every": int(refresh_var.get()),
-        }
-    except ValueError:
-        messagebox.showerror("Invalid settings", "Max actions, delay and refresh every must be numbers.")
-        return
-    save_settings(settings)
-    if not settings["dry_run"]:
-        confirm = messagebox.askyesno(
-            "Live Mode Warning",
-            f"Dry Run is OFF.\n\nPulse Social will perform up to {settings['max_actions']} real {settings['mode']} actions on @{settings['handle'].lstrip('@')}.\n\nContinue?"
-        )
-        if not confirm:
-            return
-    threading.Thread(target=cleaner_worker, args=(settings,), daemon=True).start()
+        s = {"handle": handle_var.get().strip(), "mode": mode_var.get(), "dry_run": dry_var.get(), "max_actions": int(max_actions_var.get()), "delay": float(delay_var.get()), "refresh_every": int(refresh_var.get())}
+    except ValueError: messagebox.showerror("Invalid settings", "Max actions, delay and refresh every must be numbers."); return
+    save_settings(s)
+    if not s["dry_run"] and not messagebox.askyesno("LIVE CLEANUP", f"LIVE MODE IS ARMED.\n\nUp to {s['max_actions']} real {s['mode']} actions will run on @{s['handle'].lstrip('@')}.\n\nContinue?"): return
+    threading.Thread(target=cleaner_worker, args=(s,), daemon=True).start()
 
-
-def continue_cleanup():
-    continue_event.set()
-
-
-def stop_cleanup():
-    stop_event.set()
-    continue_event.set()
-    ui_log("Stop requested.")
-
-
-def copy_handle():
-    root.clipboard_clear()
-    root.clipboard_append(handle_var.get().strip())
-    ui_log("Handle copied.")
-
-
+def continue_cleanup(): continue_event.set()
+def stop_cleanup(): stop_event.set(); continue_event.set(); ui_log("Stop requested.")
+def copy_handle(): root.clipboard_clear(); root.clipboard_append(handle_var.get().strip()); ui_log("Handle copied.")
+def copy_log():
+    text = log_box.get("1.0", tk.END).strip()
+    root.clipboard_clear(); root.clipboard_append(text); root.update()
+    status_var.set("LOG COPIED TO CLIPBOARD")
+def clear_log_view(): log_box.delete("1.0", tk.END); status_var.set("LOG VIEW CLEARED")
 def poll_logs():
-    while not log_queue.empty():
-        msg = log_queue.get()
-        log_box.insert(tk.END, msg + "\n")
-        log_box.see(tk.END)
-    root.after(200, poll_logs)
+    changed = False
+    while not log_queue.empty(): log_box.insert(tk.END, log_queue.get() + "\n"); changed = True
+    if changed: log_box.see(tk.END)
+    root.after(150, poll_logs)
 
+def button(parent, text, command, bg=PANEL_2, fg=TEXT, width=None):
+    return tk.Button(parent, text=text, command=command, bg=bg, fg=fg, activebackground=ACCENT, activeforeground="white", relief="flat", bd=0, padx=14, pady=8, width=width, font=("Segoe UI", 9, "bold"), cursor="hand2")
+def field(parent, var, width=12): return tk.Entry(parent, textvariable=var, width=width, bg="#090d15", fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT, font=("Segoe UI", 10))
 
-settings = load_settings()
-root = tk.Tk()
-root.title("Pulse Social")
-root.geometry("560x640")
-root.configure(bg="#07090f")
-handle_var = tk.StringVar(value=settings["handle"])
-mode_var = tk.StringVar(value=settings["mode"])
-dry_var = tk.BooleanVar(value=settings["dry_run"])
-max_actions_var = tk.StringVar(value=str(settings["max_actions"]))
-delay_var = tk.StringVar(value=str(settings["delay"]))
-refresh_var = tk.StringVar(value=str(settings["refresh_every"]))
+settings = load_settings(); root = tk.Tk(); root.title("Pulse Social — X Cleanup"); root.geometry("760x760"); root.minsize(700, 700); root.configure(bg=BG)
+handle_var = tk.StringVar(value=settings["handle"]); mode_var = tk.StringVar(value=settings["mode"]); dry_var = tk.BooleanVar(value=settings["dry_run"])
+max_actions_var = tk.StringVar(value=str(settings["max_actions"])); delay_var = tk.StringVar(value=str(settings["delay"])); refresh_var = tk.StringVar(value=str(settings["refresh_every"])); status_var = tk.StringVar(value="READY // SAFE MODE")
 
-tk.Label(root, text="Pulse Social", fg="#ff008c", bg="#07090f", font=("Segoe UI", 22, "bold")).pack(pady=12)
-tk.Label(root, text="X Cleanup", fg="#7f8899", bg="#07090f", font=("Segoe UI", 9)).pack()
-frame = tk.Frame(root, bg="#07090f")
-frame.pack(pady=15)
-tk.Label(frame, text="X Handle", fg="white", bg="#07090f").grid(row=0, column=0, sticky="w")
-tk.Entry(frame, textvariable=handle_var, width=32).grid(row=0, column=1, padx=8)
-tk.Button(frame, text="Copy Handle", command=copy_handle).grid(row=0, column=2)
-tk.Label(frame, text="Mode", fg="white", bg="#07090f").grid(row=1, column=0, sticky="w", pady=8)
-tk.OptionMenu(frame, mode_var, "posts", "replies", "reposts", "likes").grid(row=1, column=1, sticky="w")
-tk.Checkbutton(frame, text="Dry Run / Preview Only", variable=dry_var, fg="white", bg="#07090f", selectcolor="#121722").grid(row=2, column=1, sticky="w")
-tk.Label(frame, text="Max Actions", fg="white", bg="#07090f").grid(row=3, column=0, sticky="w")
-tk.Entry(frame, textvariable=max_actions_var, width=10).grid(row=3, column=1, sticky="w", pady=5)
-tk.Label(frame, text="Delay", fg="white", bg="#07090f").grid(row=4, column=0, sticky="w")
-tk.Entry(frame, textvariable=delay_var, width=10).grid(row=4, column=1, sticky="w", pady=5)
-tk.Label(frame, text="Refresh Every", fg="white", bg="#07090f").grid(row=5, column=0, sticky="w")
-tk.Entry(frame, textvariable=refresh_var, width=10).grid(row=5, column=1, sticky="w", pady=5)
-tk.Button(root, text="Open Browser / Start Session", command=start_session, bg="#ff008c", fg="white", font=("Segoe UI", 11, "bold")).pack(pady=8)
-tk.Button(root, text="Continue Cleanup", command=continue_cleanup, bg="#121722", fg="white", font=("Segoe UI", 10, "bold")).pack(pady=4)
-tk.Button(root, text="Stop", command=stop_cleanup, bg="#33111f", fg="white", font=("Segoe UI", 10, "bold")).pack(pady=4)
-tk.Label(root, text="Pulse Social does not store your X password.\nLogin is handled inside the browser window.", fg="#7f8899", bg="#07090f", font=("Segoe UI", 8)).pack(pady=8)
-log_box = tk.Text(root, height=17, width=66, bg="#0b1018", fg="#f5f7fa")
-log_box.pack(padx=12, pady=8)
-tk.Label(root, text=f"Log file: {LOG_FILE}", fg="#7f8899", bg="#07090f", font=("Segoe UI", 8)).pack()
-poll_logs()
-root.mainloop()
+header = tk.Frame(root, bg=BG); header.pack(fill="x", padx=26, pady=(22, 12))
+tk.Label(header, text="PULSE", fg=TEXT, bg=BG, font=("Segoe UI", 24, "bold")).pack(side="left")
+tk.Label(header, text=" SOCIAL", fg=ACCENT, bg=BG, font=("Segoe UI", 24, "bold")).pack(side="left")
+tk.Label(header, text="X CLEANUP  //  COMMERCE INTELLIGENCE READY", fg=MUTED, bg=BG, font=("Consolas", 9)).pack(side="right", pady=10)
+
+card = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER); card.pack(fill="x", padx=26, pady=8)
+tk.Label(card, text="CLEANUP CONTROL", fg=TEXT, bg=PANEL, font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=18, pady=(14, 12))
+labels = [("X HANDLE", 1), ("MODE", 2), ("MAX ACTIONS", 3), ("DELAY / SEC", 4), ("REFRESH EVERY", 5)]
+for label, row in labels: tk.Label(card, text=label, fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).grid(row=row, column=0, sticky="w", padx=18, pady=7)
+field(card, handle_var, 28).grid(row=1, column=1, sticky="w", pady=7); button(card, "COPY", copy_handle).grid(row=1, column=2, padx=8)
+mode_menu = tk.OptionMenu(card, mode_var, "posts", "replies", "reposts", "likes"); mode_menu.config(bg=PANEL_2, fg=TEXT, activebackground=ACCENT, relief="flat", width=13, highlightthickness=0); mode_menu["menu"].config(bg=PANEL_2, fg=TEXT); mode_menu.grid(row=2, column=1, sticky="w", pady=7)
+field(card, max_actions_var).grid(row=3, column=1, sticky="w", pady=7); field(card, delay_var).grid(row=4, column=1, sticky="w", pady=7); field(card, refresh_var).grid(row=5, column=1, sticky="w", pady=7)
+dry = tk.Checkbutton(card, text="  DRY RUN / PREVIEW ONLY", variable=dry_var, fg=SUCCESS, bg=PANEL, activebackground=PANEL, activeforeground=SUCCESS, selectcolor=PANEL_2, font=("Segoe UI", 9, "bold")); dry.grid(row=6, column=0, columnspan=3, sticky="w", padx=14, pady=(8, 15))
+
+actions = tk.Frame(root, bg=BG); actions.pack(fill="x", padx=26, pady=8)
+button(actions, "01  OPEN BROWSER", start_session, bg=ACCENT, width=18).pack(side="left", padx=(0, 8)); button(actions, "02  ARM / CONTINUE", continue_cleanup, width=18).pack(side="left", padx=8); button(actions, "STOP", stop_cleanup, bg="#421526", fg="#ffb4c8", width=10).pack(side="right")
+
+status = tk.Frame(root, bg=PANEL_2); status.pack(fill="x", padx=26, pady=(4, 10)); tk.Label(status, textvariable=status_var, fg=SUCCESS, bg=PANEL_2, font=("Consolas", 9, "bold")).pack(side="left", padx=14, pady=8); tk.Label(status, text="LOGIN: BROWSER PROFILE  •  PASSWORDS: NOT STORED", fg=MUTED, bg=PANEL_2, font=("Consolas", 8)).pack(side="right", padx=14)
+
+log_card = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER); log_card.pack(fill="both", expand=True, padx=26, pady=(0, 22))
+log_head = tk.Frame(log_card, bg=PANEL); log_head.pack(fill="x", padx=14, pady=(12, 6)); tk.Label(log_head, text="ACTIVITY STREAM", fg=TEXT, bg=PANEL, font=("Segoe UI", 11, "bold")).pack(side="left"); button(log_head, "COPY LOG", copy_log).pack(side="right", padx=(6, 0)); button(log_head, "CLEAR VIEW", clear_log_view).pack(side="right")
+log_box = tk.Text(log_card, bg="#080c13", fg="#cbd3df", insertbackground=TEXT, relief="flat", bd=0, font=("Consolas", 9), padx=12, pady=10, wrap="word"); log_box.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+tk.Label(log_card, text=f"MASTER LOG  //  {LOG_FILE}", fg=MUTED, bg=PANEL, font=("Consolas", 8)).pack(anchor="w", padx=14, pady=(0, 10))
+poll_logs(); root.mainloop()
