@@ -19,11 +19,12 @@ LIKE_LOG_FILE = os.path.join(APP_DIR, "like_log.txt")
 CDP_PORT = 9222
 CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
 
-BG = "#07090f"; PANEL = "#0d111b"; PANEL_2 = "#121827"; BORDER = "#20283a"; TEXT = "#f5f7fb"; MUTED = "#8993a6"; ACCENT = "#ff008c"; SUCCESS = "#35d07f"
+BG = "#07090f"; PANEL = "#0d111b"; PANEL_2 = "#121827"; BORDER = "#20283a"; TEXT = "#f5f7fb"; MUTED = "#8993a6"; ACCENT = "#ff008c"; SUCCESS = "#35d07f"; DANGER = "#ff4057"
 DEFAULTS = {"handle": "", "mode": "posts", "dry_run": True, "max_actions": 10, "delay": 3, "refresh_every": 25}
-log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event()
+log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue()
 
 def ui_log(msg): log_queue.put(msg)
+def set_run_state(state, dry_run=None, mode=None, max_actions=None): run_state_queue.put((state, dry_run, mode, max_actions))
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -108,60 +109,72 @@ def unlike_post(page, article, dry_run, delay):
 def cleaner_worker(settings):
     stop_event.clear(); continue_event.clear(); handle = settings["handle"].strip().replace("@", ""); mode = settings["mode"]; dry_run = settings["dry_run"]
     max_actions = int(settings["max_actions"]); delay = float(settings["delay"]); refresh_every = int(settings["refresh_every"])
-    if not handle: ui_log("Enter your X handle first."); return
+    if not handle: ui_log("Enter your X handle first."); set_run_state("idle"); return
+    set_run_state("attaching", dry_run, mode, max_actions)
     url = f"https://x.com/{handle}/likes" if mode == "likes" else f"https://x.com/{handle}/with_replies" if mode == "replies" else f"https://x.com/{handle}"
     ui_log(f"Attaching to your existing Brave session on port {CDP_PORT}...")
-    with sync_playwright() as p:
-        try: browser = connect_cdp(p)
-        except Exception as e: ui_log(str(e)); return
-        contexts = browser.contexts
-        if not contexts: ui_log("Brave attached but no browser context was available."); return
-        context = contexts[0]
-        try: page = find_x_page(context, url)
-        except Exception as e: ui_log(f"Could not find/open X in Brave: {e}"); return
-        ui_log("Attached to Brave. Your existing browser login/session is being used.")
-        ui_log("Click ARM / CONTINUE once to begin.")
-        continue_event.wait()
-        if stop_event.is_set(): ui_log("Stopped before cleanup."); return
-        try:
-            if page.url.rstrip("/") != url.rstrip("/"): page.goto(url, wait_until="domcontentloaded")
-        except Exception as e: ui_log(f"Could not open target X page: {e}"); return
-        ui_log(f"Mode: {mode} | Dry run: {dry_run} | Max actions: {max_actions}"); ui_log("Cleanup started.")
-        actions = 0; stale_rounds = 0; seen_items = set()
-        while actions < max_actions and not stop_event.is_set():
-            articles = page.locator("article"); count = articles.count()
-            if count == 0:
-                ui_log("No articles found. Scrolling timeline..."); page.mouse.wheel(0, 1800); time.sleep(3); stale_rounds += 1
-                if stale_rounds >= 3: ui_log("Timeline still empty. Reloading..."); page.reload(wait_until="domcontentloaded"); time.sleep(5); stale_rounds = 0
-                continue
-            acted = False
-            for i in range(count):
-                if actions >= max_actions or stop_event.is_set(): break
-                article = articles.nth(i)
-                try:
-                    identity = article_identity(article)
-                    if identity and identity in seen_items: continue
-                    if identity: seen_items.add(identity)
-                    did = delete_own_post(page, article, dry_run, delay, handle, mode) if mode in ("posts", "replies") else undo_repost(page, article, dry_run, delay) if mode == "reposts" else unlike_post(page, article, dry_run, delay)
-                    if did:
-                        actions += 1; acted = True; stale_rounds = 0; ui_log(f"{'Previewed' if dry_run else 'Actions'}: {actions}/{max_actions}")
-                        if not dry_run and actions % refresh_every == 0: page.reload(wait_until="domcontentloaded"); time.sleep(5)
-                except TimeoutError: ui_log("Skipped one: timeout"); close_menu(page)
-                except Exception as e: ui_log(f"Skipped one: {e}"); close_menu(page)
-            if actions >= max_actions: break
-            page.mouse.wheel(0, 1400); time.sleep(2)
-            if not acted: stale_rounds += 1; ui_log("No new matching actions on this screen. Scrolling...")
-            if dry_run and stale_rounds >= 8: ui_log("Preview stopped: no new candidates found after repeated scrolling."); break
-        ui_log(f"Done. {'Previewed' if dry_run else 'Completed'} {actions} unique action(s).")
+    try:
+        with sync_playwright() as p:
+            try: browser = connect_cdp(p)
+            except Exception as e: ui_log(str(e)); return
+            contexts = browser.contexts
+            if not contexts: ui_log("Brave attached but no browser context was available."); return
+            context = contexts[0]
+            try: page = find_x_page(context, url)
+            except Exception as e: ui_log(f"Could not find/open X in Brave: {e}"); return
+            ui_log("Attached to Brave. Your existing browser login/session is being used.")
+            ui_log(f"RUN LOCKED: {'PREVIEW ONLY' if dry_run else 'LIVE ACTIONS'} | {mode} | max {max_actions}")
+            ui_log("Click ARM / CONTINUE once to begin.")
+            set_run_state("armed", dry_run, mode, max_actions)
+            continue_event.wait()
+            if stop_event.is_set(): ui_log("Stopped before cleanup."); return
+            try:
+                if page.url.rstrip("/") != url.rstrip("/"): page.goto(url, wait_until="domcontentloaded")
+            except Exception as e: ui_log(f"Could not open target X page: {e}"); return
+            set_run_state("running", dry_run, mode, max_actions)
+            ui_log(f"Mode: {mode} | Dry run: {dry_run} | Max actions: {max_actions}"); ui_log("Cleanup started.")
+            actions = 0; stale_rounds = 0; seen_items = set()
+            while actions < max_actions and not stop_event.is_set():
+                articles = page.locator("article"); count = articles.count()
+                if count == 0:
+                    ui_log("No articles found. Scrolling timeline..."); page.mouse.wheel(0, 1800); time.sleep(3); stale_rounds += 1
+                    if stale_rounds >= 3: ui_log("Timeline still empty. Reloading..."); page.reload(wait_until="domcontentloaded"); time.sleep(5); stale_rounds = 0
+                    continue
+                acted = False
+                for i in range(count):
+                    if actions >= max_actions or stop_event.is_set(): break
+                    article = articles.nth(i)
+                    try:
+                        identity = article_identity(article)
+                        if identity and identity in seen_items: continue
+                        if identity: seen_items.add(identity)
+                        did = delete_own_post(page, article, dry_run, delay, handle, mode) if mode in ("posts", "replies") else undo_repost(page, article, dry_run, delay) if mode == "reposts" else unlike_post(page, article, dry_run, delay)
+                        if did:
+                            actions += 1; acted = True; stale_rounds = 0; ui_log(f"{'Previewed' if dry_run else 'Actions'}: {actions}/{max_actions}")
+                            if not dry_run and actions % refresh_every == 0: page.reload(wait_until="domcontentloaded"); time.sleep(5)
+                    except TimeoutError: ui_log("Skipped one: timeout"); close_menu(page)
+                    except Exception as e: ui_log(f"Skipped one: {e}"); close_menu(page)
+                if actions >= max_actions: break
+                page.mouse.wheel(0, 1400); time.sleep(2)
+                if not acted: stale_rounds += 1; ui_log("No new matching actions on this screen. Scrolling...")
+                if dry_run and stale_rounds >= 8: ui_log("Preview stopped: no new candidates found after repeated scrolling."); break
+            ui_log(f"Done. {'Previewed' if dry_run else 'Completed'} {actions} unique action(s).")
+    finally:
+        set_run_state("idle")
 
 def start_session():
+    if worker_active.get(): ui_log("A cleanup run is already active. Stop it before starting another."); return
     try: s = {"handle": handle_var.get().strip(), "mode": mode_var.get(), "dry_run": dry_var.get(), "max_actions": int(max_actions_var.get()), "delay": float(delay_var.get()), "refresh_every": int(refresh_var.get())}
     except ValueError: messagebox.showerror("Invalid settings", "Max actions, delay and refresh every must be numbers."); return
+    if not s["handle"]: messagebox.showerror("Missing handle", "Enter your X handle first."); return
     save_settings(s)
-    if not s["dry_run"] and not messagebox.askyesno("LIVE CLEANUP", f"LIVE MODE IS ARMED.\n\nUp to {s['max_actions']} real {s['mode']} actions will run on @{s['handle'].lstrip('@')}.\n\nContinue?"): return
+    if not s["dry_run"] and not messagebox.askyesno("LIVE CLEANUP", f"LIVE MODE IS ARMED.\n\nUp to {s['max_actions']} real {s['mode']} actions will run on @{s['handle'].lstrip('@')}.\n\nThe run mode will be LOCKED until it finishes or you press STOP.\n\nContinue?"): return
+    worker_active.set(True); set_controls_locked(True); show_run_mode("attaching", s["dry_run"], s["mode"], s["max_actions"])
     threading.Thread(target=cleaner_worker, args=(s,), daemon=True).start()
-def continue_cleanup(): continue_event.set()
-def stop_cleanup(): stop_event.set(); continue_event.set(); ui_log("Stop requested.")
+def continue_cleanup():
+    if not worker_active.get(): ui_log("Attach Brave first."); return
+    continue_event.set()
+def stop_cleanup(): stop_event.set(); continue_event.set(); ui_log("Stop requested."); status_var.set("STOP REQUESTED // WAITING FOR CURRENT ACTION")
 def copy_handle(): root.clipboard_clear(); root.clipboard_append(handle_var.get().strip()); ui_log("Handle copied.")
 def copy_log():
     text = log_box.get("1.0", tk.END).strip(); root.clipboard_clear(); root.clipboard_append(text); root.update(); status_var.set("LOG COPIED TO CLIPBOARD")
@@ -170,21 +183,42 @@ def poll_logs():
     changed = False
     while not log_queue.empty(): log_box.insert(tk.END, log_queue.get() + "\n"); changed = True
     if changed: log_box.see(tk.END)
+    while not run_state_queue.empty():
+        state, dry_run, mode, max_actions = run_state_queue.get()
+        if state == "idle":
+            worker_active.set(False); set_controls_locked(False); show_run_mode("idle")
+        else: show_run_mode(state, dry_run, mode, max_actions)
     root.after(150, poll_logs)
 def button(parent, text, command, bg=PANEL_2, fg=TEXT, width=None): return tk.Button(parent, text=text, command=command, bg=bg, fg=fg, activebackground=ACCENT, activeforeground="white", relief="flat", bd=0, padx=14, pady=8, width=width, font=("Segoe UI", 9, "bold"), cursor="hand2")
 def field(parent, var, width=12): return tk.Entry(parent, textvariable=var, width=width, bg="#090d15", fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT, font=("Segoe UI", 10))
 
 settings = load_settings(); root = tk.Tk(); root.title("Pulse Social — X Cleanup"); root.geometry("760x760"); root.minsize(700, 700); root.configure(bg=BG)
-handle_var = tk.StringVar(value=settings["handle"]); mode_var = tk.StringVar(value=settings["mode"]); dry_var = tk.BooleanVar(value=settings["dry_run"]); max_actions_var = tk.StringVar(value=str(settings["max_actions"])); delay_var = tk.StringVar(value=str(settings["delay"])); refresh_var = tk.StringVar(value=str(settings["refresh_every"])); status_var = tk.StringVar(value="READY // SAFE MODE")
+handle_var = tk.StringVar(value=settings["handle"]); mode_var = tk.StringVar(value=settings["mode"]); dry_var = tk.BooleanVar(value=settings["dry_run"]); max_actions_var = tk.StringVar(value=str(settings["max_actions"])); delay_var = tk.StringVar(value=str(settings["delay"])); refresh_var = tk.StringVar(value=str(settings["refresh_every"])); status_var = tk.StringVar(value="READY // SAFE MODE"); worker_active = tk.BooleanVar(value=False)
 header = tk.Frame(root, bg=BG); header.pack(fill="x", padx=26, pady=(22, 12)); tk.Label(header, text="PULSE", fg=TEXT, bg=BG, font=("Segoe UI", 24, "bold")).pack(side="left"); tk.Label(header, text=" SOCIAL", fg=ACCENT, bg=BG, font=("Segoe UI", 24, "bold")).pack(side="left"); tk.Label(header, text="X CLEANUP  //  COMMERCE INTELLIGENCE READY", fg=MUTED, bg=BG, font=("Consolas", 9)).pack(side="right", pady=10)
 card = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER); card.pack(fill="x", padx=26, pady=8); tk.Label(card, text="CLEANUP CONTROL", fg=TEXT, bg=PANEL, font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=18, pady=(14, 12))
 for label, row in [("X HANDLE",1),("MODE",2),("MAX ACTIONS",3),("DELAY / SEC",4),("REFRESH EVERY",5)]: tk.Label(card, text=label, fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).grid(row=row, column=0, sticky="w", padx=18, pady=7)
-field(card, handle_var, 28).grid(row=1, column=1, sticky="w", pady=7); button(card, "COPY", copy_handle).grid(row=1, column=2, padx=8)
+handle_entry = field(card, handle_var, 28); handle_entry.grid(row=1, column=1, sticky="w", pady=7); copy_handle_btn = button(card, "COPY", copy_handle); copy_handle_btn.grid(row=1, column=2, padx=8)
 mode_menu = tk.OptionMenu(card, mode_var, "posts", "replies", "reposts", "likes"); mode_menu.config(bg=PANEL_2, fg=TEXT, activebackground=ACCENT, relief="flat", width=13, highlightthickness=0); mode_menu["menu"].config(bg=PANEL_2, fg=TEXT); mode_menu.grid(row=2, column=1, sticky="w", pady=7)
-field(card, max_actions_var).grid(row=3, column=1, sticky="w", pady=7); field(card, delay_var).grid(row=4, column=1, sticky="w", pady=7); field(card, refresh_var).grid(row=5, column=1, sticky="w", pady=7)
-tk.Checkbutton(card, text="  DRY RUN / PREVIEW ONLY", variable=dry_var, fg=SUCCESS, bg=PANEL, activebackground=PANEL, activeforeground=SUCCESS, selectcolor=PANEL_2, font=("Segoe UI", 9, "bold")).grid(row=6, column=0, columnspan=3, sticky="w", padx=14, pady=(8,15))
-actions = tk.Frame(root, bg=BG); actions.pack(fill="x", padx=26, pady=8); button(actions, "01  ATTACH BRAVE", start_session, bg=ACCENT, width=18).pack(side="left", padx=(0,8)); button(actions, "02  ARM / CONTINUE", continue_cleanup, width=18).pack(side="left", padx=8); button(actions, "STOP", stop_cleanup, bg="#421526", fg="#ffb4c8", width=10).pack(side="right")
-status = tk.Frame(root, bg=PANEL_2); status.pack(fill="x", padx=26, pady=(4,10)); tk.Label(status, textvariable=status_var, fg=SUCCESS, bg=PANEL_2, font=("Consolas", 9, "bold")).pack(side="left", padx=14, pady=8); tk.Label(status, text="BROWSER: EXISTING BRAVE CDP :9222  •  SESSION: YOURS", fg=MUTED, bg=PANEL_2, font=("Consolas", 8)).pack(side="right", padx=14)
+max_actions_entry = field(card, max_actions_var); max_actions_entry.grid(row=3, column=1, sticky="w", pady=7); delay_entry = field(card, delay_var); delay_entry.grid(row=4, column=1, sticky="w", pady=7); refresh_entry = field(card, refresh_var); refresh_entry.grid(row=5, column=1, sticky="w", pady=7)
+dry_check = tk.Checkbutton(card, text="  DRY RUN / PREVIEW ONLY", variable=dry_var, fg=SUCCESS, bg=PANEL, activebackground=PANEL, activeforeground=SUCCESS, selectcolor=PANEL_2, font=("Segoe UI", 9, "bold")); dry_check.grid(row=6, column=0, columnspan=3, sticky="w", padx=14, pady=(8,15))
+actions = tk.Frame(root, bg=BG); actions.pack(fill="x", padx=26, pady=8); attach_btn = button(actions, "01  ATTACH BRAVE", start_session, bg=ACCENT, width=18); attach_btn.pack(side="left", padx=(0,8)); arm_btn = button(actions, "02  ARM / CONTINUE", continue_cleanup, width=18); arm_btn.pack(side="left", padx=8); stop_btn = button(actions, "STOP", stop_cleanup, bg="#421526", fg="#ffb4c8", width=10); stop_btn.pack(side="right")
+status = tk.Frame(root, bg=PANEL_2); status.pack(fill="x", padx=26, pady=(4,10)); status_label = tk.Label(status, textvariable=status_var, fg=SUCCESS, bg=PANEL_2, font=("Consolas", 9, "bold")); status_label.pack(side="left", padx=14, pady=8); tk.Label(status, text="BROWSER: EXISTING BRAVE CDP :9222  •  SESSION: YOURS", fg=MUTED, bg=PANEL_2, font=("Consolas", 8)).pack(side="right", padx=14)
 log_card = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER); log_card.pack(fill="both", expand=True, padx=26, pady=(0,22)); log_head = tk.Frame(log_card, bg=PANEL); log_head.pack(fill="x", padx=14, pady=(12,6)); tk.Label(log_head, text="ACTIVITY STREAM", fg=TEXT, bg=PANEL, font=("Segoe UI", 11, "bold")).pack(side="left"); button(log_head, "COPY LOG", copy_log).pack(side="right", padx=(6,0)); button(log_head, "CLEAR VIEW", clear_log_view).pack(side="right")
 log_box = tk.Text(log_card, bg="#080c13", fg="#cbd3df", insertbackground=TEXT, relief="flat", bd=0, font=("Consolas", 9), padx=12, pady=10, wrap="word"); log_box.pack(fill="both", expand=True, padx=14, pady=(0,8)); tk.Label(log_card, text=f"MASTER LOG  //  {LOG_FILE}", fg=MUTED, bg=PANEL, font=("Consolas", 8)).pack(anchor="w", padx=14, pady=(0,10))
+
+locked_controls = [handle_entry, copy_handle_btn, mode_menu, max_actions_entry, delay_entry, refresh_entry, dry_check, attach_btn]
+def set_controls_locked(locked):
+    state = "disabled" if locked else "normal"
+    for widget in locked_controls:
+        try: widget.config(state=state)
+        except Exception: pass
+
+def show_run_mode(state, dry_run=None, mode=None, max_actions=None):
+    if state == "idle":
+        status_var.set("READY // SAFE MODE"); status_label.config(fg=SUCCESS); return
+    label = "PREVIEW // NO CHANGES" if dry_run else "LIVE // REAL ACTIONS"
+    phase = {"attaching":"ATTACHING", "armed":"ARMED", "running":"RUNNING"}.get(state, state.upper())
+    status_var.set(f"{phase} // {label} // {str(mode).upper()} // MAX {max_actions}")
+    status_label.config(fg=SUCCESS if dry_run else DANGER)
+
 poll_logs(); root.mainloop()
