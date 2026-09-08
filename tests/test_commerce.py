@@ -12,35 +12,29 @@ from commerce.tiktok import discover_products, normalize_product, product_urls
 class TikTokCommerceTests(unittest.TestCase):
     def setUp(self):
         self.payload = {
-            "loaderData": {
-                "page_config": {
-                    "components_map": {
-                        "gaming": {
-                            "component_data": {
-                                "categoryProductsData": {
-                                    "productList": [
-                                        {
-                                            "product_id": "1729431846014848905",
-                                            "product_name": "RTX 4060 Gaming PC",
-                                            "price": "787.55",
-                                            "sold_count": 2,
-                                            "seo_url": {
-                                                "canonical_url": "https://shop.tiktok.com/gb/pdp/1729431846014848905"
-                                            },
-                                        },
-                                        {
-                                            "product_id": "2002",
-                                            "title": "Gaming controller",
-                                            "sale_price": "23.95",
-                                            "sold_count": 5,
-                                        },
-                                    ]
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            "loaderData": {"page_config": {"components_map": {"gaming": {"component_data": {
+                "categoryProductsData": {"productList": [
+                    {"product_id": "1729431846014848905", "product_name": "RTX 4060 Gaming PC", "price": "787.55", "sold_count": 2, "seo_url": {"canonical_url": "https://shop.tiktok.com/gb/pdp/1729431846014848905"}},
+                    {"product_id": "2002", "title": "Gaming controller", "sale_price": "23.95", "sold_count": 5},
+                ]}
+            }}}}}
+        }
+        self.live_product = {
+            "product_id": "1729553894309993373",
+            "title": "FIFINE D6 Macro Keyboard",
+            "product_price_info": {
+                "sku_id": "1729553894310058909",
+                "currency_name": "GBP",
+                "currency_symbol": "£",
+                "sale_price_decimal": "72.99",
+                "origin_price_decimal": "89.99",
+                "discount_decimal": "0.19",
+            },
+            "sold_info": {"sold_count": 469},
+            "rate_info": {"score": 4.9, "review_count": "37"},
+            "seller_info": {"seller_id": "7496151571180456861", "shop_name": "Fifine Shop"},
+            "seo_url": {"canonical_url": "https://shop.tiktok.com/gb/pdp/1729553894309993373"},
+            "sku_info": [{"SkuId": "1729553894310058909", "PriceInfo": {"sale_price_decimal": "72.99"}}],
         }
 
     def test_discovers_unique_products(self):
@@ -57,6 +51,18 @@ class TikTokCommerceTests(unittest.TestCase):
         self.assertEqual(item.product_id, "1729431846014848905")
         self.assertEqual(item.price, 787.55)
         self.assertEqual(item.sold_count, 2)
+
+    def test_normalizes_live_nested_category_product(self):
+        item = normalize_product(self.live_product)
+        self.assertEqual(item.price, 72.99)
+        self.assertEqual(item.original_price, 89.99)
+        self.assertEqual(item.currency, "GBP")
+        self.assertEqual(item.sku_id, "1729553894310058909")
+        self.assertEqual(item.sold_count, 469)
+        self.assertEqual(item.rating, 4.9)
+        self.assertEqual(item.review_count, 37)
+        self.assertEqual(item.seller_id, "7496151571180456861")
+        self.assertEqual(item.seller_name, "Fifine Shop")
 
     def test_batch_ingest_records_all_products(self):
         with tempfile.TemporaryDirectory() as tmp:
