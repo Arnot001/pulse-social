@@ -7,7 +7,6 @@ from pathlib import Path
 
 from .models import ProductObservation
 
-
 DEFAULT_DB = Path(os.environ.get("LOCALAPPDATA", ".")) / "Pulse Social" / "commerce.db"
 
 
@@ -25,35 +24,21 @@ class CommerceStore:
     def _init_db(self) -> None:
         db = self.connect()
         try:
-            db.executescript(
-                """
+            db.executescript("""
                 CREATE TABLE IF NOT EXISTS observations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source TEXT NOT NULL,
-                    product_id TEXT NOT NULL,
-                    sku_id TEXT NOT NULL DEFAULT '',
-                    title TEXT NOT NULL,
-                    seller_id TEXT NOT NULL DEFAULT '',
-                    seller_name TEXT NOT NULL DEFAULT '',
-                    price REAL NOT NULL,
-                    effective_price REAL NOT NULL,
-                    original_price REAL,
-                    currency TEXT NOT NULL,
-                    sold_count INTEGER,
-                    rating REAL,
-                    review_count INTEGER,
-                    category TEXT NOT NULL DEFAULT '',
-                    stock INTEGER,
-                    variant TEXT NOT NULL DEFAULT '',
-                    url TEXT NOT NULL DEFAULT '',
-                    specs_json TEXT NOT NULL DEFAULT '{}',
-                    raw_json TEXT NOT NULL DEFAULT '{}',
-                    observed_at TEXT NOT NULL
+                    source TEXT NOT NULL, product_id TEXT NOT NULL,
+                    sku_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL,
+                    seller_id TEXT NOT NULL DEFAULT '', seller_name TEXT NOT NULL DEFAULT '',
+                    price REAL NOT NULL, effective_price REAL NOT NULL, original_price REAL,
+                    currency TEXT NOT NULL, sold_count INTEGER, rating REAL, review_count INTEGER,
+                    category TEXT NOT NULL DEFAULT '', stock INTEGER, variant TEXT NOT NULL DEFAULT '',
+                    url TEXT NOT NULL DEFAULT '', specs_json TEXT NOT NULL DEFAULT '{}',
+                    raw_json TEXT NOT NULL DEFAULT '{}', observed_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_observations_product
                     ON observations(source, product_id, sku_id, observed_at);
-                """
-            )
+            """)
             db.commit()
         finally:
             db.close()
@@ -61,25 +46,21 @@ class CommerceStore:
     def record(self, item: ProductObservation) -> int:
         db = self.connect()
         try:
-            cur = db.execute(
-                """
+            cur = db.execute("""
                 INSERT INTO observations (
                     source, product_id, sku_id, title, seller_id, seller_name,
                     price, effective_price, original_price, currency, sold_count,
                     rating, review_count, category, stock, variant, url,
                     specs_json, raw_json, observed_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item.source, item.product_id, item.sku_id, item.title,
-                    item.seller_id, item.seller_name, item.price,
-                    item.effective_price, item.original_price, item.currency,
-                    item.sold_count, item.rating, item.review_count,
-                    item.category, item.stock, item.variant, item.url,
-                    json.dumps(item.specs, ensure_ascii=False),
-                    json.dumps(item.raw, ensure_ascii=False), item.observed_at,
-                ),
-            )
+            """, (
+                item.source, item.product_id, item.sku_id, item.title,
+                item.seller_id, item.seller_name, item.price, item.effective_price,
+                item.original_price, item.currency, item.sold_count, item.rating,
+                item.review_count, item.category, item.stock, item.variant, item.url,
+                json.dumps(item.specs, ensure_ascii=False), json.dumps(item.raw, ensure_ascii=False),
+                item.observed_at,
+            ))
             db.commit()
             return int(cur.lastrowid)
         finally:
@@ -88,15 +69,35 @@ class CommerceStore:
     def price_history(self, source: str, product_id: str, limit: int = 200) -> list[dict]:
         db = self.connect()
         try:
-            rows = db.execute(
-                """
+            rows = db.execute("""
                 SELECT effective_price, price, original_price, sold_count, observed_at
-                FROM observations
-                WHERE source = ? AND product_id = ?
-                ORDER BY observed_at DESC LIMIT ?
-                """,
-                (source, product_id, limit),
-            ).fetchall()
+                FROM observations WHERE source = ? AND product_id = ?
+                ORDER BY id DESC LIMIT ?
+            """, (source, product_id, limit)).fetchall()
             return [dict(row) for row in reversed(rows)]
+        finally:
+            db.close()
+
+    def latest_observation(self, source: str, product_id: str) -> dict | None:
+        db = self.connect()
+        try:
+            row = db.execute("""
+                SELECT * FROM observations
+                WHERE source = ? AND product_id = ?
+                ORDER BY id DESC LIMIT 1
+            """, (source, product_id)).fetchone()
+            return dict(row) if row else None
+        finally:
+            db.close()
+
+    def previous_observation(self, source: str, product_id: str) -> dict | None:
+        db = self.connect()
+        try:
+            row = db.execute("""
+                SELECT * FROM observations
+                WHERE source = ? AND product_id = ?
+                ORDER BY id DESC LIMIT 1 OFFSET 1
+            """, (source, product_id)).fetchone()
+            return dict(row) if row else None
         finally:
             db.close()
