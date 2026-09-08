@@ -23,7 +23,8 @@ class CommerceStore:
         return db
 
     def _init_db(self) -> None:
-        with self.connect() as db:
+        db = self.connect()
+        try:
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS observations (
@@ -53,9 +54,13 @@ class CommerceStore:
                     ON observations(source, product_id, sku_id, observed_at);
                 """
             )
+            db.commit()
+        finally:
+            db.close()
 
     def record(self, item: ProductObservation) -> int:
-        with self.connect() as db:
+        db = self.connect()
+        try:
             cur = db.execute(
                 """
                 INSERT INTO observations (
@@ -75,10 +80,14 @@ class CommerceStore:
                     json.dumps(item.raw, ensure_ascii=False), item.observed_at,
                 ),
             )
+            db.commit()
             return int(cur.lastrowid)
+        finally:
+            db.close()
 
     def price_history(self, source: str, product_id: str, limit: int = 200) -> list[dict]:
-        with self.connect() as db:
+        db = self.connect()
+        try:
             rows = db.execute(
                 """
                 SELECT effective_price, price, original_price, sold_count, observed_at
@@ -88,4 +97,6 @@ class CommerceStore:
                 """,
                 (source, product_id, limit),
             ).fetchall()
-        return [dict(row) for row in reversed(rows)]
+            return [dict(row) for row in reversed(rows)]
+        finally:
+            db.close()
