@@ -17,6 +17,7 @@ class ProductWatch:
     url: str
     interval_minutes: int = 15
     any_drop: bool = True
+    any_rise: bool = True
     new_low: bool = True
     target_price: float | None = None
     drop_pct: float | None = None
