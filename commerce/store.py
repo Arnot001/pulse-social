@@ -101,3 +101,20 @@ class CommerceStore:
             return dict(row) if row else None
         finally:
             db.close()
+
+    def latest_products(self, source: str = "tiktok_shop", limit: int = 500) -> list[dict]:
+        """Return the latest stored observation for each product."""
+        db = self.connect()
+        try:
+            rows = db.execute("""
+                SELECT o.* FROM observations o
+                JOIN (
+                    SELECT product_id, MAX(id) AS max_id
+                    FROM observations WHERE source = ? GROUP BY product_id
+                ) latest ON latest.max_id = o.id
+                WHERE o.source = ?
+                ORDER BY o.id DESC LIMIT ?
+            """, (source, source, limit)).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            db.close()
