@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 from commerce.batch import ingest_discovery_payload
 from commerce.store import CommerceStore
 from commerce.tiktok import discover_products, normalize_product, product_urls
+from commerce.tiktok.category_collector import collect_category
 
 
 class TikTokCommerceTests(unittest.TestCase):
@@ -72,6 +74,17 @@ class TikTokCommerceTests(unittest.TestCase):
             self.assertEqual(len(recorded), 2)
             self.assertTrue(all(0 <= r["deal_score"] <= 100 for r in recorded))
             self.assertEqual(len(store.price_history("tiktok_shop", "1729431846014848905")), 1)
+
+    def test_category_sweep_writes_duplicate_product_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = CommerceStore(Path(tmp) / "commerce.db")
+            payload_json = json.dumps(self.payload)
+            html = f"<html><script>{payload_json}</script><script>{payload_json}</script></html>"
+            results = collect_category("https://example.invalid/category", store=store, html=html)
+            recorded = [r for r in results if r["status"] == "recorded"]
+            self.assertEqual(len(recorded), 2)
+            self.assertEqual(len(store.price_history("tiktok_shop", "1729431846014848905")), 1)
+            self.assertEqual(len(store.price_history("tiktok_shop", "2002")), 1)
 
 
 if __name__ == "__main__":
