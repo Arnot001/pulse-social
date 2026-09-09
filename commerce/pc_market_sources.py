@@ -6,11 +6,15 @@ from html import unescape
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
-from .pc_market import MarketListing, PCFingerprint, fingerprint_pc
+from .pc_market import MarketListing, PCFingerprint, comparison_score, fingerprint_pc
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152 Safari/537.36"
 
 RETAILERS = {
+    # GTR machines sold on TikTok are also sold directly by Gotraka. Their public
+    # Shopify catalogue exposes stable product handles, variant IDs and SKUs, so
+    # use it before generic URL discovery.
+    "Gotraka / GTR Gaming": "gotraka.com",
     "Scan": "scan.co.uk", "Overclockers UK": "overclockers.co.uk", "Currys": "currys.co.uk",
     "AWD-IT": "awd-it.co.uk", "CCL": "cclonline.com", "HP UK": "hp.com",
     "PCSpecialist": "pcspecialist.co.uk", "Stormforce": "stormforcegaming.co.uk",
@@ -69,18 +73,13 @@ def _search_engine_links(html:str,domain:str)->list[str]:
     return found
 
 def _looks_like_search_or_listing(title:str,url:str)->bool:
-    text=(title+" "+url).lower()
-    bad=("search:","search results","results found for","search?","/search/","?q=","collections/all","collections/search")
+    text=(title+" "+url).lower(); bad=("search:","search results","results found for","search?","/search/","?q=","collections/all","collections/search")
     return any(x in text for x in bad)
 
 def _has_target_components(text:str,target:PCFingerprint)->bool:
     fp=fingerprint_pc(text)
-    # Product evidence must contain both target CPU and GPU. This prevents a search
-    # page mentioning the query in its title from ever becoming a market price.
     if not fp.cpu or not fp.gpu: return False
-    from .pc_market import comparison_score
-    score,tier,_=comparison_score(target,fp)
-    return score>=75 and tier in {"EXACT","STRONG"}
+    score,tier,_=comparison_score(target,fp); return score>=75 and tier in {"EXACT","STRONG"}
 
 def _jsonld_products(html:str,retailer:str,domain:str,page_url:str="",target:PCFingerprint|None=None)->list[MarketListing]:
     found=[]
@@ -108,16 +107,50 @@ def _jsonld_products(html:str,retailer:str,domain:str,page_url:str="",target:PCF
 def _visible_product(html:str,retailer:str,page_url:str,target:PCFingerprint|None=None)->list[MarketListing]:
     title_match=re.search(r'<title[^>]*>(.*?)</title>',html,re.I|re.S); title=re.sub(r'<[^>]+>',' ',unescape(title_match.group(1))).strip() if title_match else ""
     if not title or _looks_like_search_or_listing(title,page_url): return []
-    body=re.sub(r'<[^>]+>',' ',unescape(html)); evidence=(title+" "+body[:30000])
+    body=re.sub(r'<[^>]+>',' ',unescape(html)); evidence=title+" "+body[:30000]
     if target and not _has_target_components(evidence,target): return []
     prices=[]
     for raw in re.findall(r'£\s*([0-9]{3,5}(?:,[0-9]{3})*(?:\.\d{2})?)',body):
         try: value=float(raw.replace(',',''))
         except ValueError: continue
         if 250<=value<=15000: prices.append(value)
-    # Visible-page fallback is deliberately conservative. Product JSON-LD is preferred;
-    # if we must use visible text, only a genuine product page with matching hardware qualifies.
     return [MarketListing(retailer=retailer,title=title[:300],price=min(prices),url=page_url)] if prices else []
+
+
+def _gotraka_catalog(target: PCFingerprint) -> tuple[list[MarketListing], str]:
+    """Read Gotraka's public Shopify product catalogue, preserving product identity.
+
+    Shopify exposes product id, handle and variant SKU/id in products.json. We use
+    those IDs to discover exact hardware candidates, then let the normal market
+    matcher enforce CPU/GPU/RAM/storage quality.
+    """
+    accepted: list[MarketListing] = []; scanned=0; matching=0
+    for page in range(1, 7):
+        url=f"https://www.gotraka.com/products.json?limit=250&page={page}"
+        try: payload=json.loads(_fetch(url,timeout=15))
+        except Exception as exc: return accepted, f"Gotraka catalog error after {scanned} products ({type(exc).__name__})"
+        products=payload.get("products") if isinstance(payload,dict) else None
+        if not isinstance(products,list) or not products: break
+        for product in products:
+            scanned+=1
+            title=str(product.get("title") or "").strip(); body=str(product.get("body_html") or "")
+            evidence=title+" "+re.sub(r'<[^>]+>',' ',unescape(body))
+            fp=fingerprint_pc(evidence)
+            score,tier,_=comparison_score(target,fp)
+            if score<75 or tier not in {"EXACT","STRONG"}: continue
+            matching+=1
+            handle=str(product.get("handle") or "").strip(); product_id=str(product.get("id") or "")
+            variants=product.get("variants") if isinstance(product.get("variants"),list) else []
+            for variant in variants or [{}]:
+                try: price=float(str(variant.get("price") or "0").replace(",",""))
+                except (ValueError,TypeError): continue
+                if not 250<=price<=15000: continue
+                sku=str(variant.get("sku") or "").strip(); variant_id=str(variant.get("id") or "").strip()
+                identity=" | ".join(x for x in (f"PID {product_id}" if product_id else "",f"SKU {sku}" if sku else "",f"VID {variant_id}" if variant_id else "") if x)
+                display=f"{title} [{identity}]" if identity else title
+                accepted.append(MarketListing("Gotraka / GTR Gaming",display,price,f"https://www.gotraka.com/products/{handle}" if handle else "",fp))
+    return accepted, f"Gotraka catalog: {scanned} products scanned, {matching} hardware matches, {len(accepted)} priced variants accepted"
+
 
 def _retailer_search_urls(domain:str,query:str)->list[str]:
     q=quote_plus(query); return [f"https://www.{domain}/search?q={q}",f"https://www.{domain}/search?query={q}",f"https://www.{domain}/search/{q}",f"https://{domain}/search?q={q}"]
@@ -139,7 +172,14 @@ def _discover_urls(domain:str,query:str)->tuple[list[str],list[str]]:
 
 def collect_market_references(fp:PCFingerprint)->list[MarketListing]:
     LAST_DIAGNOSTICS.clear(); query=_query(fp); results=[]; seen=set()
+
+    gotraka,diag=_gotraka_catalog(fp); LAST_DIAGNOSTICS.append(diag)
+    for item in gotraka:
+        key=(item.retailer,item.title.lower(),item.price)
+        if key not in seen: seen.add(key); results.append(item)
+
     for retailer,domain in RETAILERS.items():
+        if retailer=="Gotraka / GTR Gaming": continue
         urls,notes=_discover_urls(domain,query)
         if not urls:
             detail=f" ({', '.join(notes[-2:])})" if notes else ""; LAST_DIAGNOSTICS.append(f"{retailer}: discovery returned 0 product URLs{detail}"); continue
