@@ -11,6 +11,22 @@ class PCMarketTests(unittest.TestCase):
         self.assertEqual(fp.ram_gb, 32)
         self.assertEqual(fp.storage_tb, 1.0)
 
+    def test_live_intel_tiktok_title(self):
+        fp = fingerprint_pc("GTR Gaming PC | Intel Core i5-12400F | RX 9070 XT 16GB GDDR6 | 32GB DDR4 3600MHz RAM | 1TB NVMe SSD")
+        self.assertIn("I5-12400F", fp.cpu.upper())
+        self.assertEqual(fp.gpu, "RX 9070 XT")
+        self.assertEqual(fp.gpu_vram_gb, 16)
+        self.assertEqual(fp.ram_gb, 32)
+        self.assertEqual(fp.storage_tb, 1.0)
+        self.assertEqual(fp.confidence, 4)
+
+    def test_intel_name_variants_compare(self):
+        target = fingerprint_pc("Intel Core i9-12900KF RTX 5070 12GB GDDR7 32GB DDR5 1TB NVMe SSD")
+        other = fingerprint_pc("Intel i9 12900KF RTX 5070 12GB GDDR7 32GB DDR5 1TB SSD")
+        score, tier, _ = comparison_score(target, other)
+        self.assertGreaterEqual(score, 90)
+        self.assertEqual(tier, "EXACT")
+
     def test_gpu_vram_is_extracted_near_gpu(self):
         fp = fingerprint_pc("Ryzen 7 7800X3D RTX 5060 Ti 8GB GDDR7 32GB DDR5 1TB NVMe")
         self.assertEqual(fp.gpu, "RTX 5060 TI")
