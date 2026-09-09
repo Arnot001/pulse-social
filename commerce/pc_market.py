@@ -11,6 +11,7 @@ class PCFingerprint:
     gpu: str = ""
     ram_gb: int | None = None
     storage_tb: float | None = None
+    gpu_vram_gb: int | None = None
 
     @property
     def confidence(self) -> int:
@@ -28,6 +29,11 @@ class MarketListing:
 
 def _compact(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _component_token(value: str) -> str:
+    """Normalize CPU/GPU names without collapsing meaningful suffixes such as Ti/XT/GRE."""
+    return _compact(value)
 
 
 def fingerprint_pc(title: str, specs: dict | None = None) -> PCFingerprint:
@@ -66,34 +72,113 @@ def fingerprint_pc(title: str, specs: dict | None = None) -> PCFingerprint:
         if gb:
             storage = max(float(x) / 1000 for x in gb)
 
-    return PCFingerprint(cpu=cpu, gpu=gpu, ram_gb=ram, storage_tb=storage)
+    gpu_vram = None
+    if gpu_match:
+        tail = lower[gpu_match.start():gpu_match.end() + 40]
+        vm = re.search(r"\b(4|6|8|10|12|16|20|24|32)\s*gb\s*(?:gddr\d+x?)?\b", tail, re.I)
+        if vm:
+            gpu_vram = int(vm.group(1))
+
+    return PCFingerprint(cpu=cpu, gpu=gpu, ram_gb=ram, storage_tb=storage, gpu_vram_gb=gpu_vram)
+
+
+def comparison_score(target: PCFingerprint, other: PCFingerprint) -> tuple[int, str, list[str]]:
+    """Return a conservative 0-100 hardware similarity score and match tier."""
+    score = 0
+    reasons: list[str] = []
+
+    # CPU and GPU are mandatory for a trustworthy prebuilt-PC comparison.
+    if not target.cpu or not target.gpu or not other.cpu or not other.gpu:
+        return 0, "REJECT", ["missing CPU/GPU"]
+
+    if _component_token(target.cpu) == _component_token(other.cpu):
+        score += 40; reasons.append("CPU exact")
+    else:
+        return 0, "REJECT", ["CPU mismatch"]
+
+    if _component_token(target.gpu) == _component_token(other.gpu):
+        score += 40; reasons.append("GPU exact")
+    else:
+        return 0, "REJECT", ["GPU mismatch"]
+
+    if target.gpu_vram_gb is not None and other.gpu_vram_gb is not None:
+        if target.gpu_vram_gb == other.gpu_vram_gb:
+            score += 5; reasons.append("VRAM exact")
+        else:
+            score -= 8; reasons.append("VRAM mismatch")
+
+    if target.ram_gb is not None and other.ram_gb is not None:
+        if target.ram_gb == other.ram_gb:
+            score += 7; reasons.append("RAM exact")
+        elif other.ram_gb > target.ram_gb:
+            score += 4; reasons.append("RAM higher")
+        else:
+            score -= 8; reasons.append("RAM lower")
+
+    if target.storage_tb is not None and other.storage_tb is not None:
+        if abs(target.storage_tb - other.storage_tb) < 0.01:
+            score += 5; reasons.append("storage exact")
+        elif other.storage_tb > target.storage_tb:
+            score += 3; reasons.append("storage higher")
+        else:
+            score -= 6; reasons.append("storage lower")
+
+    # Exact CPU/GPU already earns 80. Missing secondary specs lower certainty but
+    # should not throw away otherwise excellent market evidence.
+    score = max(0, min(100, score))
+    if score >= 90:
+        tier = "EXACT"
+    elif score >= 75:
+        tier = "STRONG"
+    elif score >= 60:
+        tier = "RELATED"
+    else:
+        tier = "REJECT"
+    return score, tier, reasons
 
 
 def comparable(target: PCFingerprint, other: PCFingerprint) -> bool:
-    if target.confidence < 2 or other.confidence < 2:
-        return False
-    if target.cpu and other.cpu and _compact(target.cpu) != _compact(other.cpu):
-        return False
-    if target.gpu and other.gpu and _compact(target.gpu) != _compact(other.gpu):
-        return False
-    if target.ram_gb and other.ram_gb and other.ram_gb < target.ram_gb:
-        return False
-    return True
+    score, tier, _ = comparison_score(target, other)
+    return score >= 75 and tier in {"EXACT", "STRONG"}
 
 
 def market_value(tiktok_price: float, target: PCFingerprint, listings: list[MarketListing]) -> dict:
-    matches = []
+    ranked: list[tuple[MarketListing, int, str, list[str]]] = []
+    rejected = 0
     for listing in listings:
         fp = listing.fingerprint or fingerprint_pc(listing.title)
-        if comparable(target, fp):
-            matches.append(listing)
-    prices = [x.price for x in matches if x.price > 0]
-    if not prices:
-        return {"status": "NO_COMPARABLES", "confidence": 0, "comparables": []}
+        listing.fingerprint = fp
+        score, tier, reasons = comparison_score(target, fp)
+        if score >= 75 and tier in {"EXACT", "STRONG"} and listing.price > 0:
+            ranked.append((listing, score, tier, reasons))
+        else:
+            rejected += 1
+
+    if not ranked:
+        return {
+            "status": "NO_COMPARABLES", "confidence": 0, "comparables": [],
+            "ranked_comparables": [], "rejected_count": rejected,
+        }
+
+    # De-duplicate identical retailer/title/price results before calculating market value.
+    deduped: list[tuple[MarketListing, int, str, list[str]]] = []
+    seen: set[tuple[str, str, float]] = set()
+    for row in sorted(ranked, key=lambda x: x[1], reverse=True):
+        listing = row[0]
+        key = (listing.retailer.lower(), _compact(listing.title), round(listing.price, 2))
+        if key not in seen:
+            seen.add(key); deduped.append(row)
+
+    # Prefer exact matches when there are at least two; otherwise use exact + strong.
+    exact = [row for row in deduped if row[2] == "EXACT"]
+    used = exact if len(exact) >= 2 else deduped
+    prices = [row[0].price for row in used]
     typical = float(median(prices))
     saving = typical - tiktok_price
     saving_pct = saving / typical * 100 if typical else 0.0
-    confidence = min(100, 35 + len(prices) * 15 + min(target.confidence, 4) * 5)
+    avg_match = sum(row[1] for row in used) / len(used)
+    confidence = min(100, round(30 + min(len(used), 5) * 8 + avg_match * 0.3))
+
     if saving_pct >= 20:
         verdict = "EXCEPTIONAL MARKET VALUE"
     elif saving_pct >= 10:
@@ -104,6 +189,7 @@ def market_value(tiktok_price: float, target: PCFingerprint, listings: list[Mark
         verdict = "ABOVE MARKET"
     else:
         verdict = "AROUND MARKET"
+
     return {
         "status": "OK",
         "typical_price": typical,
@@ -113,5 +199,12 @@ def market_value(tiktok_price: float, target: PCFingerprint, listings: list[Mark
         "saving_pct": saving_pct,
         "verdict": verdict,
         "confidence": confidence,
-        "comparables": matches,
+        "comparables": [row[0] for row in used],
+        "ranked_comparables": [
+            {"listing": row[0], "match_score": row[1], "match_tier": row[2], "match_reasons": row[3]}
+            for row in used
+        ],
+        "exact_count": sum(1 for row in used if row[2] == "EXACT"),
+        "strong_count": sum(1 for row in used if row[2] == "STRONG"),
+        "rejected_count": rejected,
     }
