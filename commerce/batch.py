@@ -4,7 +4,7 @@ import argparse
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .scoring import score_deal
 from .store import CommerceStore
@@ -17,21 +17,38 @@ def _change(current: float | int | None, previous: float | int | None):
     return current - previous
 
 
-def ingest_discovery_payload(payload: Any, store: CommerceStore | None = None) -> list[dict]:
-    """Discover, normalize, compare, score and persist every usable TikTok product."""
+def _raw_product_id(raw_product: dict) -> str:
+    return str(raw_product.get("product_id") or raw_product.get("productId") or "")
+
+
+def ingest_products(products: Iterable[dict], store: CommerceStore | None = None) -> list[dict]:
+    """Normalize, compare, score and persist unique products once per sweep."""
     store = store or CommerceStore()
     results: list[dict] = []
+    seen: set[str] = set()
 
-    for raw_product in discover_products(payload):
+    for raw_product in products:
+        product_id = _raw_product_id(raw_product)
+        if product_id and product_id in seen:
+            continue
+        if product_id:
+            seen.add(product_id)
+
         try:
             item = normalize_product(raw_product)
         except (TypeError, ValueError) as exc:
             results.append({
                 "status": "skipped",
-                "product_id": str(raw_product.get("product_id") or raw_product.get("productId") or ""),
+                "product_id": product_id,
                 "error": str(exc),
             })
             continue
+
+        # Normalization may reveal an ID that was not obvious in the raw shape.
+        if item.product_id and item.product_id != product_id:
+            if item.product_id in seen:
+                continue
+            seen.add(item.product_id)
 
         history = store.price_history(item.source, item.product_id)
         previous = store.latest_observation(item.source, item.product_id)
@@ -65,6 +82,11 @@ def ingest_discovery_payload(payload: Any, store: CommerceStore | None = None) -
         })
 
     return results
+
+
+def ingest_discovery_payload(payload: Any, store: CommerceStore | None = None) -> list[dict]:
+    """Discover and ingest every unique usable TikTok product in one payload."""
+    return ingest_products(discover_products(payload), store)
 
 
 def main() -> None:
