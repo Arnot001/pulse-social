@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterable
 
 from .scoring import score_deal
@@ -19,6 +21,50 @@ def _change(current: float | int | None, previous: float | int | None):
 
 def _raw_product_id(raw_product: dict) -> str:
     return str(raw_product.get("product_id") or raw_product.get("productId") or "")
+
+
+def _parse_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _history_intelligence(item, history: list[dict], previous: dict | None) -> dict:
+    prices = [float(row["effective_price"]) for row in history if row.get("effective_price") is not None]
+    historical_low = min(prices) if prices else None
+    historical_high = max(prices) if prices else None
+    historical_median = median(prices) if prices else None
+    is_new_low = historical_low is not None and item.effective_price < historical_low - 0.005
+
+    elapsed_hours = None
+    sales_velocity_per_day = None
+    if previous:
+        current_time = _parse_time(item.observed_at)
+        previous_time = _parse_time(previous.get("observed_at"))
+        if current_time and previous_time:
+            seconds = (current_time - previous_time).total_seconds()
+            if seconds > 0:
+                elapsed_hours = seconds / 3600
+                previous_sold = previous.get("sold_count")
+                if item.sold_count is not None and previous_sold is not None:
+                    sold_delta = item.sold_count - int(previous_sold)
+                    sales_velocity_per_day = sold_delta / (seconds / 86400)
+
+    return {
+        "historical_low": historical_low,
+        "historical_high": historical_high,
+        "historical_median": historical_median,
+        "is_new_low": is_new_low,
+        "elapsed_hours": elapsed_hours,
+        "sales_velocity_per_day": sales_velocity_per_day,
+        "history_count": len(prices),
+    }
 
 
 def ingest_products(products: Iterable[dict], store: CommerceStore | None = None) -> list[dict]:
@@ -37,14 +83,9 @@ def ingest_products(products: Iterable[dict], store: CommerceStore | None = None
         try:
             item = normalize_product(raw_product)
         except (TypeError, ValueError) as exc:
-            results.append({
-                "status": "skipped",
-                "product_id": product_id,
-                "error": str(exc),
-            })
+            results.append({"status": "skipped", "product_id": product_id, "error": str(exc)})
             continue
 
-        # Normalization may reveal an ID that was not obvious in the raw shape.
         if item.product_id and item.product_id != product_id:
             if item.product_id in seen:
                 continue
@@ -52,6 +93,7 @@ def ingest_products(products: Iterable[dict], store: CommerceStore | None = None
 
         history = store.price_history(item.source, item.product_id)
         previous = store.latest_observation(item.source, item.product_id)
+        intelligence = _history_intelligence(item, history, previous)
         score = score_deal(item, history)
 
         previous_price = previous.get("effective_price") if previous else None
@@ -79,6 +121,7 @@ def ingest_products(products: Iterable[dict], store: CommerceStore | None = None
             "deal_score": score.total,
             "score": asdict(score),
             "url": item.url,
+            **intelligence,
         })
 
     return results
