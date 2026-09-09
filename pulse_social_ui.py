@@ -151,7 +151,6 @@ def delete_own_post(page, article, dry_run, delay, handle, mode):
 
 def undo_repost(page, article, dry_run, delay):
     text = safe_text(article)
-    # On /reposts, visible wording is not trusted. The active unretweet control is the positive proof.
     button = article.locator('[data-testid="unretweet"]').first
     if button.count() == 0: return False
     status = repost_status(article); status_id = status[1] if status else "unknown"
@@ -159,9 +158,7 @@ def undo_repost(page, article, dry_run, delay):
         ui_log(f"PREVIEW REPOST candidate [{status_id}]:"); ui_log(text[:220].replace("\n", " ")); return True
     button.click(timeout=4000); time.sleep(0.4)
     undo = page.get_by_role("menuitem", name="Undo repost", exact=True)
-    if undo.count() == 0:
-        # X occasionally renders this action outside the normal menu role; keep it scoped to visible text as fallback.
-        undo = page.get_by_text("Undo repost", exact=True)
+    if undo.count() == 0: undo = page.get_by_text("Undo repost", exact=True)
     if undo.count() == 0:
         close_menu(page); ui_log(f"Undo repost action not found for status {status_id}"); return False
     undo.first.click(timeout=4000)
@@ -178,7 +175,7 @@ def cleaner_worker(settings):
     max_actions = int(settings["max_actions"]); delay = float(settings["delay"]); refresh_every = int(settings["refresh_every"])
     if not handle: ui_log("Enter your X handle first."); set_run_state("idle"); return
     set_run_state("attaching", dry_run, mode, max_actions)
-    url = f"https://x.com/{handle}/likes" if mode == "likes" else f"https://x.com/{handle}/with_replies" if mode == "replies" else f"https://x.com/{handle}/reposts" if mode == "reposts" else f"https://x.com/{handle}"
+    url = "https://x.com/i/history/likes" if mode == "likes" else f"https://x.com/{handle}/with_replies" if mode == "replies" else f"https://x.com/{handle}/reposts" if mode == "reposts" else f"https://x.com/{handle}"
     ui_log(f"Attaching to your existing Brave session on port {CDP_PORT}...")
     try:
         with sync_playwright() as p:
@@ -200,6 +197,7 @@ def cleaner_worker(settings):
             set_run_state("running", dry_run, mode, max_actions)
             ui_log(f"Mode: {mode} | Dry run: {dry_run} | Max actions: {max_actions}"); ui_log("Cleanup started.")
             if mode == "reposts": ui_log("Repost safety: dedicated /reposts page + active repost control required.")
+            if mode == "likes": ui_log("Like safety: private History/Likes page + active unlike control required.")
             actions = 0; stale_rounds = 0; seen_items = set()
             while actions < max_actions and not stop_event.is_set():
                 articles = page.locator("article"); count = articles.count()
