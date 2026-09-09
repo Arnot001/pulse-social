@@ -40,6 +40,16 @@ def safe_text(locator):
 def is_repost(text):
     lower = text.lower(); return "you reposted" in lower or " reposted " in lower or lower.startswith("reposted")
 
+def is_reply_article(article):
+    """Conservative reply check: only treat an article as a reply when X renders explicit reply context."""
+    text = safe_text(article)
+    if "replying to" in text.lower(): return True
+    try:
+        reply_context = article.get_by_text("Replying to", exact=False)
+        if reply_context.count() > 0: return True
+    except Exception: pass
+    return False
+
 def parse_status_href(href):
     if not href: return None
     try:
@@ -104,10 +114,13 @@ def delete_own_post(page, article, dry_run, delay, handle, mode):
     if not owned:
         ui_log("Skipped article: no exact authored status link for your handle")
         return False
+    if mode == "replies" and not is_reply_article(article):
+        return False
     more = article.locator('[aria-label="More"]').first
     if more.count() == 0: return False
     if dry_run:
-        ui_log(f"PREVIEW {mode[:-1].upper() if mode.endswith('s') else mode.upper()} candidate [{owned[1]}]:")
+        label = {"posts": "POST", "replies": "REPLY"}.get(mode, mode.upper())
+        ui_log(f"PREVIEW {label} candidate [{owned[1]}]:")
         ui_log(text[:220].replace("\n", " "))
         return True
     more.click(timeout=4000)
