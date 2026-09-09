@@ -8,7 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .categories import TikTokCategory, children_of, fetch_categories, roots
+from ..pc_market import fingerprint_pc, market_value
+from ..pc_market_sources import collect_market_references
+from .categories import children_of, fetch_categories, roots
 from .category_collector import collect_category
 from .notifications import alert_message, load_settings, save_settings, send_discord, send_telegram
 from .product_collector import collect_product
@@ -18,7 +20,7 @@ BG="#07090f"; PANEL="#0d111b"; PANEL_2="#121827"; BORDER="#20283a"; TEXT="#f5f7f
 
 
 def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
-    window=tk.Toplevel(parent); window.title("Pulse Social — TikTok Shop"); window.geometry("1000x760"); window.minsize(850,680); window.configure(bg=BG)
+    window=tk.Toplevel(parent); window.title("Pulse Social — TikTok Shop"); window.geometry("1080x780"); window.minsize(900,700); window.configure(bg=BG)
     categories=[]; maps=[{}, {}, {}]; results_by_iid={}; stop_watch=threading.Event(); last_checked={}
     main_var=tk.StringVar(); sub_var=tk.StringVar(); leaf_var=tk.StringVar(); status_var=tk.StringVar(value="CATEGORY TAXONOMY NOT LOADED")
     style=ttk.Style(window)
@@ -33,8 +35,8 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
     tk.Label(card,textvariable=status_var,fg=SUCCESS,bg=PANEL,font=("Consolas",8,"bold")).grid(row=4,column=0,columnspan=4,sticky="w",padx=18,pady=(6,12))
     actions=tk.Frame(window,bg=BG); actions.pack(fill="x",padx=26,pady=(4,6))
     def button(parent,text,command,accent=False): return tk.Button(parent,text=text,command=command,bg=ACCENT if accent else PANEL_2,fg=TEXT,activebackground=ACCENT,activeforeground="white",relief="flat",bd=0,padx=13,pady=8,font=("Segoe UI",9,"bold"),cursor="hand2")
-    results_frame=tk.Frame(window,bg=PANEL); results_frame.pack(fill="both",expand=True,padx=26,pady=(2,4)); cols=("score","price","move","sold","product"); tree=ttk.Treeview(results_frame,columns=cols,show="headings",height=10,style="Pulse.Treeview")
-    for col,title,width in (("score","Score",55),("price","Price",90),("move","Movement",180),("sold","Sold",70),("product","Product",520)): tree.heading(col,text=title); tree.column(col,width=width,anchor="w",stretch=(col=="product"))
+    results_frame=tk.Frame(window,bg=PANEL); results_frame.pack(fill="both",expand=True,padx=26,pady=(2,4)); cols=("score","price","market","move","sold","product"); tree=ttk.Treeview(results_frame,columns=cols,show="headings",height=10,style="Pulse.Treeview")
+    for col,title,width in (("score","Score",50),("price","TikTok",90),("market","Market Value",150),("move","Movement",145),("sold","Sold",60),("product","Product",500)): tree.heading(col,text=title); tree.column(col,width=width,anchor="w",stretch=(col=="product"))
     scroll=ttk.Scrollbar(results_frame,orient="vertical",command=tree.yview); tree.configure(yscrollcommand=scroll.set); scroll.pack(side="right",fill="y"); tree.pack(side="left",fill="both",expand=True)
     log_head=tk.Frame(window,bg=BG); log_head.pack(fill="x",padx=26,pady=(4,2)); tk.Label(log_head,text="ACTIVITY / WATCH ALERTS",fg=TEXT,bg=BG,font=("Segoe UI",10,"bold")).pack(side="left"); log=tk.Text(window,height=7,bg="#080c13",fg="#cbd3df",insertbackground=TEXT,relief="flat",bd=0,font=("Consolas",9),padx=10,pady=8,wrap="word"); log.pack(fill="x",padx=26,pady=(0,18))
     def write(msg):
@@ -73,7 +75,9 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
             move=[]
             if item.get("is_new_low"): move.append("NEW LOW")
             if item.get("price_change") not in (None,0): move.append(f"{item['price_change']:+.2f} ({item.get('price_change_pct',0):+.1f}%)")
-            iid=tree.insert("","end",values=(item.get("deal_score",""),f"{item.get('currency','GBP')} {item.get('price',0):.2f}"," | ".join(move),item.get("sold_count",""),item.get("title",""))); results_by_iid[iid]=item
+            market=item.get("market_value") or {}; market_text=""
+            if market.get("status")=="OK": market_text=f"{market.get('saving_pct',0):+.0f}% vs market"
+            iid=tree.insert("","end",values=(item.get("deal_score",""),f"{item.get('currency','GBP')} {item.get('price',0):.2f}",market_text," | ".join(move),item.get("sold_count",""),item.get("title",""))); results_by_iid[iid]=item
     def selected_result():
         sel=tree.selection(); return results_by_iid.get(sel[0]) if sel else None
     def open_selected(*_):
@@ -91,7 +95,23 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
         interval=simpledialog.askinteger("Watch interval","Check every how many minutes?",parent=window,initialvalue=15,minvalue=1,maxvalue=1440)
         if interval is None: return
         upsert_watch(ProductWatch(product_id=str(item.get("product_id","")),title=item.get("title",""),url=item.get("url",""),interval_minutes=interval)); status_var.set(f"WATCHING // every {interval} min"); write(f"WATCH ADDED | {item.get('product_id')} | every {interval} min | price drops + rises | {item.get('url')}")
-    menu=tk.Menu(window,tearoff=0,bg=PANEL_2,fg=TEXT); menu.add_command(label="Open Product",command=open_selected); menu.add_command(label="Copy Product Link",command=copy_link); menu.add_command(label="Copy Product ID",command=copy_id); menu.add_separator(); menu.add_command(label="Add to Watchlist",command=add_watch)
+    def compare_market():
+        item=selected_result()
+        if not item: return
+        def worker():
+            try:
+                fp=fingerprint_pc(item.get("title", ""), item.get("specs") or {})
+                if fp.confidence < 2:
+                    write(f"MARKET VALUE | {item.get('product_id')} | insufficient PC specification confidence"); return
+                window.after(0,lambda:status_var.set("CHECKING UK PC MARKET...")); refs=collect_market_references(fp); value=market_value(float(item.get("price",0)),fp,refs); item["market_value"]=value
+                if value.get("status")!="OK":
+                    write(f"MARKET VALUE | {fp.cpu} | {fp.gpu} | no reliable comparable retailer prices found"); window.after(0,lambda:status_var.set("NO RELIABLE MARKET COMPARABLES")); return
+                lines=[f"{x.retailer}: GBP {x.price:.2f} | {x.title}" for x in value["comparables"]]
+                summary=(f"{value['verdict']} | TikTok GBP {item['price']:.2f} | typical GBP {value['typical_price']:.2f} | "f"range GBP {value['market_low']:.2f}-GBP {value['market_high']:.2f} | saving GBP {value['saving']:.2f} ({value['saving_pct']:+.1f}%) | confidence {value['confidence']}/100")
+                write("MARKET VALUE | "+summary); [write("  "+line) for line in lines]; window.after(0,lambda:status_var.set(value["verdict"])); window.after(0,lambda:populate(list(results_by_iid.values())))
+            except Exception as exc: write(f"MARKET VALUE ERROR | {exc}"); window.after(0,lambda:status_var.set("MARKET CHECK FAILED"))
+        threading.Thread(target=worker,daemon=True).start()
+    menu=tk.Menu(window,tearoff=0,bg=PANEL_2,fg=TEXT); menu.add_command(label="Open Product",command=open_selected); menu.add_command(label="Copy Product Link",command=copy_link); menu.add_command(label="Copy Product ID",command=copy_id); menu.add_separator(); menu.add_command(label="Compare UK Market Price",command=compare_market); menu.add_command(label="Add to Watchlist",command=add_watch)
     def popup(event):
         iid=tree.identify_row(event.y)
         if iid: tree.selection_set(iid); menu.tk_popup(event.x_root,event.y_root)
@@ -158,9 +178,7 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
         def price_alerts():
             watch=selected_watch()
             if not watch: return
-            watch.any_drop=messagebox.askyesno("Price drops","Alert when this product price drops?",parent=dialog)
-            watch.any_rise=messagebox.askyesno("Price rises","Alert when this product price rises?",parent=dialog)
-            upsert_watch(watch); reload()
+            watch.any_drop=messagebox.askyesno("Price drops","Alert when this product price drops?",parent=dialog); watch.any_rise=messagebox.askyesno("Price rises","Alert when this product price rises?",parent=dialog); upsert_watch(watch); reload()
         wt.pack(fill="both",expand=True,padx=14,pady=14); bar=tk.Frame(dialog,bg=PANEL); bar.pack(fill="x",padx=14,pady=(0,14)); button(bar,"REMOVE",remove).pack(side="left"); button(bar,"PRICE ALERTS",price_alerts).pack(side="left",padx=8); button(bar,"SET DISCORD / TELEGRAM",channels,True).pack(side="left",padx=8); reload()
     refresh_btn=button(actions,"REFRESH CATEGORIES",refresh); refresh_btn.pack(side="left",padx=(0,8)); collect_btn=button(actions,"COLLECT CATEGORY",collect,True); collect_btn.pack(side="left",padx=8); collect_btn.config(state="disabled"); button(actions,"WATCHLIST",manage_watchlist).pack(side="left",padx=8); button(actions,"ALERT SETTINGS",notification_settings).pack(side="left",padx=8)
     main_box.bind("<<ComboboxSelected>>",update_subs); sub_box.bind("<<ComboboxSelected>>",update_leafs); leaf_box.bind("<<ComboboxSelected>>",lambda _e:status_var.set(f"READY // {selected_category().name}" if selected_category() else "SELECT A CATEGORY"))
