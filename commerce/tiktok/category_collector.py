@@ -7,7 +7,7 @@ import time
 from typing import Any
 from urllib.request import Request, urlopen
 
-from ..batch import ingest_discovery_payload
+from ..batch import ingest_products
 from ..store import CommerceStore
 from .discovery import discover_products
 
@@ -36,36 +36,40 @@ def extract_json_payloads(html: str) -> list[Any]:
     return payloads
 
 
-def collect_category(url: str, store: CommerceStore | None = None, html: str | None = None) -> list[dict]:
-    store = store or CommerceStore()
-    html = html if html is not None else fetch_category_page(url)
-    results, seen = [], set()
-    for payload in extract_json_payloads(html):
-        for result in ingest_discovery_payload(payload, store):
-            product_id = result.get("product_id", "")
+def unique_products_from_payloads(payloads: list[Any]) -> list[dict]:
+    """Aggregate a category sweep before any database writes occur."""
+    products: list[dict] = []
+    seen: set[str] = set()
+    for payload in payloads:
+        for product in discover_products(payload):
+            product_id = str(product.get("product_id") or product.get("productId") or "")
             if product_id and product_id in seen:
                 continue
             if product_id:
                 seen.add(product_id)
-            results.append(result)
-    return results
+            products.append(product)
+    return products
+
+
+def collect_category(url: str, store: CommerceStore | None = None, html: str | None = None) -> list[dict]:
+    store = store or CommerceStore()
+    html = html if html is not None else fetch_category_page(url)
+    products = unique_products_from_payloads(extract_json_payloads(html))
+    return ingest_products(products, store)
 
 
 def diagnose_category(url: str) -> tuple[list[dict], list[dict]]:
     html = fetch_category_page(url)
     payloads = extract_json_payloads(html)
-    results = collect_category(url, html=html)
-    diagnostics, seen = [], set()
-    for payload in payloads:
-        for product in discover_products(payload):
-            product_id = str(product.get("product_id") or product.get("productId") or "")
-            if not product_id or product_id in seen:
-                continue
-            seen.add(product_id)
-            diagnostics.append({k: product.get(k) for k in (
-                "product_id", "title", "product_price_info", "sku_info", "sold_info",
-                "rate_info", "seller_info", "product_marketing_info"
-            )})
+    products = unique_products_from_payloads(payloads)
+    results = ingest_products(products)
+    diagnostics = [
+        {k: product.get(k) for k in (
+            "product_id", "title", "product_price_info", "sku_info", "sold_info",
+            "rate_info", "seller_info", "product_marketing_info"
+        )}
+        for product in products
+    ]
     return results, diagnostics
 
 
