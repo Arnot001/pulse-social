@@ -83,6 +83,21 @@ def article_identity(article, handle=None, require_owned=False):
     except Exception: pass
     text = safe_text(article).strip(); return f"text:{text}" if text else None
 
+def repost_status(article):
+    """Return the first status represented by a repost-page article, for logging/dedupe only."""
+    try:
+        links = article.locator('a[href*="/status/"]')
+        for i in range(links.count()):
+            parsed = parse_status_href(links.nth(i).get_attribute("href") or "")
+            if parsed: return parsed
+    except Exception: pass
+    return None
+
+def has_active_repost_control(article):
+    """Positive mechanical proof that the signed-in account currently has this article reposted."""
+    try: return article.locator('[data-testid="unretweet"]').count() > 0
+    except Exception: return False
+
 def log_action(action, text, mode=None):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); preview = text[:180].replace("\n", " ").strip()
     target = {"posts": POST_LOG_FILE, "replies": REPLY_LOG_FILE, "reposts": REPOST_LOG_FILE, "likes": LIKE_LOG_FILE}.get(mode, LOG_FILE)
@@ -114,15 +129,12 @@ def delete_own_post(page, article, dry_run, delay, handle, mode):
     if not owned:
         ui_log("Skipped article: no exact authored status link for your handle")
         return False
-    if mode == "replies" and not is_reply_article(article):
-        return False
+    if mode == "replies" and not is_reply_article(article): return False
     more = article.locator('[aria-label="More"]').first
     if more.count() == 0: return False
     if dry_run:
         label = {"posts": "POST", "replies": "REPLY"}.get(mode, mode.upper())
-        ui_log(f"PREVIEW {label} candidate [{owned[1]}]:")
-        ui_log(text[:220].replace("\n", " "))
-        return True
+        ui_log(f"PREVIEW {label} candidate [{owned[1]}]:"); ui_log(text[:220].replace("\n", " ")); return True
     more.click(timeout=4000)
     menu_delete = page.get_by_role("menuitem", name="Delete", exact=True)
     if menu_delete.count() == 0:
@@ -139,13 +151,22 @@ def delete_own_post(page, article, dry_run, delay, handle, mode):
 
 def undo_repost(page, article, dry_run, delay):
     text = safe_text(article)
-    if not is_repost(text): return False
+    # On /reposts, visible wording is not trusted. The active unretweet control is the positive proof.
     button = article.locator('[data-testid="unretweet"]').first
     if button.count() == 0: return False
-    if dry_run: ui_log("PREVIEW repost candidate:"); ui_log(text[:220].replace("\n", " ")); return True
-    button.click(timeout=3000); time.sleep(0.5); undo = page.get_by_text("Undo repost")
-    if undo.count() == 0: close_menu(page); return False
-    undo.first.click(timeout=3000); log_action("Undid repost", text, "reposts"); ui_log("Undid repost"); time.sleep(delay); return True
+    status = repost_status(article); status_id = status[1] if status else "unknown"
+    if dry_run:
+        ui_log(f"PREVIEW REPOST candidate [{status_id}]:"); ui_log(text[:220].replace("\n", " ")); return True
+    button.click(timeout=4000); time.sleep(0.4)
+    undo = page.get_by_role("menuitem", name="Undo repost", exact=True)
+    if undo.count() == 0:
+        # X occasionally renders this action outside the normal menu role; keep it scoped to visible text as fallback.
+        undo = page.get_by_text("Undo repost", exact=True)
+    if undo.count() == 0:
+        close_menu(page); ui_log(f"Undo repost action not found for status {status_id}"); return False
+    undo.first.click(timeout=4000)
+    log_action(f"Undid repost status {status_id}", text, "reposts"); ui_log(f"Undid repost [{status_id}]"); time.sleep(delay); return True
+
 def unlike_post(page, article, dry_run, delay):
     text = safe_text(article); unlike = article.locator('[data-testid="unlike"]').first
     if unlike.count() == 0: return False
@@ -157,7 +178,7 @@ def cleaner_worker(settings):
     max_actions = int(settings["max_actions"]); delay = float(settings["delay"]); refresh_every = int(settings["refresh_every"])
     if not handle: ui_log("Enter your X handle first."); set_run_state("idle"); return
     set_run_state("attaching", dry_run, mode, max_actions)
-    url = f"https://x.com/{handle}/likes" if mode == "likes" else f"https://x.com/{handle}/with_replies" if mode == "replies" else f"https://x.com/{handle}"
+    url = f"https://x.com/{handle}/likes" if mode == "likes" else f"https://x.com/{handle}/with_replies" if mode == "replies" else f"https://x.com/{handle}/reposts" if mode == "reposts" else f"https://x.com/{handle}"
     ui_log(f"Attaching to your existing Brave session on port {CDP_PORT}...")
     try:
         with sync_playwright() as p:
@@ -171,14 +192,14 @@ def cleaner_worker(settings):
             ui_log("Attached to Brave. Your existing browser login/session is being used.")
             ui_log(f"RUN LOCKED: {'PREVIEW ONLY' if dry_run else 'LIVE ACTIONS'} | {mode} | max {max_actions}")
             ui_log("Click ARM / CONTINUE once to begin.")
-            set_run_state("armed", dry_run, mode, max_actions)
-            continue_event.wait()
+            set_run_state("armed", dry_run, mode, max_actions); continue_event.wait()
             if stop_event.is_set(): ui_log("Stopped before cleanup."); return
             try:
                 if page.url.rstrip("/") != url.rstrip("/"): page.goto(url, wait_until="domcontentloaded")
             except Exception as e: ui_log(f"Could not open target X page: {e}"); return
             set_run_state("running", dry_run, mode, max_actions)
             ui_log(f"Mode: {mode} | Dry run: {dry_run} | Max actions: {max_actions}"); ui_log("Cleanup started.")
+            if mode == "reposts": ui_log("Repost safety: dedicated /reposts page + active repost control required.")
             actions = 0; stale_rounds = 0; seen_items = set()
             while actions < max_actions and not stop_event.is_set():
                 articles = page.locator("article"); count = articles.count()
@@ -203,28 +224,24 @@ def cleaner_worker(settings):
                                 requery_after_mutation = True
                                 if actions % refresh_every == 0: page.reload(wait_until="domcontentloaded"); time.sleep(4)
                                 break
-                        elif identity:
-                            seen_items.add(identity)
+                        elif identity: seen_items.add(identity)
                     except TimeoutError:
                         ui_log("Skipped one: X did not respond in time; it can be retried on a later pass"); close_menu(page)
                     except Exception as e:
                         ui_log(f"Skipped one: {e}"); close_menu(page)
                 if actions >= max_actions or stop_event.is_set(): break
-                if requery_after_mutation:
-                    time.sleep(0.8); continue
+                if requery_after_mutation: time.sleep(0.8); continue
                 try:
                     articles = page.locator("article"); count = articles.count()
                     if count:
-                        articles.nth(count - 1).scroll_into_view_if_needed(timeout=3000)
-                        page.evaluate("window.scrollBy(0, Math.max(700, window.innerHeight * 0.8))")
+                        articles.nth(count - 1).scroll_into_view_if_needed(timeout=3000); page.evaluate("window.scrollBy(0, Math.max(700, window.innerHeight * 0.8))")
                     else: page.mouse.wheel(0, 1800)
                 except Exception: page.mouse.wheel(0, 1600)
                 time.sleep(2)
                 if not acted: stale_rounds += 1; ui_log(f"No new matching actions. Scrolling... | unique seen {len(seen_items)}")
                 if dry_run and stale_rounds >= 8: ui_log("Preview stopped: no new candidates found after repeated scrolling."); break
             ui_log(f"Done. {'Previewed' if dry_run else 'Completed'} {actions} unique action(s).")
-    finally:
-        set_run_state("idle")
+    finally: set_run_state("idle")
 
 def start_session():
     if worker_active.get(): ui_log("A cleanup run is already active. Stop it before starting another."); return
@@ -233,11 +250,9 @@ def start_session():
     if not s["handle"]: messagebox.showerror("Missing handle", "Enter your X handle first."); return
     save_settings(s)
     if not s["dry_run"] and not messagebox.askyesno("LIVE CLEANUP", f"LIVE MODE IS ARMED.\n\nUp to {s['max_actions']} real {s['mode']} actions will run on @{s['handle'].lstrip('@')}.\n\nThe run mode will be LOCKED until it finishes or you press STOP.\n\nContinue?"): return
-    worker_active.set(True); set_controls_locked(True); show_run_mode("attaching", s["dry_run"], s["mode"], s["max_actions"])
-    threading.Thread(target=cleaner_worker, args=(s,), daemon=True).start()
+    worker_active.set(True); set_controls_locked(True); show_run_mode("attaching", s["dry_run"], s["mode"], s["max_actions"]); threading.Thread(target=cleaner_worker, args=(s,), daemon=True).start()
 def continue_cleanup():
-    if not worker_active.get(): return
-    continue_event.set()
+    if worker_active.get(): continue_event.set()
 def stop_cleanup():
     if not worker_active.get(): return
     stop_event.set(); continue_event.set(); ui_log("Stop requested."); status_var.set("STOP REQUESTED // WAITING FOR CURRENT ACTION")
@@ -251,11 +266,8 @@ def poll_logs():
     if changed: log_box.see(tk.END)
     while not run_state_queue.empty():
         state, dry_run, mode, max_actions = run_state_queue.get()
-        if state == "idle":
-            worker_active.set(False); set_controls_locked(False); show_run_mode("idle"); arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
-        else:
-            show_run_mode(state, dry_run, mode, max_actions)
-            arm_btn.config(state="normal" if state == "armed" else "disabled"); stop_btn.config(state="normal")
+        if state == "idle": worker_active.set(False); set_controls_locked(False); show_run_mode("idle"); arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
+        else: show_run_mode(state, dry_run, mode, max_actions); arm_btn.config(state="normal" if state == "armed" else "disabled"); stop_btn.config(state="normal")
     root.after(150, poll_logs)
 def button(parent, text, command, bg=PANEL_2, fg=TEXT, width=None): return tk.Button(parent, text=text, command=command, bg=bg, fg=fg, activebackground=ACCENT, activeforeground="white", relief="flat", bd=0, padx=14, pady=8, width=width, font=("Segoe UI", 9, "bold"), cursor="hand2")
 def field(parent, var, width=12): return tk.Entry(parent, textvariable=var, width=width, bg="#090d15", fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT, font=("Segoe UI", 10))
@@ -282,12 +294,8 @@ def set_controls_locked(locked):
         except Exception: pass
 
 def show_run_mode(state, dry_run=None, mode=None, max_actions=None):
-    if state == "idle":
-        status_var.set("READY // SAFE MODE"); status_label.config(fg=SUCCESS); return
-    label = "PREVIEW // NO CHANGES" if dry_run else "LIVE // REAL ACTIONS"
-    phase = {"attaching":"ATTACHING", "armed":"ARMED", "running":"RUNNING"}.get(state, state.upper())
-    status_var.set(f"{phase} // {label} // {str(mode).upper()} // MAX {max_actions}")
-    status_label.config(fg=SUCCESS if dry_run else DANGER)
+    if state == "idle": status_var.set("READY // SAFE MODE"); status_label.config(fg=SUCCESS); return
+    label = "PREVIEW // NO CHANGES" if dry_run else "LIVE // REAL ACTIONS"; phase = {"attaching":"ATTACHING", "armed":"ARMED", "running":"RUNNING"}.get(state, state.upper())
+    status_var.set(f"{phase} // {label} // {str(mode).upper()} // MAX {max_actions}"); status_label.config(fg=SUCCESS if dry_run else DANGER)
 
-arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
-poll_logs(); root.mainloop()
+arm_btn.config(state="disabled"); stop_btn.config(state="disabled"); poll_logs(); root.mainloop()
