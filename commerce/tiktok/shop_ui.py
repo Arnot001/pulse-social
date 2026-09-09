@@ -90,7 +90,7 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
         if not item: return
         interval=simpledialog.askinteger("Watch interval","Check every how many minutes?",parent=window,initialvalue=15,minvalue=1,maxvalue=1440)
         if interval is None: return
-        upsert_watch(ProductWatch(product_id=str(item.get("product_id","")),title=item.get("title",""),url=item.get("url",""),interval_minutes=interval)); status_var.set(f"WATCHING // every {interval} min"); write(f"WATCH ADDED | {item.get('product_id')} | every {interval} min | {item.get('url')}")
+        upsert_watch(ProductWatch(product_id=str(item.get("product_id","")),title=item.get("title",""),url=item.get("url",""),interval_minutes=interval)); status_var.set(f"WATCHING // every {interval} min"); write(f"WATCH ADDED | {item.get('product_id')} | every {interval} min | price drops + rises | {item.get('url')}")
     menu=tk.Menu(window,tearoff=0,bg=PANEL_2,fg=TEXT); menu.add_command(label="Open Product",command=open_selected); menu.add_command(label="Copy Product Link",command=copy_link); menu.add_command(label="Copy Product ID",command=copy_id); menu.add_separator(); menu.add_command(label="Add to Watchlist",command=add_watch)
     def popup(event):
         iid=tree.identify_row(event.y)
@@ -113,6 +113,7 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
     def reasons_for(watch,item):
         reasons=[]; change=item.get("price_change"); pct=item.get("price_change_pct")
         if watch.any_drop and change is not None and change < -0.005: reasons.append("PRICE DROP")
+        if watch.any_rise and change is not None and change > 0.005: reasons.append("PRICE RISE")
         if watch.new_low and item.get("is_new_low"): reasons.append("NEW OBSERVED LOW")
         if watch.target_price is not None and item.get("price") is not None and item["price"]<=watch.target_price: reasons.append(f"TARGET PRICE {watch.target_price:.2f}")
         if watch.drop_pct is not None and pct is not None and pct<=-abs(watch.drop_pct): reasons.append(f"DROP {abs(watch.drop_pct):.1f}%+")
@@ -140,12 +141,12 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
                 except Exception as exc: write(f"WATCH ERROR | {watch.product_id} | {exc}")
     threading.Thread(target=watch_loop,daemon=True).start()
     def manage_watchlist():
-        dialog=tk.Toplevel(window); dialog.title("TikTok Watchlist"); dialog.geometry("900x420"); dialog.configure(bg=PANEL); mapping={}; cols=("interval","desktop","discord","telegram","product"); wt=ttk.Treeview(dialog,columns=cols,show="headings",style="Pulse.Treeview")
-        for col,title,width in (("interval","Every",70),("desktop","Desktop",70),("discord","Discord",70),("telegram","Telegram",70),("product","Product",570)): wt.heading(col,text=title); wt.column(col,width=width,anchor="w")
+        dialog=tk.Toplevel(window); dialog.title("TikTok Watchlist"); dialog.geometry("960x420"); dialog.configure(bg=PANEL); mapping={}; cols=("interval","drop","rise","desktop","discord","telegram","product"); wt=ttk.Treeview(dialog,columns=cols,show="headings",style="Pulse.Treeview")
+        for col,title,width in (("interval","Every",65),("drop","Drop",55),("rise","Rise",55),("desktop","Desktop",65),("discord","Discord",65),("telegram","Telegram",65),("product","Product",540)): wt.heading(col,text=title); wt.column(col,width=width,anchor="w")
         def reload():
             mapping.clear()
             for iid in wt.get_children(): wt.delete(iid)
-            for watch in load_watchlist(): mapping[wt.insert("","end",values=(f"{watch.interval_minutes}m","YES" if watch.desktop else "—","YES" if watch.discord else "—","YES" if watch.telegram else "—",watch.title))]=watch
+            for watch in load_watchlist(): mapping[wt.insert("","end",values=(f"{watch.interval_minutes}m","YES" if watch.any_drop else "—","YES" if watch.any_rise else "—","YES" if watch.desktop else "—","YES" if watch.discord else "—","YES" if watch.telegram else "—",watch.title))]=watch
         def selected_watch(): return mapping.get(wt.selection()[0]) if wt.selection() else None
         def remove():
             watch=selected_watch()
@@ -154,7 +155,13 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
             watch=selected_watch()
             if not watch: return
             watch.discord=messagebox.askyesno("Discord","Send Discord alerts for this product?",parent=dialog); watch.telegram=messagebox.askyesno("Telegram","Send Telegram alerts for this product?",parent=dialog); upsert_watch(watch); reload()
-        wt.pack(fill="both",expand=True,padx=14,pady=14); bar=tk.Frame(dialog,bg=PANEL); bar.pack(fill="x",padx=14,pady=(0,14)); button(bar,"REMOVE",remove).pack(side="left"); button(bar,"SET DISCORD / TELEGRAM",channels,True).pack(side="left",padx=8); reload()
+        def price_alerts():
+            watch=selected_watch()
+            if not watch: return
+            watch.any_drop=messagebox.askyesno("Price drops","Alert when this product price drops?",parent=dialog)
+            watch.any_rise=messagebox.askyesno("Price rises","Alert when this product price rises?",parent=dialog)
+            upsert_watch(watch); reload()
+        wt.pack(fill="both",expand=True,padx=14,pady=14); bar=tk.Frame(dialog,bg=PANEL); bar.pack(fill="x",padx=14,pady=(0,14)); button(bar,"REMOVE",remove).pack(side="left"); button(bar,"PRICE ALERTS",price_alerts).pack(side="left",padx=8); button(bar,"SET DISCORD / TELEGRAM",channels,True).pack(side="left",padx=8); reload()
     refresh_btn=button(actions,"REFRESH CATEGORIES",refresh); refresh_btn.pack(side="left",padx=(0,8)); collect_btn=button(actions,"COLLECT CATEGORY",collect,True); collect_btn.pack(side="left",padx=8); collect_btn.config(state="disabled"); button(actions,"WATCHLIST",manage_watchlist).pack(side="left",padx=8); button(actions,"ALERT SETTINGS",notification_settings).pack(side="left",padx=8)
     main_box.bind("<<ComboboxSelected>>",update_subs); sub_box.bind("<<ComboboxSelected>>",update_leafs); leaf_box.bind("<<ComboboxSelected>>",lambda _e:status_var.set(f"READY // {selected_category().name}" if selected_category() else "SELECT A CATEGORY"))
     def close(): stop_watch.set(); window.destroy()
