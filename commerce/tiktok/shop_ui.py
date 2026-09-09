@@ -9,7 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from ..pc_market import fingerprint_pc, market_value
-from ..pc_market_sources import collect_market_references
+from ..pc_market_sources import collect_market_references, market_diagnostics
 from .categories import children_of, fetch_categories, roots
 from .category_collector import collect_category
 from .notifications import alert_message, load_settings, save_settings, send_discord, send_telegram
@@ -105,7 +105,9 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
                     write(f"MARKET VALUE | {item.get('product_id')} | insufficient PC specification confidence"); return
                 window.after(0,lambda:status_var.set("CHECKING UK PC MARKET...")); refs=collect_market_references(fp); value=market_value(float(item.get("price",0)),fp,refs); item["market_value"]=value
                 if value.get("status")!="OK":
-                    write(f"MARKET VALUE | {fp.cpu} | {fp.gpu} | no reliable comparable retailer prices found"); window.after(0,lambda:status_var.set("NO RELIABLE MARKET COMPARABLES")); return
+                    write(f"MARKET VALUE | {fp.cpu} | {fp.gpu} | no reliable comparable retailer prices found")
+                    for diag in market_diagnostics(): write("  SOURCE | "+diag)
+                    window.after(0,lambda:status_var.set("NO RELIABLE MARKET COMPARABLES")); return
                 lines=[f"{x.retailer}: GBP {x.price:.2f} | {x.title}" for x in value["comparables"]]
                 summary=(f"{value['verdict']} | TikTok GBP {item['price']:.2f} | typical GBP {value['typical_price']:.2f} | "f"range GBP {value['market_low']:.2f}-GBP {value['market_high']:.2f} | saving GBP {value['saving']:.2f} ({value['saving_pct']:+.1f}%) | confidence {value['confidence']}/100")
                 write("MARKET VALUE | "+summary); [write("  "+line) for line in lines]; window.after(0,lambda:status_var.set(value["verdict"])); window.after(0,lambda:populate(list(results_by_iid.values())))
@@ -156,7 +158,8 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
                 try:
                     item=collect_product(watch.url)
                     if item.get("status")!="recorded": write(f"WATCH SKIP | {watch.product_id} | {item.get('error','not recorded')}"); continue
-                    reasons=reasons_for(watch,item); write(f"WATCH CHECK | {watch.product_id} | {item.get('currency','GBP')} {item.get('price',0):.2f}"+(f" | {' + '.join(reasons)}" if reasons else ""))
+                    source_note=" | CATEGORY FALLBACK" if item.get("watch_price_source")=="stored_category_observation" else ""
+                    reasons=reasons_for(watch,item); write(f"WATCH CHECK | {watch.product_id} | {item.get('currency','GBP')} {item.get('price',0):.2f}{source_note}"+(f" | {' + '.join(reasons)}" if reasons else ""))
                     if reasons: send_alerts(watch,item,reasons)
                 except Exception as exc: write(f"WATCH ERROR | {watch.product_id} | {exc}")
     threading.Thread(target=watch_loop,daemon=True).start()
