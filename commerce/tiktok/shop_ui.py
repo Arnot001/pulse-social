@@ -101,15 +101,14 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
         def worker():
             try:
                 fp=fingerprint_pc(item.get("title", ""), item.get("specs") or {})
-                if fp.confidence < 2:
-                    write(f"MARKET VALUE | {item.get('product_id')} | insufficient PC specification confidence"); return
+                if fp.confidence < 2: write(f"MARKET VALUE | {item.get('product_id')} | insufficient PC specification confidence"); return
                 window.after(0,lambda:status_var.set("CHECKING UK PC MARKET...")); refs=collect_market_references(fp); value=market_value(float(item.get("price",0)),fp,refs); item["market_value"]=value
                 if value.get("status")!="OK":
                     write(f"MARKET VALUE | {fp.cpu} | {fp.gpu} | no reliable comparable retailer prices found")
                     for diag in market_diagnostics(): write("  SOURCE | "+diag)
                     window.after(0,lambda:status_var.set("NO RELIABLE MARKET COMPARABLES")); return
                 lines=[f"{x.retailer}: GBP {x.price:.2f} | {x.title}" for x in value["comparables"]]
-                summary=(f"{value['verdict']} | TikTok GBP {item['price']:.2f} | typical GBP {value['typical_price']:.2f} | "f"range GBP {value['market_low']:.2f}-GBP {value['market_high']:.2f} | saving GBP {value['saving']:.2f} ({value['saving_pct']:+.1f}%) | confidence {value['confidence']}/100")
+                summary=(f"{value['verdict']} | TikTok GBP {item['price']:.2f} | typical GBP {value['typical_price']:.2f} | range GBP {value['market_low']:.2f}-GBP {value['market_high']:.2f} | saving GBP {value['saving']:.2f} ({value['saving_pct']:+.1f}%) | confidence {value['confidence']}/100")
                 write("MARKET VALUE | "+summary); [write("  "+line) for line in lines]; window.after(0,lambda:status_var.set(value["verdict"])); window.after(0,lambda:populate(list(results_by_iid.values())))
             except Exception as exc: write(f"MARKET VALUE ERROR | {exc}"); window.after(0,lambda:status_var.set("MARKET CHECK FAILED"))
         threading.Thread(target=worker,daemon=True).start()
@@ -164,24 +163,38 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
                 except Exception as exc: write(f"WATCH ERROR | {watch.product_id} | {exc}")
     threading.Thread(target=watch_loop,daemon=True).start()
     def manage_watchlist():
-        dialog=tk.Toplevel(window); dialog.title("TikTok Watchlist"); dialog.geometry("960x420"); dialog.configure(bg=PANEL); mapping={}; cols=("interval","drop","rise","desktop","discord","telegram","product"); wt=ttk.Treeview(dialog,columns=cols,show="headings",style="Pulse.Treeview")
+        dialog=tk.Toplevel(window); dialog.title("TikTok Watchlist"); dialog.geometry("960x420"); dialog.configure(bg=PANEL); dialog.transient(window); mapping={}; cols=("interval","drop","rise","desktop","discord","telegram","product"); wt=ttk.Treeview(dialog,columns=cols,show="headings",style="Pulse.Treeview",selectmode="browse")
         for col,title,width in (("interval","Every",65),("drop","Drop",55),("rise","Rise",55),("desktop","Desktop",65),("discord","Discord",65),("telegram","Telegram",65),("product","Product",540)): wt.heading(col,text=title); wt.column(col,width=width,anchor="w")
-        def reload():
+        def reload(select_product_id=None):
             mapping.clear()
             for iid in wt.get_children(): wt.delete(iid)
-            for watch in load_watchlist(): mapping[wt.insert("","end",values=(f"{watch.interval_minutes}m","YES" if watch.any_drop else "—","YES" if watch.any_rise else "—","YES" if watch.desktop else "—","YES" if watch.discord else "—","YES" if watch.telegram else "—",watch.title))]=watch
+            select_iid=None
+            for watch in load_watchlist():
+                iid=wt.insert("","end",values=(f"{watch.interval_minutes}m","YES" if watch.any_drop else "—","YES" if watch.any_rise else "—","YES" if watch.desktop else "—","YES" if watch.discord else "—","YES" if watch.telegram else "—",watch.title)); mapping[iid]=watch
+                if select_product_id and watch.product_id==select_product_id: select_iid=iid
+            children=wt.get_children()
+            if select_iid is None and children: select_iid=children[0]
+            if select_iid: wt.selection_set(select_iid); wt.focus(select_iid); wt.see(select_iid)
         def selected_watch(): return mapping.get(wt.selection()[0]) if wt.selection() else None
-        def remove():
+        def require_watch():
             watch=selected_watch()
+            if watch is None: messagebox.showinfo("Select a product","Select a watchlist product first.",parent=dialog)
+            return watch
+        def remove():
+            watch=require_watch()
             if watch: remove_watch(watch.product_id); reload()
         def channels():
-            watch=selected_watch()
+            watch=require_watch()
             if not watch: return
-            watch.discord=messagebox.askyesno("Discord","Send Discord alerts for this product?",parent=dialog); watch.telegram=messagebox.askyesno("Telegram","Send Telegram alerts for this product?",parent=dialog); upsert_watch(watch); reload()
+            product_id=watch.product_id
+            watch.discord=messagebox.askyesno("Discord",f"Send Discord alerts for:\n\n{watch.title}?",parent=dialog)
+            watch.telegram=messagebox.askyesno("Telegram",f"Send Telegram alerts for:\n\n{watch.title}?",parent=dialog)
+            upsert_watch(watch); reload(product_id)
         def price_alerts():
-            watch=selected_watch()
+            watch=require_watch()
             if not watch: return
-            watch.any_drop=messagebox.askyesno("Price drops","Alert when this product price drops?",parent=dialog); watch.any_rise=messagebox.askyesno("Price rises","Alert when this product price rises?",parent=dialog); upsert_watch(watch); reload()
+            product_id=watch.product_id
+            watch.any_drop=messagebox.askyesno("Price drops",f"Alert when this product price drops?\n\n{watch.title}",parent=dialog); watch.any_rise=messagebox.askyesno("Price rises",f"Alert when this product price rises?\n\n{watch.title}",parent=dialog); upsert_watch(watch); reload(product_id)
         wt.pack(fill="both",expand=True,padx=14,pady=14); bar=tk.Frame(dialog,bg=PANEL); bar.pack(fill="x",padx=14,pady=(0,14)); button(bar,"REMOVE",remove).pack(side="left"); button(bar,"PRICE ALERTS",price_alerts).pack(side="left",padx=8); button(bar,"SET DISCORD / TELEGRAM",channels,True).pack(side="left",padx=8); reload()
     refresh_btn=button(actions,"REFRESH CATEGORIES",refresh); refresh_btn.pack(side="left",padx=(0,8)); collect_btn=button(actions,"COLLECT CATEGORY",collect,True); collect_btn.pack(side="left",padx=8); collect_btn.config(state="disabled"); button(actions,"WATCHLIST",manage_watchlist).pack(side="left",padx=8); button(actions,"ALERT SETTINGS",notification_settings).pack(side="left",padx=8)
     main_box.bind("<<ComboboxSelected>>",update_subs); sub_box.bind("<<ComboboxSelected>>",update_leafs); leaf_box.bind("<<ComboboxSelected>>",lambda _e:status_var.set(f"READY // {selected_category().name}" if selected_category() else "SELECT A CATEGORY"))
