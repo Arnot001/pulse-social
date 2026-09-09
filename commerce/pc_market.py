@@ -32,7 +32,6 @@ def _compact(value: str) -> str:
 
 
 def _component_token(value: str) -> str:
-    """Normalize CPU/GPU names without collapsing meaningful suffixes such as Ti/XT/GRE."""
     return _compact(value)
 
 
@@ -83,11 +82,9 @@ def fingerprint_pc(title: str, specs: dict | None = None) -> PCFingerprint:
 
 
 def comparison_score(target: PCFingerprint, other: PCFingerprint) -> tuple[int, str, list[str]]:
-    """Return a conservative 0-100 hardware similarity score and match tier."""
     score = 0
     reasons: list[str] = []
 
-    # CPU and GPU are mandatory for a trustworthy prebuilt-PC comparison.
     if not target.cpu or not target.gpu or not other.cpu or not other.gpu:
         return 0, "REJECT", ["missing CPU/GPU"]
 
@@ -104,27 +101,29 @@ def comparison_score(target: PCFingerprint, other: PCFingerprint) -> tuple[int, 
     if target.gpu_vram_gb is not None and other.gpu_vram_gb is not None:
         if target.gpu_vram_gb == other.gpu_vram_gb:
             score += 5; reasons.append("VRAM exact")
+        elif other.gpu_vram_gb < target.gpu_vram_gb:
+            return 0, "REJECT", ["VRAM lower"]
         else:
-            score -= 8; reasons.append("VRAM mismatch")
+            score += 2; reasons.append("VRAM higher")
 
+    # A cheaper market machine with less RAM/storage is not a fair benchmark for
+    # the TikTok configuration. Reject it instead of merely reducing its score.
     if target.ram_gb is not None and other.ram_gb is not None:
+        if other.ram_gb < target.ram_gb:
+            return 0, "REJECT", ["RAM lower"]
         if target.ram_gb == other.ram_gb:
             score += 7; reasons.append("RAM exact")
-        elif other.ram_gb > target.ram_gb:
-            score += 4; reasons.append("RAM higher")
         else:
-            score -= 8; reasons.append("RAM lower")
+            score += 4; reasons.append("RAM higher")
 
     if target.storage_tb is not None and other.storage_tb is not None:
+        if other.storage_tb < target.storage_tb:
+            return 0, "REJECT", ["storage lower"]
         if abs(target.storage_tb - other.storage_tb) < 0.01:
             score += 5; reasons.append("storage exact")
-        elif other.storage_tb > target.storage_tb:
-            score += 3; reasons.append("storage higher")
         else:
-            score -= 6; reasons.append("storage lower")
+            score += 3; reasons.append("storage higher")
 
-    # Exact CPU/GPU already earns 80. Missing secondary specs lower certainty but
-    # should not throw away otherwise excellent market evidence.
     score = max(0, min(100, score))
     if score >= 90:
         tier = "EXACT"
@@ -155,12 +154,8 @@ def market_value(tiktok_price: float, target: PCFingerprint, listings: list[Mark
             rejected += 1
 
     if not ranked:
-        return {
-            "status": "NO_COMPARABLES", "confidence": 0, "comparables": [],
-            "ranked_comparables": [], "rejected_count": rejected,
-        }
+        return {"status": "NO_COMPARABLES", "confidence": 0, "comparables": [], "ranked_comparables": [], "rejected_count": rejected}
 
-    # De-duplicate identical retailer/title/price results before calculating market value.
     deduped: list[tuple[MarketListing, int, str, list[str]]] = []
     seen: set[tuple[str, str, float]] = set()
     for row in sorted(ranked, key=lambda x: x[1], reverse=True):
@@ -169,7 +164,6 @@ def market_value(tiktok_price: float, target: PCFingerprint, listings: list[Mark
         if key not in seen:
             seen.add(key); deduped.append(row)
 
-    # Prefer exact matches when there are at least two; otherwise use exact + strong.
     exact = [row for row in deduped if row[2] == "EXACT"]
     used = exact if len(exact) >= 2 else deduped
     prices = [row[0].price for row in used]
@@ -179,32 +173,17 @@ def market_value(tiktok_price: float, target: PCFingerprint, listings: list[Mark
     avg_match = sum(row[1] for row in used) / len(used)
     confidence = min(100, round(30 + min(len(used), 5) * 8 + avg_match * 0.3))
 
-    if saving_pct >= 20:
-        verdict = "EXCEPTIONAL MARKET VALUE"
-    elif saving_pct >= 10:
-        verdict = "MARKET DEAL"
-    elif saving_pct >= 3:
-        verdict = "GOOD VALUE"
-    elif saving_pct <= -10:
-        verdict = "ABOVE MARKET"
-    else:
-        verdict = "AROUND MARKET"
+    if saving_pct >= 20: verdict = "EXCEPTIONAL MARKET VALUE"
+    elif saving_pct >= 10: verdict = "MARKET DEAL"
+    elif saving_pct >= 3: verdict = "GOOD VALUE"
+    elif saving_pct <= -10: verdict = "ABOVE MARKET"
+    else: verdict = "AROUND MARKET"
 
     return {
-        "status": "OK",
-        "typical_price": typical,
-        "market_low": min(prices),
-        "market_high": max(prices),
-        "saving": saving,
-        "saving_pct": saving_pct,
-        "verdict": verdict,
-        "confidence": confidence,
+        "status": "OK", "typical_price": typical, "market_low": min(prices), "market_high": max(prices),
+        "saving": saving, "saving_pct": saving_pct, "verdict": verdict, "confidence": confidence,
         "comparables": [row[0] for row in used],
-        "ranked_comparables": [
-            {"listing": row[0], "match_score": row[1], "match_tier": row[2], "match_reasons": row[3]}
-            for row in used
-        ],
+        "ranked_comparables": [{"listing": row[0], "match_score": row[1], "match_tier": row[2], "match_reasons": row[3]} for row in used],
         "exact_count": sum(1 for row in used if row[2] == "EXACT"),
-        "strong_count": sum(1 for row in used if row[2] == "STRONG"),
-        "rejected_count": rejected,
+        "strong_count": sum(1 for row in used if row[2] == "STRONG"), "rejected_count": rejected,
     }
