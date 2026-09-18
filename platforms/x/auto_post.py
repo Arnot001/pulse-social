@@ -151,32 +151,40 @@ def _dismiss_x_overlays(page) -> None:
 
 
 def _close_x_composer(page) -> None:
-    """Close the X compose dialog after a successful scheduled post."""
+    """Close any stale X composer left behind after a confirmed post, discarding draft residue."""
     try:
         dialog = page.get_by_role("dialog")
-        if dialog.count() and dialog.first.is_visible():
-            close_button = dialog.first.locator('[aria-label="Close"]').first
-            if close_button.count() and close_button.is_visible():
-                close_button.click(timeout=2500)
-                page.wait_for_timeout(300)
-                return
-    except Exception:
-        pass
-
-    try:
-        close_button = page.locator('[aria-label="Close"]').first
-        if close_button.count() and close_button.is_visible():
-            close_button.click(timeout=2500)
-            page.wait_for_timeout(300)
+        if not dialog.count() or not dialog.first.is_visible():
             return
     except Exception:
-        pass
+        return
 
     try:
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(200)
+        close_button = dialog.first.locator('[aria-label="Close"]').first
+        if close_button.count() and close_button.is_visible():
+            close_button.click(timeout=2500)
+            page.wait_for_timeout(400)
+        else:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
     except Exception:
-        pass
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+        except Exception:
+            return
+
+    # X may offer to save the still-open composer as a draft. We never want
+    # scheduled posts to leave duplicate drafts after the post succeeded.
+    for label in ("Discard", "Delete"):
+        try:
+            action = page.get_by_role("button", name=label, exact=True)
+            if action.count() and action.first.is_visible():
+                action.first.click(timeout=2500)
+                page.wait_for_timeout(300)
+                return
+        except Exception:
+            pass
 
 
 def publish_post(text: str, media_paths: list[str] | None = None) -> None:
@@ -218,8 +226,15 @@ def publish_post(text: str, media_paths: list[str] | None = None) -> None:
             if post_button.is_disabled():
                 raise RuntimeError("X Post button stayed disabled while media was processing.")
             post_button.click(timeout=10000)
-            page.wait_for_timeout(1500)
-            _close_x_composer(page)
+
+            # Normally X closes the composer itself after a successful post.
+            # Give it time to finish before touching the dialog; closing too
+            # quickly can make X preserve the compose state as a draft.
+            try:
+                page.get_by_role("dialog").first.wait_for(state="hidden", timeout=8000)
+            except Exception:
+                page.wait_for_timeout(1200)
+                _close_x_composer(page)
 
 
 def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> None:
