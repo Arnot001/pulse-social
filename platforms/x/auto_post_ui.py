@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+from pathlib import Path
 from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
 
