@@ -16,6 +16,10 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_FILE = APP_DIR / "x_auto_post_queue.json"
 HISTORY_FILE = APP_DIR / "x_auto_post_history.txt"
 CDP_PORTS = (9222, 9223, 9224, 9225)
+BROWSER_USER_DATA_DIRS = (
+    ("Chrome", Path(os.environ["LOCALAPPDATA"]) / "Google" / "Chrome" / "User Data"),
+    ("Brave", Path(os.environ["LOCALAPPDATA"]) / "BraveSoftware" / "Brave-Browser" / "User Data"),
+)
 X_ACTION_LOCK = threading.Lock()
 
 
@@ -69,39 +73,62 @@ def _x_page(context):
     return page
 
 
-def _connect_x_browser(playwright):
-    errors = []
-    fallback = None
+def _candidate_endpoints():
+    seen = set()
+    for label, user_data_dir in BROWSER_USER_DATA_DIRS:
+        port_file = user_data_dir / "DevToolsActivePort"
+        if not port_file.exists():
+            continue
+        try:
+            lines = [line.strip() for line in port_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if len(lines) < 2 or not lines[0].isdigit():
+                continue
+            endpoint = f"ws://127.0.0.1:{lines[0]}{lines[1]}"
+            if endpoint not in seen:
+                seen.add(endpoint)
+                yield label, endpoint
+        except OSError:
+            pass
     for port in CDP_PORTS:
         endpoint = f"http://127.0.0.1:{port}"
+        if endpoint not in seen:
+            seen.add(endpoint)
+            yield f"CDP {port}", endpoint
+
+
+def _connect_x_browser(playwright):
+    fallback = None
+    attempts = []
+    for label, endpoint in _candidate_endpoints():
         try:
-            browser = playwright.chromium.connect_over_cdp(endpoint, timeout=2500)
+            browser = playwright.chromium.connect_over_cdp(endpoint, timeout=3500)
         except Exception as exc:
-            errors.append(f"{port}: {type(exc).__name__}")
+            attempts.append(f"{label}: {type(exc).__name__}")
             continue
         for context in browser.contexts:
             for page in context.pages:
                 try:
                     url = page.url.lower()
                     if "x.com" in url or "twitter.com" in url:
-                        return browser, context, page, port
+                        return browser, context, page, label
                 except Exception:
                     pass
         if fallback is None and browser.contexts:
-            fallback = (browser, browser.contexts[0], None, port)
+            fallback = (browser, browser.contexts[0], label)
     if fallback is not None:
-        browser, context, _page, port = fallback
-        return browser, context, _x_page(context), port
+        browser, context, label = fallback
+        return browser, context, _x_page(context), label
+    detail = "; ".join(attempts) if attempts else "no debugging endpoints discovered"
     raise RuntimeError(
-        "NO CONTROLLABLE X BROWSER FOUND. Open X in a Pulse-controlled Chrome/Brave browser "
-        f"with CDP enabled on one of these local ports: {', '.join(map(str, CDP_PORTS))}."
+        "NO CONTROLLABLE X BROWSER FOUND. X may be open, but Pulse needs that browser's "
+        f"debugging connection to be enabled. Discovery: {detail}."
     )
 
 
 def publish_text(text: str) -> None:
     with X_ACTION_LOCK:
         with sync_playwright() as p:
-            _browser, context, page, _port = _connect_x_browser(p)
+            _browser, context, page, _browser_label = _connect_x_browser(p)
             if not context:
                 raise RuntimeError("Browser attached but no browser context was available.")
             if "x.com" not in page.url.lower():
