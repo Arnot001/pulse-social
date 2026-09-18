@@ -26,8 +26,8 @@ DANGER = "#ff4d67"
 def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     window = tk.Toplevel(parent)
     window.title("Pulse Social — X Auto Post")
-    window.geometry("1180x820")
-    window.minsize(980, 720)
+    window.geometry("1180x760")
+    window.minsize(980, 680)
     window.configure(bg=BG)
 
     stop_event = threading.Event()
@@ -97,7 +97,7 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     # HERO
     hero = tk.Frame(window, bg=BG)
-    hero.pack(fill="x", padx=30, pady=(24, 14))
+    hero.pack(fill="x", padx=30, pady=(18, 10))
     brand = tk.Frame(hero, bg=BG)
     brand.pack(side="left")
     tk.Label(brand, text="PULSE", fg=TEXT, bg=BG, font=("Segoe UI", 28, "bold")).pack(side="left")
@@ -113,7 +113,7 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     # TOP GRID
     top = tk.Frame(window, bg=BG)
-    top.pack(fill="x", padx=30, pady=(0, 12))
+    top.pack(fill="x", padx=30, pady=(0, 8))
     top.grid_columnconfigure(0, weight=3)
     top.grid_columnconfigure(1, weight=1)
 
@@ -122,13 +122,13 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     compose.grid_columnconfigure(0, weight=1)
 
     compose_head = tk.Frame(compose, bg=PANEL)
-    compose_head.grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 8))
+    compose_head.grid(row=0, column=0, sticky="ew", padx=18, pady=(12, 6))
     tk.Label(compose_head, text="COMPOSE", fg=TEXT, bg=PANEL, font=("Segoe UI", 12, "bold")).pack(side="left")
     tk.Label(compose_head, textvariable=char_var, fg=MUTED, bg=PANEL, font=("Consolas", 9)).pack(side="right")
 
     text = tk.Text(
         compose,
-        height=7,
+        height=5,
         bg=PANEL_3,
         fg=TEXT,
         insertbackground=TEXT,
@@ -143,7 +143,7 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     text.grid(row=1, column=0, sticky="ew", padx=18)
 
     schedule = tk.Frame(compose, bg=PANEL)
-    schedule.grid(row=2, column=0, sticky="ew", padx=18, pady=(12, 16))
+    schedule.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 12))
     tk.Label(schedule, text="POST IN", fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).pack(side="left")
     delay = tk.StringVar(value="1")
     delay_entry = tk.Entry(
@@ -183,7 +183,7 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     # QUEUE
     queue_card = tk.Frame(window, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-    queue_card.pack(fill="both", expand=True, padx=30, pady=(0, 12))
+    queue_card.pack(fill="both", expand=True, padx=30, pady=(0, 8))
 
     queue_head = tk.Frame(queue_card, bg=PANEL)
     queue_head.pack(fill="x", padx=16, pady=(12, 8))
@@ -191,7 +191,7 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     tk.Label(queue_head, textvariable=next_var, fg=MUTED, bg=PANEL, font=("Consolas", 9)).pack(side="right")
 
     cols = ("due", "status", "post")
-    tree = ttk.Treeview(queue_card, columns=cols, show="headings", style="Pulse.Treeview", height=8)
+    tree = ttk.Treeview(queue_card, columns=cols, show="headings", style="Pulse.Treeview", height=5)
     for col, title, width in (
         ("due", "DUE", 150),
         ("status", "STATUS", 100),
@@ -207,14 +207,14 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     # ACTIVITY
     activity = tk.Frame(window, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-    activity.pack(fill="x", padx=30, pady=(0, 12))
+    activity.pack(fill="x", padx=30, pady=(0, 8))
     activity_head = tk.Frame(activity, bg=PANEL)
     activity_head.pack(fill="x", padx=14, pady=(10, 6))
     tk.Label(activity_head, text="ACTIVITY", fg=TEXT, bg=PANEL, font=("Segoe UI", 10, "bold")).pack(side="left")
 
     log = tk.Text(
         activity,
-        height=6,
+        height=4,
         bg=PANEL_3,
         fg="#cbd3df",
         insertbackground=TEXT,
@@ -349,7 +349,7 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     # COMMAND BAR
     command = tk.Frame(window, bg=BG)
-    command.pack(fill="x", padx=30, pady=(0, 20))
+    command.pack(fill="x", padx=30, pady=(0, 12))
     button(command, "QUEUE POST", queue_post, accent=True).pack(side="left")
     button(command, "REMOVE SELECTED", remove_selected).pack(side="left", padx=8)
     button(command, "START AUTO POST", start, accent=True).pack(side="right")
