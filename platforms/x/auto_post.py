@@ -193,11 +193,13 @@ def publish_post(text: str, media_paths: list[str] | None = None) -> None:
             _browser, context, page, _browser_label = _connect_x_browser(p)
             if not context:
                 raise RuntimeError("Browser attached but no browser context was available.")
-            if "x.com" not in page.url.lower():
+            if "x.com" not in page.url.lower() or "/home" not in page.url.lower():
                 page.goto("https://x.com/home", wait_until="domcontentloaded")
             _dismiss_x_overlays(page)
-            page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
-            _dismiss_x_overlays(page)
+
+            # Use X's inline Home composer instead of /compose/post. The modal
+            # composer is aggressively autosaved by X and can leave a duplicate
+            # draft after successful media posts.
             editor = page.locator('[data-testid="tweetTextarea_0"]').first
             editor.wait_for(state="visible", timeout=10000)
             if text:
@@ -227,14 +229,9 @@ def publish_post(text: str, media_paths: list[str] | None = None) -> None:
                 raise RuntimeError("X Post button stayed disabled while media was processing.")
             post_button.click(timeout=10000)
 
-            # Normally X closes the composer itself after a successful post.
-            # Give it time to finish before touching the dialog; closing too
-            # quickly can make X preserve the compose state as a draft.
-            try:
-                page.get_by_role("dialog").first.wait_for(state="hidden", timeout=8000)
-            except Exception:
-                page.wait_for_timeout(1200)
-                _close_x_composer(page)
+            # Inline Home composer should reset after a successful post and does
+            # not need modal cleanup. Wait briefly for X to clear the composer.
+            page.wait_for_timeout(1500)
 
 
 def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> None:
