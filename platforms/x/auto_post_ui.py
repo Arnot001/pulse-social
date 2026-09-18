@@ -6,101 +6,361 @@ from datetime import datetime, timedelta
 from tkinter import messagebox, ttk
 
 from .auto_post import add_post, load_queue, remove_post, run_scheduler
+from .browser_session import browser_status
 
-BG="#07090f"; PANEL="#0d111b"; PANEL_2="#121827"; BORDER="#20283a"; TEXT="#f5f7fb"; MUTED="#8993a6"; ACCENT="#ff008c"; SUCCESS="#35d07f"
+BG = "#06070b"
+SURFACE = "#0b0f17"
+PANEL = "#101622"
+PANEL_2 = "#151d2c"
+PANEL_3 = "#0a0e15"
+BORDER = "#242f43"
+TEXT = "#f7f8fb"
+MUTED = "#8e9aae"
+ACCENT = "#ff0a8a"
+ACCENT_2 = "#ff4bb0"
+SUCCESS = "#35d07f"
+WARNING = "#f0b85a"
+DANGER = "#ff4d67"
 
 
 def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
-    window=tk.Toplevel(parent); window.title("Pulse Social — X Auto Post"); window.geometry("980x760"); window.minsize(820,680); window.configure(bg=BG)
-    stop_event=threading.Event(); worker=[None]; status=tk.StringVar(value="STOPPED")
-    style=ttk.Style(window)
-    try: style.theme_use("clam")
-    except tk.TclError: pass
-    style.configure("Pulse.Treeview",background=PANEL_2,fieldbackground=PANEL_2,foreground=TEXT,rowheight=28,font=("Segoe UI",9))
-    style.configure("Pulse.Treeview.Heading",background="#171e2e",foreground=TEXT,font=("Segoe UI",9,"bold"))
+    window = tk.Toplevel(parent)
+    window.title("Pulse Social — X Auto Post")
+    window.geometry("1180x820")
+    window.minsize(980, 720)
+    window.configure(bg=BG)
 
-    def button(parent,text,command,accent=False):
-        return tk.Button(parent,text=text,command=command,bg=ACCENT if accent else PANEL_2,fg=TEXT,activebackground=ACCENT,activeforeground="white",relief="flat",bd=0,padx=14,pady=8,font=("Segoe UI",9,"bold"),cursor="hand2")
+    stop_event = threading.Event()
+    worker = [None]
+    status = tk.StringVar(value="STOPPED")
+    browser_var = tk.StringVar(value=browser_status())
+    char_var = tk.StringVar(value="0 chars")
+    next_var = tk.StringVar(value="No posts queued")
+    stats_var = {
+        "queued": tk.StringVar(value="0"),
+        "posted": tk.StringVar(value="0"),
+        "error": tk.StringVar(value="0"),
+    }
 
-    header=tk.Frame(window,bg=BG); header.pack(fill="x",padx=26,pady=(20,10))
-    tk.Label(header,text="PULSE",fg=TEXT,bg=BG,font=("Segoe UI",24,"bold")).pack(side="left")
-    tk.Label(header,text=" X",fg=ACCENT,bg=BG,font=("Segoe UI",24,"bold")).pack(side="left")
-    tk.Label(header,text="AUTO POST",fg=MUTED,bg=BG,font=("Consolas",9,"bold")).pack(side="right",pady=10)
+    style = ttk.Style(window)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    style.configure(
+        "Pulse.Treeview",
+        background=PANEL,
+        fieldbackground=PANEL,
+        foreground=TEXT,
+        rowheight=32,
+        borderwidth=0,
+        font=("Segoe UI", 10),
+    )
+    style.map(
+        "Pulse.Treeview",
+        background=[("selected", "#281229")],
+        foreground=[("selected", TEXT)],
+    )
+    style.configure(
+        "Pulse.Treeview.Heading",
+        background=PANEL_2,
+        foreground=MUTED,
+        relief="flat",
+        font=("Segoe UI", 9, "bold"),
+        padding=(10, 8),
+    )
 
-    compose=tk.Frame(window,bg=PANEL,highlightthickness=1,highlightbackground=BORDER); compose.pack(fill="x",padx=26,pady=8)
-    tk.Label(compose,text="COMPOSE",fg=TEXT,bg=PANEL,font=("Segoe UI",12,"bold")).pack(anchor="w",padx=16,pady=(14,6))
-    text=tk.Text(compose,height=6,bg="#080c13",fg=TEXT,insertbackground=TEXT,relief="flat",font=("Segoe UI",10),wrap="word",padx=10,pady=8)
-    text.pack(fill="x",padx=16,pady=(0,10))
-    controls=tk.Frame(compose,bg=PANEL); controls.pack(fill="x",padx=16,pady=(0,14))
-    tk.Label(controls,text="POST IN",fg=MUTED,bg=PANEL,font=("Consolas",8,"bold")).pack(side="left")
-    delay=tk.StringVar(value="60"); tk.Entry(controls,textvariable=delay,width=8,bg=PANEL_2,fg=TEXT,insertbackground=TEXT,relief="flat").pack(side="left",padx=(8,4))
-    tk.Label(controls,text="minutes",fg=MUTED,bg=PANEL,font=("Segoe UI",9)).pack(side="left")
+    def button(parent, text, command, accent=False, danger=False, compact=False):
+        bg = ACCENT if accent else DANGER if danger else PANEL_2
+        active = ACCENT_2 if accent else "#7e2637" if danger else "#202b3d"
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=bg,
+            fg=TEXT,
+            activebackground=active,
+            activeforeground=TEXT,
+            relief="flat",
+            bd=0,
+            padx=12 if compact else 16,
+            pady=7 if compact else 9,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+        )
 
-    cols=("due","status","post"); tree=ttk.Treeview(window,columns=cols,show="headings",style="Pulse.Treeview",height=8)
-    for col,title,width in (("due","Due",150),("status","Status",80),("post","Post",590)):
-        tree.heading(col,text=title); tree.column(col,width=width,anchor="w",stretch=(col=="post"))
-    tree.pack(fill="both",expand=True,padx=26,pady=8)
-    mapping={}
+    def pill(parent, variable, fg=SUCCESS):
+        frame = tk.Frame(parent, bg=PANEL_2)
+        tk.Label(frame, text="●", bg=PANEL_2, fg=fg, font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 4), pady=6)
+        tk.Label(frame, textvariable=variable, bg=PANEL_2, fg=TEXT, font=("Consolas", 9, "bold")).pack(side="left", padx=(0, 9), pady=6)
+        return frame
 
-    log=tk.Text(window,height=7,bg="#080c13",fg="#cbd3df",insertbackground=TEXT,relief="flat",font=("Consolas",9),wrap="word",padx=10,pady=8)
-    log_bar=tk.Frame(window,bg=BG); log_bar.pack(fill="x",padx=26,pady=(4,2))
-    tk.Label(log_bar,text="ACTIVITY LOG",fg=TEXT,bg=BG,font=("Segoe UI",9,"bold")).pack(side="left")
+    # HERO
+    hero = tk.Frame(window, bg=BG)
+    hero.pack(fill="x", padx=30, pady=(24, 14))
+    brand = tk.Frame(hero, bg=BG)
+    brand.pack(side="left")
+    tk.Label(brand, text="PULSE", fg=TEXT, bg=BG, font=("Segoe UI", 28, "bold")).pack(side="left")
+    tk.Label(brand, text=" SOCIAL", fg=ACCENT, bg=BG, font=("Segoe UI", 28, "bold")).pack(side="left")
+    tk.Label(brand, text="  /  X AUTO POST", fg=MUTED, bg=BG, font=("Consolas", 10, "bold")).pack(side="left", padx=(8, 0), pady=(10, 0))
+
+    hero_right = tk.Frame(hero, bg=BG)
+    hero_right.pack(side="right")
+    browser_pill = pill(hero_right, browser_var, SUCCESS)
+    browser_pill.pack(side="left", padx=(0, 8))
+    status_pill = pill(hero_right, status, ACCENT)
+    status_pill.pack(side="left")
+
+    # TOP GRID
+    top = tk.Frame(window, bg=BG)
+    top.pack(fill="x", padx=30, pady=(0, 12))
+    top.grid_columnconfigure(0, weight=3)
+    top.grid_columnconfigure(1, weight=1)
+
+    compose = tk.Frame(top, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+    compose.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    compose.grid_columnconfigure(0, weight=1)
+
+    compose_head = tk.Frame(compose, bg=PANEL)
+    compose_head.grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 8))
+    tk.Label(compose_head, text="COMPOSE", fg=TEXT, bg=PANEL, font=("Segoe UI", 12, "bold")).pack(side="left")
+    tk.Label(compose_head, textvariable=char_var, fg=MUTED, bg=PANEL, font=("Consolas", 9)).pack(side="right")
+
+    text = tk.Text(
+        compose,
+        height=7,
+        bg=PANEL_3,
+        fg=TEXT,
+        insertbackground=TEXT,
+        relief="flat",
+        bd=0,
+        font=("Segoe UI", 11),
+        wrap="word",
+        padx=14,
+        pady=12,
+        undo=True,
+    )
+    text.grid(row=1, column=0, sticky="ew", padx=18)
+
+    schedule = tk.Frame(compose, bg=PANEL)
+    schedule.grid(row=2, column=0, sticky="ew", padx=18, pady=(12, 16))
+    tk.Label(schedule, text="POST IN", fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).pack(side="left")
+    delay = tk.StringVar(value="1")
+    delay_entry = tk.Entry(
+        schedule,
+        textvariable=delay,
+        width=7,
+        bg=PANEL_2,
+        fg=TEXT,
+        insertbackground=TEXT,
+        relief="flat",
+        justify="center",
+        font=("Segoe UI", 10, "bold"),
+    )
+    delay_entry.pack(side="left", padx=(8, 5), ipady=6)
+    tk.Label(schedule, text="minutes", fg=MUTED, bg=PANEL, font=("Segoe UI", 9)).pack(side="left", padx=(0, 12))
+
+    def set_delay(value):
+        delay.set(str(value))
+
+    for value in (1, 5, 15, 30, 60):
+        button(schedule, f"{value}m", lambda v=value: set_delay(v), compact=True).pack(side="left", padx=3)
+
+    # STATS
+    stats = tk.Frame(top, bg=BG)
+    stats.grid(row=0, column=1, sticky="nsew")
+    stats.grid_columnconfigure(0, weight=1)
+
+    def stat_card(row, label, variable, accent):
+        card = tk.Frame(stats, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        card.grid(row=row, column=0, sticky="ew", pady=(0, 8 if row < 2 else 0))
+        tk.Label(card, text=label, fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).pack(anchor="w", padx=14, pady=(10, 0))
+        tk.Label(card, textvariable=variable, fg=accent, bg=PANEL, font=("Segoe UI", 22, "bold")).pack(anchor="w", padx=14, pady=(0, 10))
+
+    stat_card(0, "QUEUED", stats_var["queued"], ACCENT)
+    stat_card(1, "POSTED", stats_var["posted"], SUCCESS)
+    stat_card(2, "ERRORS", stats_var["error"], DANGER)
+
+    # QUEUE
+    queue_card = tk.Frame(window, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+    queue_card.pack(fill="both", expand=True, padx=30, pady=(0, 12))
+
+    queue_head = tk.Frame(queue_card, bg=PANEL)
+    queue_head.pack(fill="x", padx=16, pady=(12, 8))
+    tk.Label(queue_head, text="POST QUEUE", fg=TEXT, bg=PANEL, font=("Segoe UI", 12, "bold")).pack(side="left")
+    tk.Label(queue_head, textvariable=next_var, fg=MUTED, bg=PANEL, font=("Consolas", 9)).pack(side="right")
+
+    cols = ("due", "status", "post")
+    tree = ttk.Treeview(queue_card, columns=cols, show="headings", style="Pulse.Treeview", height=8)
+    for col, title, width in (
+        ("due", "DUE", 150),
+        ("status", "STATUS", 100),
+        ("post", "POST", 760),
+    ):
+        tree.heading(col, text=title)
+        tree.column(col, width=width, anchor="w", stretch=(col == "post"))
+    tree.tag_configure("posted", foreground=SUCCESS)
+    tree.tag_configure("error", foreground=DANGER)
+    tree.tag_configure("queued", foreground=TEXT)
+    tree.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+    mapping = {}
+
+    # ACTIVITY
+    activity = tk.Frame(window, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+    activity.pack(fill="x", padx=30, pady=(0, 12))
+    activity_head = tk.Frame(activity, bg=PANEL)
+    activity_head.pack(fill="x", padx=14, pady=(10, 6))
+    tk.Label(activity_head, text="ACTIVITY", fg=TEXT, bg=PANEL, font=("Segoe UI", 10, "bold")).pack(side="left")
+
+    log = tk.Text(
+        activity,
+        height=6,
+        bg=PANEL_3,
+        fg="#cbd3df",
+        insertbackground=TEXT,
+        relief="flat",
+        bd=0,
+        font=("Consolas", 9),
+        wrap="word",
+        padx=10,
+        pady=8,
+    )
+
     def copy_log():
-        value=log.get("1.0",tk.END).strip()
-        window.clipboard_clear(); window.clipboard_append(value); window.update()
+        value = log.get("1.0", tk.END).strip()
+        window.clipboard_clear()
+        window.clipboard_append(value)
+        window.update()
         status.set("LOG COPIED")
+
     def clear_log():
-        log.delete("1.0",tk.END)
+        log.delete("1.0", tk.END)
         status.set("LOG CLEARED")
-    button(log_bar,"COPY LOG",copy_log).pack(side="right",padx=(8,0))
-    button(log_bar,"CLEAR LOG",clear_log).pack(side="right")
-    log.pack(fill="x",padx=26,pady=(0,14))
-    def write(msg):
-        window.after(0,lambda:(log.insert(tk.END,msg+"\n"),log.see(tk.END),refresh()))
+
+    button(activity_head, "COPY LOG", copy_log, compact=True).pack(side="right", padx=(6, 0))
+    button(activity_head, "CLEAR", clear_log, compact=True).pack(side="right")
+    log.pack(fill="x", padx=14, pady=(0, 12))
+
+    def update_char_count(*_):
+        count = len(text.get("1.0", "end-1c"))
+        char_var.set(f"{count} chars")
+
+    text.bind("<KeyRelease>", update_char_count)
 
     def refresh():
-        selected=tree.selection(); selected_id=mapping.get(selected[0]).post_id if selected and selected[0] in mapping else None
+        selected = tree.selection()
+        selected_id = mapping.get(selected[0]).post_id if selected and selected[0] in mapping else None
+        items = load_queue()
         mapping.clear()
-        for iid in tree.get_children(): tree.delete(iid)
-        pick=None
-        for item in load_queue():
-            try: due=datetime.fromisoformat(item.due_at).strftime("%d/%m/%Y %H:%M")
-            except ValueError: due=item.due_at
-            iid=tree.insert("","end",values=(due,item.status.upper(),item.text.replace("\n"," "))); mapping[iid]=item
-            if item.post_id==selected_id: pick=iid
-        if pick: tree.selection_set(pick)
+        for iid in tree.get_children():
+            tree.delete(iid)
+
+        queued = posted = errors = 0
+        next_due = None
+        pick = None
+
+        for item in items:
+            status_name = item.status.lower()
+            if status_name == "queued":
+                queued += 1
+            elif status_name == "posted":
+                posted += 1
+            elif status_name == "error":
+                errors += 1
+
+            try:
+                due_dt = datetime.fromisoformat(item.due_at)
+                due = due_dt.strftime("%d/%m/%Y %H:%M")
+                if status_name == "queued" and (next_due is None or due_dt < next_due):
+                    next_due = due_dt
+            except ValueError:
+                due = item.due_at
+
+            iid = tree.insert(
+                "",
+                "end",
+                values=(due, item.status.upper(), item.text.replace("\n", " ")),
+                tags=(status_name if status_name in {"queued", "posted", "error"} else "queued",),
+            )
+            mapping[iid] = item
+            if item.post_id == selected_id:
+                pick = iid
+
+        if pick:
+            tree.selection_set(pick)
+
+        stats_var["queued"].set(str(queued))
+        stats_var["posted"].set(str(posted))
+        stats_var["error"].set(str(errors))
+        next_var.set(f"NEXT // {next_due:%H:%M}" if next_due else "No posts queued")
+        browser_var.set(browser_status())
+
+    def write(msg):
+        def apply():
+            if not log.winfo_exists():
+                return
+            log.insert(tk.END, msg + "\n")
+            log.see(tk.END)
+            refresh()
+        window.after(0, apply)
 
     def queue_post():
-        body=text.get("1.0",tk.END).strip()
+        body = text.get("1.0", tk.END).strip()
         try:
-            minutes=int(delay.get())
-            if minutes < 0: raise ValueError
+            minutes = int(delay.get())
+            if minutes < 0:
+                raise ValueError
         except ValueError:
-            messagebox.showerror("Invalid delay","Post delay must be 0 or more whole minutes.",parent=window); return
+            messagebox.showerror("Invalid delay", "Post delay must be 0 or more whole minutes.", parent=window)
+            return
         if not body:
-            messagebox.showerror("Empty post","Write the post first.",parent=window); return
-        due=datetime.now()+timedelta(minutes=minutes)
-        add_post(body,due); text.delete("1.0",tk.END); refresh(); write(f"QUEUED | {due:%H:%M} | {body[:90]}")
+            messagebox.showerror("Empty post", "Write the post first.", parent=window)
+            return
+        due = datetime.now() + timedelta(minutes=minutes)
+        add_post(body, due)
+        text.delete("1.0", tk.END)
+        update_char_count()
+        refresh()
+        write(f"QUEUED | {due:%H:%M} | {body[:100]}")
 
     def remove_selected():
-        sel=tree.selection()
-        if not sel: return
-        item=mapping.get(sel[0])
-        if item: remove_post(item.post_id); refresh()
+        sel = tree.selection()
+        if not sel:
+            status.set("SELECT A POST")
+            return
+        item = mapping.get(sel[0])
+        if item:
+            remove_post(item.post_id)
+            refresh()
+            write(f"REMOVED | {item.text[:80]}")
 
     def start():
-        if worker[0] and worker[0].is_alive(): return
-        stop_event.clear(); worker[0]=threading.Thread(target=run_scheduler,args=(stop_event,write),daemon=True); worker[0].start(); status.set("RUNNING")
-    def stop():
-        stop_event.set(); status.set("STOPPED")
+        if worker[0] and worker[0].is_alive():
+            status.set("RUNNING")
+            return
+        stop_event.clear()
+        worker[0] = threading.Thread(target=run_scheduler, args=(stop_event, write), daemon=True)
+        worker[0].start()
+        status.set("RUNNING")
 
-    bar=tk.Frame(window,bg=BG); bar.pack(fill="x",padx=26,pady=(0,4))
-    button(bar,"QUEUE POST",queue_post,True).pack(side="left")
-    button(bar,"REMOVE",remove_selected).pack(side="left",padx=8)
-    button(bar,"START AUTO POST",start,True).pack(side="right")
-    button(bar,"STOP",stop).pack(side="right",padx=8)
-    tk.Label(bar,textvariable=status,fg=SUCCESS,bg=BG,font=("Consolas",9,"bold")).pack(side="right",padx=12)
+    def stop():
+        stop_event.set()
+        status.set("STOPPED")
+
+    # COMMAND BAR
+    command = tk.Frame(window, bg=BG)
+    command.pack(fill="x", padx=30, pady=(0, 20))
+    button(command, "QUEUE POST", queue_post, accent=True).pack(side="left")
+    button(command, "REMOVE SELECTED", remove_selected).pack(side="left", padx=8)
+    button(command, "START AUTO POST", start, accent=True).pack(side="right")
+    button(command, "STOP", stop, danger=True).pack(side="right", padx=8)
+    tk.Label(command, text="Scheduler must remain running for queued posts to fire.", fg=MUTED, bg=BG, font=("Segoe UI", 9)).pack(side="right", padx=16)
 
     def close():
-        stop_event.set(); window.destroy()
-    window.protocol("WM_DELETE_WINDOW",close); refresh(); return window
+        stop_event.set()
+        window.destroy()
+
+    window.protocol("WM_DELETE_WINDOW", close)
+    refresh()
+    update_char_count()
+    return window
