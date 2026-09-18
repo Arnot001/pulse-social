@@ -39,11 +39,20 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
     for col,title,width in (("score","Score",50),("price","TikTok",90),("market","Market Value",150),("move","Movement",145),("sold","Sold",60),("product","Product",500)): tree.heading(col,text=title); tree.column(col,width=width,anchor="w",stretch=(col=="product"))
     scroll=ttk.Scrollbar(results_frame,orient="vertical",command=tree.yview); tree.configure(yscrollcommand=scroll.set); scroll.pack(side="right",fill="y"); tree.pack(side="left",fill="both",expand=True)
     log_head=tk.Frame(window,bg=BG); log_head.pack(fill="x",padx=26,pady=(4,2)); tk.Label(log_head,text="ACTIVITY / WATCH ALERTS",fg=TEXT,bg=BG,font=("Segoe UI",10,"bold")).pack(side="left"); log=tk.Text(window,height=7,bg="#080c13",fg="#cbd3df",insertbackground=TEXT,relief="flat",bd=0,font=("Consolas",9),padx=10,pady=8,wrap="word"); log.pack(fill="x",padx=26,pady=(0,18))
+    log_generation=[0]
     def write(msg):
-        def apply(): log.insert(tk.END,msg+"\n"); log.see(tk.END)
+        generation=log_generation[0]
+        def apply():
+            if generation != log_generation[0] or not log.winfo_exists():
+                return
+            log.insert(tk.END,msg+"\n"); log.see(tk.END)
         window.after(0,apply)
     def copy_log(): window.clipboard_clear(); window.clipboard_append(log.get("1.0",tk.END).strip()); status_var.set("LOG COPIED")
-    def clear_log(): log.delete("1.0",tk.END); status_var.set("LOG CLEARED")
+    def clear_log():
+        log_generation[0]+=1
+        log.delete("1.0",tk.END)
+        log.edit_reset()
+        status_var.set("LOG CLEARED")
     def export_log():
         path=filedialog.asksaveasfilename(parent=window,defaultextension=".txt",initialfile=f"pulse-tiktok-{datetime.now():%Y%m%d-%H%M%S}.txt",filetypes=[("Text","*.txt"),("All files","*.*")])
         if path: Path(path).write_text(log.get("1.0",tk.END),encoding="utf-8"); status_var.set("LOG EXPORTED")
