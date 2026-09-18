@@ -13,10 +13,22 @@ TEXT = "#f5f7fb"
 MUTED = "#8993a6"
 ACCENT = "#ff008c"
 ROOT = Path(__file__).resolve().parent
+children: list[subprocess.Popen] = []
 
 
 def launch(script: str) -> None:
-    subprocess.Popen([sys.executable, str(ROOT / script)], cwd=str(ROOT))
+    proc = subprocess.Popen([sys.executable, str(ROOT / script)], cwd=str(ROOT))
+    children.append(proc)
+
+
+def close_all() -> None:
+    for proc in children:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+    root.destroy()
 
 
 root = tk.Tk()
@@ -30,6 +42,7 @@ header.pack(fill="x", padx=30, pady=(30, 12))
 tk.Label(header, text="PULSE", fg=TEXT, bg=BG, font=("Segoe UI", 28, "bold")).pack(side="left")
 tk.Label(header, text=" SOCIAL", fg=ACCENT, bg=BG, font=("Segoe UI", 28, "bold")).pack(side="left")
 tk.Label(root, text="SOCIAL AUTOMATION  //  COMMERCE INTELLIGENCE", fg=MUTED, bg=BG, font=("Consolas", 9)).pack(anchor="w", padx=32)
+tk.Button(header, text="CLOSE ALL", command=close_all, bg="#5b1623", fg=TEXT, activebackground="#7a1d2e", activeforeground="white", relief="flat", bd=0, padx=14, pady=7, font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right", pady=4)
 
 nav = tk.Frame(root, bg=BG)
 nav.pack(fill="both", expand=True, padx=30, pady=28)
@@ -52,4 +65,5 @@ x_card.pack(side="left", fill="both", expand=True, padx=(0, 10))
 tiktok_card = platform_card("TIKTOK", "Shop intelligence powered by TikTok's live category taxonomy.", "SHOP  //  AUTO POST SOON", lambda: launch("tiktok_shop_ui.py"))
 tiktok_card.pack(side="left", fill="both", expand=True, padx=(10, 0))
 
+root.protocol("WM_DELETE_WINDOW", close_all)
 root.mainloop()
