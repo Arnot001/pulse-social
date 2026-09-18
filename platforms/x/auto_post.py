@@ -132,6 +132,24 @@ def _connect_x_browser(playwright):
     )
 
 
+def _dismiss_x_overlays(page) -> None:
+    """Dismiss known benign X interstitials that can block the composer."""
+    candidates = (
+        ("button", "Got it"),
+        ("button", "Continue"),
+        ("button", "Close"),
+    )
+    for role, name in candidates:
+        try:
+            control = page.get_by_role(role, name=name, exact=True)
+            if control.count() and control.first.is_visible():
+                control.first.click(timeout=2500)
+                page.wait_for_timeout(300)
+                return
+        except Exception:
+            pass
+
+
 def publish_post(text: str, media_paths: list[str] | None = None) -> None:
     with X_ACTION_LOCK:
         with sync_playwright() as p:
@@ -140,7 +158,9 @@ def publish_post(text: str, media_paths: list[str] | None = None) -> None:
                 raise RuntimeError("Browser attached but no browser context was available.")
             if "x.com" not in page.url.lower():
                 page.goto("https://x.com/home", wait_until="domcontentloaded")
+            _dismiss_x_overlays(page)
             page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
+            _dismiss_x_overlays(page)
             editor = page.locator('[data-testid="tweetTextarea_0"]').first
             editor.wait_for(state="visible", timeout=10000)
             if text:
