@@ -11,7 +11,7 @@ BG="#07090f"; PANEL="#0d111b"; PANEL_2="#121827"; BORDER="#20283a"; TEXT="#f5f7f
 
 
 def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
-    window=tk.Toplevel(parent); window.title("Pulse Social — X Auto Post"); window.geometry("900x720"); window.minsize(780,650); window.configure(bg=BG)
+    window=tk.Toplevel(parent); window.title("Pulse Social — X Auto Post"); window.geometry("980x760"); window.minsize(820,680); window.configure(bg=BG)
     stop_event=threading.Event(); worker=[None]; status=tk.StringVar(value="STOPPED")
     style=ttk.Style(window)
     try: style.theme_use("clam")
@@ -36,14 +36,25 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     delay=tk.StringVar(value="60"); tk.Entry(controls,textvariable=delay,width=8,bg=PANEL_2,fg=TEXT,insertbackground=TEXT,relief="flat").pack(side="left",padx=(8,4))
     tk.Label(controls,text="minutes",fg=MUTED,bg=PANEL,font=("Segoe UI",9)).pack(side="left")
 
-    cols=("due","status","post"); tree=ttk.Treeview(window,columns=cols,show="headings",style="Pulse.Treeview",height=10)
+    cols=("due","status","post"); tree=ttk.Treeview(window,columns=cols,show="headings",style="Pulse.Treeview",height=8)
     for col,title,width in (("due","Due",150),("status","Status",80),("post","Post",590)):
         tree.heading(col,text=title); tree.column(col,width=width,anchor="w",stretch=(col=="post"))
     tree.pack(fill="both",expand=True,padx=26,pady=8)
     mapping={}
 
     log=tk.Text(window,height=7,bg="#080c13",fg="#cbd3df",insertbackground=TEXT,relief="flat",font=("Consolas",9),wrap="word",padx=10,pady=8)
-    log.pack(fill="x",padx=26,pady=(6,18))
+    log_bar=tk.Frame(window,bg=BG); log_bar.pack(fill="x",padx=26,pady=(4,2))
+    tk.Label(log_bar,text="ACTIVITY LOG",fg=TEXT,bg=BG,font=("Segoe UI",9,"bold")).pack(side="left")
+    def copy_log():
+        value=log.get("1.0",tk.END).strip()
+        window.clipboard_clear(); window.clipboard_append(value); window.update()
+        status.set("LOG COPIED")
+    def clear_log():
+        log.delete("1.0",tk.END)
+        status.set("LOG CLEARED")
+    button(log_bar,"COPY LOG",copy_log).pack(side="right",padx=(8,0))
+    button(log_bar,"CLEAR LOG",clear_log).pack(side="right")
+    log.pack(fill="x",padx=26,pady=(0,14))
     def write(msg):
         window.after(0,lambda:(log.insert(tk.END,msg+"\n"),log.see(tk.END),refresh()))
 
@@ -89,17 +100,6 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     button(bar,"START AUTO POST",start,True).pack(side="right")
     button(bar,"STOP",stop).pack(side="right",padx=8)
     tk.Label(bar,textvariable=status,fg=SUCCESS,bg=BG,font=("Consolas",9,"bold")).pack(side="right",padx=12)
-
-    log_bar=tk.Frame(window,bg=BG); log_bar.pack(fill="x",padx=26,pady=(0,6))
-    def copy_log():
-        value=log.get("1.0",tk.END).strip()
-        window.clipboard_clear(); window.clipboard_append(value); window.update()
-        status.set("LOG COPIED")
-    def clear_log():
-        log.delete("1.0",tk.END)
-        status.set("LOG CLEARED")
-    button(log_bar,"COPY LOG",copy_log).pack(side="right",padx=(8,0))
-    button(log_bar,"CLEAR LOG",clear_log).pack(side="right")
 
     def close():
         stop_event.set(); window.destroy()
