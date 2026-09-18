@@ -15,9 +15,7 @@ APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "Pulse Social"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_FILE = APP_DIR / "x_auto_post_queue.json"
 HISTORY_FILE = APP_DIR / "x_auto_post_history.txt"
-CDP_URL = "http://127.0.0.1:9222"
-CHROME_USER_DATA = Path(os.environ["LOCALAPPDATA"]) / "Google" / "Chrome" / "User Data"
-DEVTOOLS_ACTIVE_PORT = CHROME_USER_DATA / "DevToolsActivePort"
+CDP_PORTS = (9222, 9223, 9224, 9225)
 X_ACTION_LOCK = threading.Lock()
 
 
@@ -71,41 +69,41 @@ def _x_page(context):
     return page
 
 
-def _chrome_cdp_endpoint() -> str:
-    """Prefer Chrome's authorised live-session endpoint; keep legacy 9222 as fallback."""
-    if DEVTOOLS_ACTIVE_PORT.exists():
+def _connect_x_browser(playwright):
+    errors = []
+    fallback = None
+    for port in CDP_PORTS:
+        endpoint = f"http://127.0.0.1:{port}"
         try:
-            lines = DEVTOOLS_ACTIVE_PORT.read_text(encoding="utf-8").splitlines()
-            port = lines[0].strip()
-            browser_path = lines[1].strip() if len(lines) > 1 else ""
-            if port.isdigit():
-                if browser_path.startswith("/"):
-                    return f"ws://127.0.0.1:{port}{browser_path}"
-                return f"http://127.0.0.1:{port}"
-        except OSError:
-            pass
-    return CDP_URL
+            browser = playwright.chromium.connect_over_cdp(endpoint, timeout=2500)
+        except Exception as exc:
+            errors.append(f"{port}: {type(exc).__name__}")
+            continue
+        for context in browser.contexts:
+            for page in context.pages:
+                try:
+                    url = page.url.lower()
+                    if "x.com" in url or "twitter.com" in url:
+                        return browser, context, page, port
+                except Exception:
+                    pass
+        if fallback is None and browser.contexts:
+            fallback = (browser, browser.contexts[0], None, port)
+    if fallback is not None:
+        browser, context, _page, port = fallback
+        return browser, context, _x_page(context), port
+    raise RuntimeError(
+        "NO CONTROLLABLE X BROWSER FOUND. Open X in a Pulse-controlled Chrome/Brave browser "
+        f"with CDP enabled on one of these local ports: {', '.join(map(str, CDP_PORTS))}."
+    )
 
 
 def publish_text(text: str) -> None:
     with X_ACTION_LOCK:
         with sync_playwright() as p:
-            endpoint = _chrome_cdp_endpoint()
-            try:
-                browser = p.chromium.connect_over_cdp(endpoint, timeout=15000)
-            except Exception as exc:
-                if endpoint == CDP_URL:
-                    raise RuntimeError(
-                        "Chrome live-session debugging was not found. In your normal Chrome open "
-                        "chrome://inspect/#remote-debugging and enable 'Allow remote debugging for this browser instance'."
-                    ) from exc
-                raise RuntimeError(
-                    "Chrome offered a live debugging session but Pulse could not attach. "
-                    "Approve Chrome's debugging permission prompt if it appears, then retry."
-                ) from exc
-            if not browser.contexts:
-                raise RuntimeError("Chrome attached but no browser context was available.")
-            page = _x_page(browser.contexts[0])
+            _browser, context, page, _port = _connect_x_browser(p)
+            if not context:
+                raise RuntimeError("Browser attached but no browser context was available.")
             if "x.com" not in page.url.lower():
                 page.goto("https://x.com/home", wait_until="domcontentloaded")
             page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
