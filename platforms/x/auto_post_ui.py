@@ -90,6 +90,17 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     button(bar,"STOP",stop).pack(side="right",padx=8)
     tk.Label(bar,textvariable=status,fg=SUCCESS,bg=BG,font=("Consolas",9,"bold")).pack(side="right",padx=12)
 
+    log_bar=tk.Frame(window,bg=BG); log_bar.pack(fill="x",padx=26,pady=(0,6))
+    def copy_log():
+        value=log.get("1.0",tk.END).strip()
+        window.clipboard_clear(); window.clipboard_append(value); window.update()
+        status.set("LOG COPIED")
+    def clear_log():
+        log.delete("1.0",tk.END)
+        status.set("LOG CLEARED")
+    button(log_bar,"COPY LOG",copy_log).pack(side="right",padx=(8,0))
+    button(log_bar,"CLEAR LOG",clear_log).pack(side="right")
+
     def close():
         stop_event.set(); window.destroy()
     window.protocol("WM_DELETE_WINDOW",close); refresh(); return window
