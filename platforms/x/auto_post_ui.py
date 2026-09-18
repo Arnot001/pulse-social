@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import tkinter as tk
 from datetime import datetime, timedelta
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from .auto_post import add_post, load_queue, remove_post, run_scheduler
 from .browser_session import browser_status
@@ -35,6 +35,8 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     status = tk.StringVar(value="STOPPED")
     browser_var = tk.StringVar(value=browser_status())
     char_var = tk.StringVar(value="0 chars")
+    media_var = tk.StringVar(value="NO MEDIA")
+    selected_media: list[str] = []
     next_var = tk.StringVar(value="No posts queued")
     schedule_mode = tk.StringVar(value="delay")
     clock_time = tk.StringVar(value=(datetime.now() + timedelta(minutes=5)).strftime("%H:%M"))
@@ -144,8 +146,57 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     )
     text.grid(row=1, column=0, sticky="ew", padx=18)
 
+    media_row = tk.Frame(compose, bg=PANEL)
+    media_row.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 0))
+
+    def refresh_media_label():
+        if not selected_media:
+            media_var.set("NO MEDIA")
+            return
+        names = [Path(path).name for path in selected_media]
+        summary = ", ".join(names[:2])
+        if len(names) > 2:
+            summary += f" +{len(names)-2} more"
+        media_var.set(summary)
+
+    def add_images():
+        paths = filedialog.askopenfilenames(
+            parent=window,
+            title="Add images",
+            filetypes=[
+                ("Images", "*.jpg *.jpeg *.png *.gif *.webp"),
+                ("All files", "*.*"),
+            ],
+        )
+        if paths:
+            selected_media.extend(str(path) for path in paths)
+            refresh_media_label()
+
+    def add_video():
+        path = filedialog.askopenfilename(
+            parent=window,
+            title="Add video",
+            filetypes=[
+                ("Video", "*.mp4 *.mov *.m4v *.webm"),
+                ("All files", "*.*"),
+            ],
+        )
+        if path:
+            selected_media.clear()
+            selected_media.append(str(path))
+            refresh_media_label()
+
+    def clear_media():
+        selected_media.clear()
+        refresh_media_label()
+
+    button(media_row, "ADD IMAGES", add_images, compact=True).pack(side="left")
+    button(media_row, "ADD VIDEO", add_video, compact=True).pack(side="left", padx=6)
+    button(media_row, "CLEAR MEDIA", clear_media, compact=True).pack(side="left")
+    tk.Label(media_row, textvariable=media_var, fg=MUTED, bg=PANEL, font=("Consolas", 8)).pack(side="left", padx=12)
+
     schedule = tk.Frame(compose, bg=PANEL)
-    schedule.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 12))
+    schedule.grid(row=3, column=0, sticky="ew", padx=18, pady=(8, 12))
     delay = tk.StringVar(value="1")
 
     delay_mode = tk.Radiobutton(
@@ -333,7 +384,11 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
             iid = tree.insert(
                 "",
                 "end",
-                values=(due, item.status.upper(), item.text.replace("\n", " ")),
+                values=(
+                    due,
+                    item.status.upper(),
+                    ((f"[MEDIA {len(item.media_paths)}] " if item.media_paths else "") + item.text.replace("\n", " ")).strip(),
+                ),
                 tags=(status_name if status_name in {"queued", "posted", "error"} else "queued",),
             )
             mapping[iid] = item
@@ -360,8 +415,8 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     def queue_post():
         body = text.get("1.0", tk.END).strip()
-        if not body:
-            messagebox.showerror("Empty post", "Write the post first.", parent=window)
+        if not body and not selected_media:
+            messagebox.showerror("Empty post", "Write some text or add media first.", parent=window)
             return
 
         now = datetime.now()
@@ -390,11 +445,15 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
             due = now + timedelta(minutes=minutes)
             schedule_note = f"IN {minutes}m"
 
-        add_post(body, due)
+        media_copy = list(selected_media)
+        add_post(body, due, media_copy)
         text.delete("1.0", tk.END)
+        selected_media.clear()
+        refresh_media_label()
         update_char_count()
         refresh()
-        write(f"QUEUED | {schedule_note} | due {due:%d/%m %H:%M} | {body[:100]}")
+        media_note = f" | MEDIA {len(media_copy)}" if media_copy else ""
+        write(f"QUEUED | {schedule_note} | due {due:%d/%m %H:%M}{media_note} | {body[:100]}")
 
     def remove_selected():
         sel = tree.selection()
