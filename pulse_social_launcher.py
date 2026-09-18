@@ -17,6 +17,10 @@ TEXT = "#f7f8fb"
 MUTED = "#8e9aae"
 ACCENT = "#ff0a8a"
 ACCENT_2 = "#ff4bb0"
+GLOW = "#ff1493"
+GLOW_SOFT = "#5b123d"
+CYAN = "#33e6ff"
+CYAN_SOFT = "#123c46"
 SUCCESS = "#35d07f"
 DANGER = "#ff4d67"
 ROOT = Path(__file__).resolve().parent
@@ -41,7 +45,8 @@ def close_all() -> None:
 def button(parent, text, command, accent=False, danger=False):
     bg = ACCENT if accent else "#5b1623" if danger else PANEL_2
     active = ACCENT_2 if accent else "#7a1d2e" if danger else "#202b3d"
-    return tk.Button(
+    normal = bg
+    btn = tk.Button(
         parent,
         text=text,
         command=command,
@@ -55,7 +60,17 @@ def button(parent, text, command, accent=False, danger=False):
         pady=9,
         font=("Segoe UI", 9, "bold"),
         cursor="hand2",
+        highlightthickness=1 if accent else 0,
+        highlightbackground=GLOW if accent else bg,
+        highlightcolor=GLOW if accent else bg,
     )
+    def enter(_event):
+        btn.configure(bg=active, highlightbackground=ACCENT_2 if accent else active)
+    def leave(_event):
+        btn.configure(bg=normal, highlightbackground=GLOW if accent else normal)
+    btn.bind("<Enter>", enter)
+    btn.bind("<Leave>", leave)
+    return btn
 
 
 root = tk.Tk()
@@ -71,10 +86,13 @@ header.pack(fill="x", padx=34, pady=(28, 12))
 brand = tk.Frame(header, bg=BG)
 brand.pack(side="left")
 tk.Label(brand, text="PULSE", fg=TEXT, bg=BG, font=("Segoe UI", 30, "bold")).pack(side="left")
-tk.Label(brand, text=" SOCIAL", fg=ACCENT, bg=BG, font=("Segoe UI", 30, "bold")).pack(side="left")
-tk.Label(brand, text="  //  CONTROL DECK", fg=MUTED, bg=BG, font=("Consolas", 10, "bold")).pack(side="left", padx=(8, 0), pady=(11, 0))
+tk.Label(brand, text=" SOCIAL", fg=ACCENT_2, bg=BG, font=("Segoe UI", 30, "bold")).pack(side="left")
+tk.Label(brand, text="  //  CONTROL DECK", fg=CYAN, bg=BG, font=("Consolas", 10, "bold")).pack(side="left", padx=(8, 0), pady=(11, 0))
 
 button(header, "CLOSE ALL", close_all, danger=True).pack(side="right", pady=4)
+
+glow_line = tk.Frame(root, bg=GLOW, height=2)
+glow_line.pack(fill="x", padx=34, pady=(0, 8))
 
 subtitle = tk.Frame(root, bg=BG)
 subtitle.pack(fill="x", padx=36)
@@ -87,11 +105,13 @@ tk.Label(
 ).pack(side="left")
 
 browser_status_var = tk.StringVar(value=browser_status())
-browser_strip = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-browser_strip.pack(fill="x", padx=34, pady=(18, 14))
+browser_glow = tk.Frame(root, bg=CYAN_SOFT, padx=2, pady=2)
+browser_glow.pack(fill="x", padx=32, pady=(18, 14))
+browser_strip = tk.Frame(browser_glow, bg=PANEL, highlightthickness=1, highlightbackground=CYAN)
+browser_strip.pack(fill="x")
 
 tk.Label(browser_strip, text="X BROWSER", fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).pack(side="left", padx=(16, 8), pady=12)
-tk.Label(browser_strip, text="●", fg=SUCCESS, bg=PANEL, font=("Segoe UI", 9, "bold")).pack(side="left")
+tk.Label(browser_strip, text="●", fg=CYAN, bg=PANEL, font=("Segoe UI", 10, "bold")).pack(side="left")
 tk.Label(browser_strip, textvariable=browser_status_var, fg=TEXT, bg=PANEL, font=("Consolas", 9, "bold")).pack(side="left", padx=(6, 12))
 
 
@@ -123,12 +143,26 @@ nav.grid_rowconfigure(0, weight=1)
 
 
 def platform_card(parent, column, eyebrow, title, subtitle, features, primary_text, primary_command, secondary=None):
-    card = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-    card.grid(row=0, column=column, sticky="nsew", padx=(0, 10) if column == 0 else (10, 0))
+    glow_colour = GLOW if column == 0 else CYAN
+    soft_colour = GLOW_SOFT if column == 0 else CYAN_SOFT
+    outer = tk.Frame(parent, bg=soft_colour, padx=3, pady=3)
+    outer.grid(row=0, column=column, sticky="nsew", padx=(0, 10) if column == 0 else (10, 0))
+    halo = tk.Frame(outer, bg=glow_colour, padx=1, pady=1)
+    halo.pack(fill="both", expand=True)
+    card = tk.Frame(halo, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+    card.pack(fill="both", expand=True)
+
+    def glow_on(_event):
+        outer.configure(bg=glow_colour)
+    def glow_off(_event):
+        outer.configure(bg=soft_colour)
+    for widget in (outer, halo, card):
+        widget.bind("<Enter>", glow_on)
+        widget.bind("<Leave>", glow_off)
 
     top = tk.Frame(card, bg=PANEL)
     top.pack(fill="x", padx=22, pady=(22, 8))
-    tk.Label(top, text=eyebrow, fg=ACCENT, bg=PANEL, font=("Consolas", 8, "bold")).pack(anchor="w")
+    tk.Label(top, text=eyebrow, fg=glow_colour, bg=PANEL, font=("Consolas", 8, "bold")).pack(anchor="w")
     tk.Label(top, text=title, fg=TEXT, bg=PANEL, font=("Segoe UI", 24, "bold")).pack(anchor="w", pady=(2, 4))
     tk.Label(top, text=subtitle, fg=MUTED, bg=PANEL, font=("Segoe UI", 10), justify="left", wraplength=380).pack(anchor="w")
 
@@ -137,7 +171,7 @@ def platform_card(parent, column, eyebrow, title, subtitle, features, primary_te
     for feature in features:
         row = tk.Frame(feature_box, bg=SURFACE)
         row.pack(fill="x", padx=12, pady=5)
-        tk.Label(row, text="●", fg=ACCENT, bg=SURFACE, font=("Segoe UI", 8, "bold")).pack(side="left")
+        tk.Label(row, text="●", fg=glow_colour, bg=SURFACE, font=("Segoe UI", 8, "bold")).pack(side="left")
         tk.Label(row, text=feature, fg=TEXT, bg=SURFACE, font=("Segoe UI", 9)).pack(side="left", padx=8)
 
     actions = tk.Frame(card, bg=PANEL)
@@ -180,6 +214,8 @@ platform_card(
 )
 
 # FOOTER
+footer_glow = tk.Frame(root, bg=GLOW_SOFT, height=1)
+footer_glow.pack(fill="x", padx=34, pady=(0, 10))
 footer = tk.Frame(root, bg=BG)
 footer.pack(fill="x", padx=36, pady=(0, 20))
 tk.Label(footer, text="PULSE SOCIAL", fg=MUTED, bg=BG, font=("Consolas", 8, "bold")).pack(side="left")
