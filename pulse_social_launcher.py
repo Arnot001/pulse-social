@@ -4,6 +4,9 @@ import subprocess
 import sys
 import tkinter as tk
 from pathlib import Path
+from tkinter import messagebox
+
+from platforms.x.browser_session import browser_status, open_x_browser
 
 BG = "#07090f"
 PANEL = "#0d111b"
@@ -33,8 +36,8 @@ def close_all() -> None:
 
 root = tk.Tk()
 root.title("Pulse Social")
-root.geometry("720x420")
-root.minsize(680, 390)
+root.geometry("760x460")
+root.minsize(720, 430)
 root.configure(bg=BG)
 
 header = tk.Frame(root, bg=BG)
@@ -45,7 +48,26 @@ tk.Label(root, text="SOCIAL AUTOMATION  //  COMMERCE INTELLIGENCE", fg=MUTED, bg
 tk.Button(header, text="CLOSE ALL", command=close_all, bg="#5b1623", fg=TEXT, activebackground="#7a1d2e", activeforeground="white", relief="flat", bd=0, padx=14, pady=7, font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right", pady=4)
 
 nav = tk.Frame(root, bg=BG)
-nav.pack(fill="both", expand=True, padx=30, pady=28)
+nav.pack(fill="both", expand=True, padx=30, pady=(22,14))
+
+browser_status_var = tk.StringVar(value=browser_status())
+
+
+def connect_x_browser() -> None:
+    ok, msg = open_x_browser(restart_existing=False)
+    if not ok and "already open without Pulse control" in msg:
+        if not messagebox.askyesno(
+            "Restart browser for Pulse?",
+            msg + "\n\nPulse needs to restart it with browser control enabled. "
+            "Open tabs should be restorable by the browser. Restart now?",
+            parent=root,
+        ):
+            browser_status_var.set(browser_status())
+            return
+        ok, msg = open_x_browser(restart_existing=True)
+    browser_status_var.set(browser_status() if ok else msg.upper())
+    if not ok:
+        messagebox.showerror("X Browser", msg, parent=root)
 
 
 def platform_card(title: str, subtitle: str, feature: str, command) -> tk.Frame:
@@ -61,6 +83,8 @@ x_card = platform_card("X", "Cleanup and scheduled posting tools for your own X 
 button_row = tk.Frame(x_card, bg=PANEL)
 button_row.pack(anchor="w", padx=20, pady=(8, 0))
 tk.Button(button_row, text="AUTO POST", command=lambda: launch("x_auto_post_ui.py"), bg=PANEL_2, fg=TEXT, activebackground=ACCENT, activeforeground="white", relief="flat", bd=0, padx=18, pady=8, font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="left")
+tk.Button(button_row, text="CONNECT X BROWSER", command=connect_x_browser, bg=PANEL_2, fg=TEXT, activebackground=ACCENT, activeforeground="white", relief="flat", bd=0, padx=14, pady=8, font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="left", padx=(8,0))
+tk.Label(x_card, textvariable=browser_status_var, fg="#35d07f", bg=PANEL, font=("Consolas", 8, "bold")).pack(anchor="w", padx=20, pady=(8,0))
 x_card.pack(side="left", fill="both", expand=True, padx=(0, 10))
 tiktok_card = platform_card("TIKTOK", "Shop intelligence powered by TikTok's live category taxonomy.", "SHOP  //  AUTO POST SOON", lambda: launch("tiktok_shop_ui.py"))
 tiktok_card.pack(side="left", fill="both", expand=True, padx=(10, 0))
