@@ -150,6 +150,35 @@ def _dismiss_x_overlays(page) -> None:
             pass
 
 
+def _close_x_composer(page) -> None:
+    """Close the X compose dialog after a successful scheduled post."""
+    try:
+        dialog = page.get_by_role("dialog")
+        if dialog.count() and dialog.first.is_visible():
+            close_button = dialog.first.locator('[aria-label="Close"]').first
+            if close_button.count() and close_button.is_visible():
+                close_button.click(timeout=2500)
+                page.wait_for_timeout(300)
+                return
+    except Exception:
+        pass
+
+    try:
+        close_button = page.locator('[aria-label="Close"]').first
+        if close_button.count() and close_button.is_visible():
+            close_button.click(timeout=2500)
+            page.wait_for_timeout(300)
+            return
+    except Exception:
+        pass
+
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+    except Exception:
+        pass
+
+
 def publish_post(text: str, media_paths: list[str] | None = None) -> None:
     with X_ACTION_LOCK:
         with sync_playwright() as p:
@@ -190,6 +219,7 @@ def publish_post(text: str, media_paths: list[str] | None = None) -> None:
                 raise RuntimeError("X Post button stayed disabled while media was processing.")
             post_button.click(timeout=10000)
             page.wait_for_timeout(1500)
+            _close_x_composer(page)
 
 
 def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> None:
