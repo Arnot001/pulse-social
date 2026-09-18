@@ -4,7 +4,7 @@ import json
 import os
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -29,6 +29,7 @@ class QueuedPost:
     text: str
     due_at: str
     status: str = "queued"
+    media_paths: list[str] = field(default_factory=list)
 
 
 def load_queue() -> list[QueuedPost]:
@@ -45,11 +46,17 @@ def save_queue(items: list[QueuedPost]) -> None:
     QUEUE_FILE.write_text(json.dumps([asdict(x) for x in items], indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def add_post(text: str, due_at: datetime) -> QueuedPost:
+def add_post(text: str, due_at: datetime, media_paths: list[str] | None = None) -> QueuedPost:
     clean = text.strip()
-    if not clean:
-        raise ValueError("Post text is empty.")
-    item = QueuedPost(post_id=f"{int(time.time()*1000)}", text=clean, due_at=due_at.isoformat(timespec="seconds"))
+    media = [str(Path(path)) for path in (media_paths or [])]
+    if not clean and not media:
+        raise ValueError("Post text and media are both empty.")
+    item = QueuedPost(
+        post_id=f"{int(time.time()*1000)}",
+        text=clean,
+        due_at=due_at.isoformat(timespec="seconds"),
+        media_paths=media,
+    )
     items = load_queue()
     items.append(item)
     items.sort(key=lambda x: x.due_at)
@@ -125,7 +132,7 @@ def _connect_x_browser(playwright):
     )
 
 
-def publish_text(text: str) -> None:
+def publish_post(text: str, media_paths: list[str] | None = None) -> None:
     with X_ACTION_LOCK:
         with sync_playwright() as p:
             _browser, context, page, _browser_label = _connect_x_browser(p)
@@ -136,15 +143,32 @@ def publish_text(text: str) -> None:
             page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
             editor = page.locator('[data-testid="tweetTextarea_0"]').first
             editor.wait_for(state="visible", timeout=10000)
-            editor.click()
-            editor.fill(text)
+            if text:
+                editor.click()
+                editor.fill(text)
+
+            media = [Path(path) for path in (media_paths or [])]
+            missing = [str(path) for path in media if not path.exists()]
+            if missing:
+                raise RuntimeError("Media file missing: " + ", ".join(missing))
+
+            if media:
+                file_input = page.locator('input[type="file"]').first
+                file_input.wait_for(state="attached", timeout=10000)
+                file_input.set_input_files([str(path) for path in media])
+                # X can take a while to process video. Wait until the Post button becomes usable.
+                page.wait_for_timeout(1200)
+
             post_button = page.locator('[data-testid="tweetButton"]').first
             if post_button.count() == 0:
                 post_button = page.locator('[data-testid="tweetButtonInline"]').first
-            post_button.wait_for(state="visible", timeout=5000)
+            post_button.wait_for(state="visible", timeout=10000)
+            deadline = time.time() + (120 if media else 15)
+            while post_button.is_disabled() and time.time() < deadline:
+                page.wait_for_timeout(1000)
             if post_button.is_disabled():
-                raise RuntimeError("X Post button is disabled.")
-            post_button.click(timeout=5000)
+                raise RuntimeError("X Post button stayed disabled while media was processing.")
+            post_button.click(timeout=10000)
             page.wait_for_timeout(1500)
 
 
@@ -166,12 +190,13 @@ def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> No
             if due > now:
                 continue
             try:
-                log(f"POSTING | {item.text[:100]}")
-                publish_text(item.text)
+                media_note = f" | MEDIA {len(item.media_paths)}" if item.media_paths else ""
+                log(f"POSTING | {item.text[:100]}{media_note}")
+                publish_post(item.text, item.media_paths)
                 item.status = "posted"
                 stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 with HISTORY_FILE.open("a", encoding="utf-8") as f:
-                    f.write(f"{stamp} | POSTED | {item.text.replace(chr(10), ' ')}\n")
+                    f.write(f"{stamp} | POSTED | media={len(item.media_paths)} | {item.text.replace(chr(10), ' ')}\n")
                 log("POSTED successfully.")
             except Exception as exc:
                 item.status = "error"
