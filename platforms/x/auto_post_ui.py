@@ -36,6 +36,8 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     browser_var = tk.StringVar(value=browser_status())
     char_var = tk.StringVar(value="0 chars")
     next_var = tk.StringVar(value="No posts queued")
+    schedule_mode = tk.StringVar(value="delay")
+    clock_time = tk.StringVar(value=(datetime.now() + timedelta(minutes=5)).strftime("%H:%M"))
     stats_var = {
         "queued": tk.StringVar(value="0"),
         "posted": tk.StringVar(value="0"),
@@ -144,12 +146,27 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     schedule = tk.Frame(compose, bg=PANEL)
     schedule.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 12))
-    tk.Label(schedule, text="POST IN", fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).pack(side="left")
     delay = tk.StringVar(value="1")
+
+    delay_mode = tk.Radiobutton(
+        schedule,
+        text="POST IN",
+        variable=schedule_mode,
+        value="delay",
+        bg=PANEL,
+        fg=MUTED,
+        selectcolor=PANEL_2,
+        activebackground=PANEL,
+        activeforeground=TEXT,
+        font=("Consolas", 8, "bold"),
+        cursor="hand2",
+    )
+    delay_mode.pack(side="left")
+
     delay_entry = tk.Entry(
         schedule,
         textvariable=delay,
-        width=7,
+        width=6,
         bg=PANEL_2,
         fg=TEXT,
         insertbackground=TEXT,
@@ -157,14 +174,45 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
         justify="center",
         font=("Segoe UI", 10, "bold"),
     )
-    delay_entry.pack(side="left", padx=(8, 5), ipady=6)
-    tk.Label(schedule, text="minutes", fg=MUTED, bg=PANEL, font=("Segoe UI", 9)).pack(side="left", padx=(0, 12))
+    delay_entry.pack(side="left", padx=(6, 4), ipady=6)
+    tk.Label(schedule, text="minutes", fg=MUTED, bg=PANEL, font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
 
     def set_delay(value):
+        schedule_mode.set("delay")
         delay.set(str(value))
 
     for value in (1, 5, 15, 30, 60):
-        button(schedule, f"{value}m", lambda v=value: set_delay(v), compact=True).pack(side="left", padx=3)
+        button(schedule, f"{value}m", lambda v=value: set_delay(v), compact=True).pack(side="left", padx=2)
+
+    tk.Frame(schedule, bg=BORDER, width=1, height=28).pack(side="left", padx=9)
+
+    clock_mode_btn = tk.Radiobutton(
+        schedule,
+        text="AT",
+        variable=schedule_mode,
+        value="clock",
+        bg=PANEL,
+        fg=MUTED,
+        selectcolor=PANEL_2,
+        activebackground=PANEL,
+        activeforeground=TEXT,
+        font=("Consolas", 8, "bold"),
+        cursor="hand2",
+    )
+    clock_mode_btn.pack(side="left")
+    clock_entry = tk.Entry(
+        schedule,
+        textvariable=clock_time,
+        width=7,
+        bg=PANEL_2,
+        fg=TEXT,
+        insertbackground=TEXT,
+        relief="flat",
+        justify="center",
+        font=("Consolas", 10, "bold"),
+    )
+    clock_entry.pack(side="left", padx=(6, 4), ipady=6)
+    tk.Label(schedule, text="HH:MM", fg=MUTED, bg=PANEL, font=("Segoe UI", 8)).pack(side="left")
 
     # Main queue action lives beside the schedule controls so it is always visible.
     queue_button_holder = tk.Frame(schedule, bg=PANEL)
@@ -312,22 +360,41 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     def queue_post():
         body = text.get("1.0", tk.END).strip()
-        try:
-            minutes = int(delay.get())
-            if minutes < 0:
-                raise ValueError
-        except ValueError:
-            messagebox.showerror("Invalid delay", "Post delay must be 0 or more whole minutes.", parent=window)
-            return
         if not body:
             messagebox.showerror("Empty post", "Write the post first.", parent=window)
             return
-        due = datetime.now() + timedelta(minutes=minutes)
+
+        now = datetime.now()
+        if schedule_mode.get() == "clock":
+            try:
+                hour_text, minute_text = clock_time.get().strip().split(":", 1)
+                hour = int(hour_text)
+                minute = int(minute_text)
+                if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Invalid time", "Enter a 24-hour time in HH:MM format, for example 18:30.", parent=window)
+                return
+            due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if due <= now:
+                due += timedelta(days=1)
+            schedule_note = f"AT {due:%H:%M}"
+        else:
+            try:
+                minutes = int(delay.get())
+                if minutes < 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Invalid delay", "Post delay must be 0 or more whole minutes.", parent=window)
+                return
+            due = now + timedelta(minutes=minutes)
+            schedule_note = f"IN {minutes}m"
+
         add_post(body, due)
         text.delete("1.0", tk.END)
         update_char_count()
         refresh()
-        write(f"QUEUED | {due:%H:%M} | {body[:100]}")
+        write(f"QUEUED | {schedule_note} | due {due:%d/%m %H:%M} | {body[:100]}")
 
     def remove_selected():
         sel = tree.selection()
