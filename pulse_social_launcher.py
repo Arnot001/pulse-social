@@ -44,7 +44,10 @@ def platform_card(title: str, subtitle: str, feature: str, command) -> tk.Frame:
     tk.Button(card, text="OPEN", command=command, bg=ACCENT, fg="white", activebackground=ACCENT, activeforeground="white", relief="flat", bd=0, padx=18, pady=8, font=("Segoe UI", 9, "bold"), cursor="hand2").pack(anchor="w", padx=20)
     return card
 
-x_card = platform_card("X", "Cleanup tools for your own X account.", "CLEANUP  //  AUTO POST SOON", lambda: launch("pulse_social_ui.py"))
+x_card = platform_card("X", "Cleanup and scheduled posting tools for your own X account.", "CLEANUP  //  AUTO POST", lambda: launch("pulse_social_ui.py"))
+button_row = tk.Frame(x_card, bg=PANEL)
+button_row.pack(anchor="w", padx=20, pady=(8, 0))
+tk.Button(button_row, text="AUTO POST", command=lambda: launch("x_auto_post_ui.py"), bg=PANEL_2, fg=TEXT, activebackground=ACCENT, activeforeground="white", relief="flat", bd=0, padx=18, pady=8, font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="left")
 x_card.pack(side="left", fill="both", expand=True, padx=(0, 10))
 tiktok_card = platform_card("TIKTOK", "Shop intelligence powered by TikTok's live category taxonomy.", "SHOP  //  AUTO POST SOON", lambda: launch("tiktok_shop_ui.py"))
 tiktok_card.pack(side="left", fill="both", expand=True, padx=(10, 0))
