@@ -166,6 +166,10 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     for value in (1, 5, 15, 30, 60):
         button(schedule, f"{value}m", lambda v=value: set_delay(v), compact=True).pack(side="left", padx=3)
 
+    # Main queue action lives beside the schedule controls so it is always visible.
+    queue_button_holder = tk.Frame(schedule, bg=PANEL)
+    queue_button_holder.pack(side="right")
+
     # STATS
     stats = tk.Frame(top, bg=BG)
     stats.grid(row=0, column=1, sticky="nsew")
@@ -188,7 +192,9 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     queue_head = tk.Frame(queue_card, bg=PANEL)
     queue_head.pack(fill="x", padx=16, pady=(12, 8))
     tk.Label(queue_head, text="POST QUEUE", fg=TEXT, bg=PANEL, font=("Segoe UI", 12, "bold")).pack(side="left")
-    tk.Label(queue_head, textvariable=next_var, fg=MUTED, bg=PANEL, font=("Consolas", 9)).pack(side="right")
+    queue_actions = tk.Frame(queue_head, bg=PANEL)
+    queue_actions.pack(side="right")
+    tk.Label(queue_actions, textvariable=next_var, fg=MUTED, bg=PANEL, font=("Consolas", 9)).pack(side="left", padx=(0, 12))
 
     cols = ("due", "status", "post")
     tree = ttk.Treeview(queue_card, columns=cols, show="headings", style="Pulse.Treeview", height=5)
@@ -347,14 +353,11 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
         stop_event.set()
         status.set("STOPPED")
 
-    # COMMAND BAR
-    command = tk.Frame(window, bg=BG)
-    command.pack(fill="x", padx=30, pady=(0, 12))
-    button(command, "QUEUE POST", queue_post, accent=True).pack(side="left")
-    button(command, "REMOVE SELECTED", remove_selected).pack(side="left", padx=8)
-    button(command, "START AUTO POST", start, accent=True).pack(side="right")
-    button(command, "STOP", stop, danger=True).pack(side="right", padx=8)
-    tk.Label(command, text="Scheduler must remain running for queued posts to fire.", fg=MUTED, bg=BG, font=("Segoe UI", 9)).pack(side="right", padx=16)
+    # Always-visible actions.
+    button(queue_button_holder, "QUEUE POST", queue_post, accent=True, compact=True).pack(side="right")
+    button(queue_actions, "REMOVE", remove_selected, compact=True).pack(side="left", padx=(0, 6))
+    button(queue_actions, "STOP", stop, danger=True, compact=True).pack(side="left", padx=(0, 6))
+    button(queue_actions, "START", start, accent=True, compact=True).pack(side="left")
 
     def close():
         stop_event.set()
