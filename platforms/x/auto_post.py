@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +18,9 @@ APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "Pulse Social"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_FILE = APP_DIR / "x_auto_post_queue.json"
 HISTORY_FILE = APP_DIR / "x_auto_post_history.txt"
+MEDIA_CACHE_DIR = APP_DIR / "x_media_cache"
+MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 CDP_PORTS = (9222, 9223, 9224, 9225)
 BROWSER_USER_DATA_DIRS = (
     ("Chrome", Path(os.environ["LOCALAPPDATA"]) / "Google" / "Chrome" / "User Data"),
@@ -206,9 +212,114 @@ def _x_media_processing_error(page) -> str | None:
     return None
 
 
-def publish_post(text: str, media_paths: list[str] | None = None) -> None:
+def _transcode_video_for_x(source: Path, log: Callable[[str], None] | None = None) -> Path:
+    """Create a conservative X-safe H.264/AAC MP4 copy of a video."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError(
+            "FFmpeg is required to prepare videos for X. Install FFmpeg, reopen Pulse Social, and retry."
+        )
+
+    target = MEDIA_CACHE_DIR / f"{source.stem[:40]}-{uuid.uuid4().hex[:10]}-x.mp4"
+    if log:
+        log(f"VIDEO PREP | {source.name} | converting to X-safe H.264/AAC MP4")
+
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-vf",
+        "scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30,format=yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "23",
+        "-maxrate",
+        "8M",
+        "-bufsize",
+        "16M",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ar",
+        "48000",
+        "-movflags",
+        "+faststart",
+        str(target),
+    ]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=900,
+            creationflags=creationflags,
+        )
+    except subprocess.TimeoutExpired as exc:
+        target.unlink(missing_ok=True)
+        raise RuntimeError("Video preparation timed out after 15 minutes.") from exc
+
+    if result.returncode != 0 or not target.exists() or target.stat().st_size == 0:
+        target.unlink(missing_ok=True)
+        detail = " ".join((result.stderr or "").strip().split())
+        if len(detail) > 500:
+            detail = detail[-500:]
+        raise RuntimeError(f"FFmpeg could not prepare the video for X: {detail or 'unknown conversion error'}")
+
+    if log:
+        mb = target.stat().st_size / (1024 * 1024)
+        log(f"VIDEO READY | {target.name} | {mb:.1f} MB")
+    return target
+
+
+def _prepare_media_for_x(
+    media: list[Path], log: Callable[[str], None] | None = None
+) -> tuple[list[Path], list[Path]]:
+    prepared: list[Path] = []
+    temporary: list[Path] = []
+    try:
+        for path in media:
+            if path.suffix.lower() in VIDEO_SUFFIXES:
+                converted = _transcode_video_for_x(path, log)
+                prepared.append(converted)
+                temporary.append(converted)
+            else:
+                prepared.append(path)
+    except Exception:
+        for path in temporary:
+            path.unlink(missing_ok=True)
+        raise
+    return prepared, temporary
+
+
+def publish_post(
+    text: str,
+    media_paths: list[str] | None = None,
+    log: Callable[[str], None] | None = None,
+) -> None:
     with X_ACTION_LOCK:
-        with sync_playwright() as p:
+        media = [Path(path) for path in (media_paths or [])]
+        missing = [str(path) for path in media if not path.exists()]
+        if missing:
+            raise RuntimeError("Media file missing: " + ", ".join(missing))
+
+        prepared_media, temporary_media = _prepare_media_for_x(media, log)
+        try:
+            with sync_playwright() as p:
             _browser, context, page, _browser_label = _connect_x_browser(p)
             if not context:
                 raise RuntimeError("Browser attached but no browser context was available.")
@@ -225,15 +336,10 @@ def publish_post(text: str, media_paths: list[str] | None = None) -> None:
                 editor.click()
                 editor.fill(text)
 
-            media = [Path(path) for path in (media_paths or [])]
-            missing = [str(path) for path in media if not path.exists()]
-            if missing:
-                raise RuntimeError("Media file missing: " + ", ".join(missing))
-
-            if media:
+            if prepared_media:
                 file_input = page.locator('input[type="file"]').first
                 file_input.wait_for(state="attached", timeout=10000)
-                file_input.set_input_files([str(path) for path in media])
+                file_input.set_input_files([str(path) for path in prepared_media])
                 # X can take a while to process video, but it can also reject a file
                 # immediately. Detect that state instead of waiting on a disabled Post
                 # button for two minutes and making the UI look like it is looping.
@@ -246,15 +352,15 @@ def publish_post(text: str, media_paths: list[str] | None = None) -> None:
             if post_button.count() == 0:
                 post_button = page.locator('[data-testid="tweetButtonInline"]').first
             post_button.wait_for(state="visible", timeout=10000)
-            deadline = time.time() + (120 if media else 15)
+            deadline = time.time() + (120 if prepared_media else 15)
             while post_button.is_disabled() and time.time() < deadline:
-                if media:
+                if prepared_media:
                     media_error = _x_media_processing_error(page)
                     if media_error:
                         raise RuntimeError(f"X rejected the media: {media_error}")
                 page.wait_for_timeout(500)
             if post_button.is_disabled():
-                if media:
+                if prepared_media:
                     media_error = _x_media_processing_error(page)
                     if media_error:
                         raise RuntimeError(f"X rejected the media: {media_error}")
@@ -264,6 +370,9 @@ def publish_post(text: str, media_paths: list[str] | None = None) -> None:
             # Inline Home composer should reset after a successful post and does
             # not need modal cleanup. Wait briefly for X to clear the composer.
             page.wait_for_timeout(1500)
+        finally:
+            for path in temporary_media:
+                path.unlink(missing_ok=True)
 
 
 def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> None:
@@ -286,7 +395,7 @@ def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> No
             try:
                 media_note = f" | MEDIA {len(item.media_paths)}" if item.media_paths else ""
                 log(f"POSTING | {item.text[:100]}{media_note}")
-                publish_post(item.text, item.media_paths)
+                publish_post(item.text, item.media_paths, log=log)
                 item.status = "posted"
                 stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 with HISTORY_FILE.open("a", encoding="utf-8") as f:
