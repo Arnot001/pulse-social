@@ -187,6 +187,25 @@ def _close_x_composer(page) -> None:
             pass
 
 
+def _x_media_processing_error(page) -> str | None:
+    """Return X's visible media-upload error, if it has already rejected the file."""
+    try:
+        messages = page.locator('[data-testid="toast"], [role="alert"]').all_inner_texts()
+    except Exception:
+        return None
+    for message in messages:
+        clean = " ".join(message.split())
+        lowered = clean.lower()
+        if (
+            "could not be processed" in lowered
+            or "failed to upload" in lowered
+            or "media upload failed" in lowered
+            or ("video" in lowered and "upload" in lowered and "error" in lowered)
+        ):
+            return clean
+    return None
+
+
 def publish_post(text: str, media_paths: list[str] | None = None) -> None:
     with X_ACTION_LOCK:
         with sync_playwright() as p:
@@ -215,8 +234,13 @@ def publish_post(text: str, media_paths: list[str] | None = None) -> None:
                 file_input = page.locator('input[type="file"]').first
                 file_input.wait_for(state="attached", timeout=10000)
                 file_input.set_input_files([str(path) for path in media])
-                # X can take a while to process video. Wait until the Post button becomes usable.
+                # X can take a while to process video, but it can also reject a file
+                # immediately. Detect that state instead of waiting on a disabled Post
+                # button for two minutes and making the UI look like it is looping.
                 page.wait_for_timeout(1200)
+                media_error = _x_media_processing_error(page)
+                if media_error:
+                    raise RuntimeError(f"X rejected the media: {media_error}")
 
             post_button = page.locator('[data-testid="tweetButton"]').first
             if post_button.count() == 0:
@@ -224,8 +248,16 @@ def publish_post(text: str, media_paths: list[str] | None = None) -> None:
             post_button.wait_for(state="visible", timeout=10000)
             deadline = time.time() + (120 if media else 15)
             while post_button.is_disabled() and time.time() < deadline:
-                page.wait_for_timeout(1000)
+                if media:
+                    media_error = _x_media_processing_error(page)
+                    if media_error:
+                        raise RuntimeError(f"X rejected the media: {media_error}")
+                page.wait_for_timeout(500)
             if post_button.is_disabled():
+                if media:
+                    media_error = _x_media_processing_error(page)
+                    if media_error:
+                        raise RuntimeError(f"X rejected the media: {media_error}")
                 raise RuntimeError("X Post button stayed disabled while media was processing.")
             post_button.click(timeout=10000)
 
