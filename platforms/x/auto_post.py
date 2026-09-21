@@ -320,60 +320,59 @@ def publish_post(
         prepared_media, temporary_media = _prepare_media_for_x(media, log)
         try:
             with sync_playwright() as p:
-            _browser, context, page, _browser_label = _connect_x_browser(p)
-            if not context:
-                raise RuntimeError("Browser attached but no browser context was available.")
-            if "x.com" not in page.url.lower() or "/home" not in page.url.lower():
-                page.goto("https://x.com/home", wait_until="domcontentloaded")
-            _dismiss_x_overlays(page)
+                _browser, context, page, _browser_label = _connect_x_browser(p)
+                if not context:
+                    raise RuntimeError("Browser attached but no browser context was available.")
+                if "x.com" not in page.url.lower() or "/home" not in page.url.lower():
+                    page.goto("https://x.com/home", wait_until="domcontentloaded")
+                _dismiss_x_overlays(page)
 
-            # Use X's inline Home composer instead of /compose/post. The modal
-            # composer is aggressively autosaved by X and can leave a duplicate
-            # draft after successful media posts.
-            editor = page.locator('[data-testid="tweetTextarea_0"]').first
-            editor.wait_for(state="visible", timeout=10000)
-            if text:
-                editor.click()
-                editor.fill(text)
+                # Use X's inline Home composer instead of /compose/post. The modal
+                # composer is aggressively autosaved by X and can leave a duplicate
+                # draft after successful media posts.
+                editor = page.locator('[data-testid="tweetTextarea_0"]').first
+                editor.wait_for(state="visible", timeout=10000)
+                if text:
+                    editor.click()
+                    editor.fill(text)
 
-            if prepared_media:
-                file_input = page.locator('input[type="file"]').first
-                file_input.wait_for(state="attached", timeout=10000)
-                file_input.set_input_files([str(path) for path in prepared_media])
-                # X can take a while to process video, but it can also reject a file
-                # immediately. Detect that state instead of waiting on a disabled Post
-                # button for two minutes and making the UI look like it is looping.
-                page.wait_for_timeout(1200)
-                media_error = _x_media_processing_error(page)
-                if media_error:
-                    raise RuntimeError(f"X rejected the media: {media_error}")
-
-            post_button = page.locator('[data-testid="tweetButton"]').first
-            if post_button.count() == 0:
-                post_button = page.locator('[data-testid="tweetButtonInline"]').first
-            post_button.wait_for(state="visible", timeout=10000)
-            deadline = time.time() + (120 if prepared_media else 15)
-            while post_button.is_disabled() and time.time() < deadline:
                 if prepared_media:
+                    file_input = page.locator('input[type="file"]').first
+                    file_input.wait_for(state="attached", timeout=10000)
+                    file_input.set_input_files([str(path) for path in prepared_media])
+                    # X can take a while to process video, but it can also reject a file
+                    # immediately. Detect that state instead of waiting on a disabled Post
+                    # button for two minutes and making the UI look like it is looping.
+                    page.wait_for_timeout(1200)
                     media_error = _x_media_processing_error(page)
                     if media_error:
                         raise RuntimeError(f"X rejected the media: {media_error}")
-                page.wait_for_timeout(500)
-            if post_button.is_disabled():
-                if prepared_media:
-                    media_error = _x_media_processing_error(page)
-                    if media_error:
-                        raise RuntimeError(f"X rejected the media: {media_error}")
-                raise RuntimeError("X Post button stayed disabled while media was processing.")
-            post_button.click(timeout=10000)
 
-            # Inline Home composer should reset after a successful post and does
-            # not need modal cleanup. Wait briefly for X to clear the composer.
-            page.wait_for_timeout(1500)
+                post_button = page.locator('[data-testid="tweetButton"]').first
+                if post_button.count() == 0:
+                    post_button = page.locator('[data-testid="tweetButtonInline"]').first
+                post_button.wait_for(state="visible", timeout=10000)
+                deadline = time.time() + (120 if prepared_media else 15)
+                while post_button.is_disabled() and time.time() < deadline:
+                    if prepared_media:
+                        media_error = _x_media_processing_error(page)
+                        if media_error:
+                            raise RuntimeError(f"X rejected the media: {media_error}")
+                    page.wait_for_timeout(500)
+                if post_button.is_disabled():
+                    if prepared_media:
+                        media_error = _x_media_processing_error(page)
+                        if media_error:
+                            raise RuntimeError(f"X rejected the media: {media_error}")
+                    raise RuntimeError("X Post button stayed disabled while media was processing.")
+                post_button.click(timeout=10000)
+
+                # Inline Home composer should reset after a successful post and does
+                # not need modal cleanup. Wait briefly for X to clear the composer.
+                page.wait_for_timeout(1500)
         finally:
             for path in temporary_media:
                 path.unlink(missing_ok=True)
-
 
 def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> None:
     log("AUTO POST scheduler started.")
