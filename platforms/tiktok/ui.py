@@ -6,6 +6,7 @@ X cleanup application stays isolated while TikTok features grow here.
 
 import tkinter as tk
 
+from .auto_post_ui import TikTokAutoPostView
 from .shop_ui import TikTokShopView
 
 BG = "#07090f"
@@ -63,7 +64,7 @@ class TikTokModule(tk.Frame):
         if feature == "shop":
             TikTokShopView(self.content).pack(fill="both", expand=True)
         elif feature == "autopost":
-            self._show_placeholder("AUTO POST", "TikTok publishing queue will live here.")
+            TikTokAutoPostView(self.content).pack(fill="both", expand=True)
         else:
             self._show_placeholder("ANALYTICS", "TikTok account and content intelligence will live here.")
 
