@@ -203,14 +203,15 @@ platform_card(
     1,
     "PLATFORM 02",
     "TikTok",
-    "Commerce intelligence built around TikTok Shop live category data.",
+    "Commerce intelligence plus scheduled TikTok publishing.",
     [
-        "Live category collection",
-        "Price movement and watch alerts",
-        "Market comparison intelligence",
+        "Live category collection and deal intelligence",
+        "Scheduled video posts with captions",
+        "Official TikTok Content Posting API workflow",
     ],
     "OPEN SHOP",
     lambda: launch("tiktok_shop_ui.py"),
+    ("AUTO POST", lambda: launch("tiktok_auto_post_ui.py")),
 )
 
 # FOOTER
@@ -219,7 +220,7 @@ footer_glow.pack(fill="x", padx=34, pady=(0, 10))
 footer = tk.Frame(root, bg=BG)
 footer.pack(fill="x", padx=36, pady=(0, 20))
 tk.Label(footer, text="PULSE SOCIAL", fg=MUTED, bg=BG, font=("Consolas", 8, "bold")).pack(side="left")
-tk.Label(footer, text="X CLEANUP  •  X AUTO POST  •  TIKTOK SHOP", fg=MUTED, bg=BG, font=("Consolas", 8)).pack(side="right")
+tk.Label(footer, text="X CLEANUP  •  X AUTO POST  •  TIKTOK SHOP  •  TIKTOK AUTO POST", fg=MUTED, bg=BG, font=("Consolas", 8)).pack(side="right")
 
 root.protocol("WM_DELETE_WINDOW", close_all)
 root.mainloop()
