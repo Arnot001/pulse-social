@@ -27,8 +27,15 @@ DEFAULT_SCOPES = ("user.info.basic", "video.publish")
 REQUEST_TIMEOUT = 45
 TOKEN_REFRESH_SKEW_SECONDS = 300
 
+BACKEND_BASE_URL = os.environ.get("PULSE_TIKTOK_BACKEND_URL", "").strip().rstrip("/")
+
 _TOKEN_LOCK = threading.Lock()
 _UNRESERVED = string.ascii_letters + string.digits + "-._~"
+
+
+def backend_enabled() -> bool:
+    """Customer mode: Pulse uses the hosted backend so users never see app secrets."""
+    return bool(BACKEND_BASE_URL)
 
 
 def _protect_secret(value: str) -> str:
@@ -85,6 +92,11 @@ def save_app_credentials(
     client_secret: str,
     redirect_uri: str = DEFAULT_REDIRECT_URI,
 ) -> None:
+    """Local-development fallback only.
+
+    Customer builds should set PULSE_TIKTOK_BACKEND_URL and never receive the
+    TikTok client secret.
+    """
     key = client_key.strip()
     secret = client_secret.strip()
     redirect = redirect_uri.strip()
@@ -128,7 +140,64 @@ def load_app_credentials() -> dict:
 
 
 def app_credentials_configured() -> bool:
+    if backend_enabled():
+        return True
     return bool(load_app_credentials())
+
+
+def _backend_request(method: str, path: str, **kwargs) -> dict:
+    if not backend_enabled():
+        raise RuntimeError("Pulse TikTok backend is not configured.")
+    url = f"{BACKEND_BASE_URL}{path}"
+    try:
+        response = requests.request(method, url, timeout=REQUEST_TIMEOUT, **kwargs)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Pulse TikTok service is unavailable: {exc}") from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Pulse TikTok service returned invalid JSON (HTTP {response.status_code})."
+        ) from exc
+
+    if response.status_code >= 400:
+        detail = payload.get("detail") if isinstance(payload, dict) else payload
+        raise RuntimeError(f"Pulse TikTok service error: {detail or payload}")
+
+    return payload if isinstance(payload, dict) else {}
+
+
+def _backend_config() -> dict:
+    payload = _backend_request("GET", "/v1/tiktok/config")
+    client_key = str(payload.get("client_key") or "")
+    redirect_uri = str(payload.get("redirect_uri") or DEFAULT_REDIRECT_URI)
+    scopes = payload.get("scopes") or list(DEFAULT_SCOPES)
+    if not client_key:
+        raise RuntimeError("Pulse TikTok service did not return a client key.")
+    return {
+        "client_key": client_key,
+        "redirect_uri": redirect_uri,
+        "scopes": tuple(str(scope) for scope in scopes if scope),
+    }
+
+
+def _oauth_config() -> dict:
+    if backend_enabled():
+        return _backend_config()
+
+    credentials = load_app_credentials()
+    if not credentials:
+        raise RuntimeError(
+            "TikTok development credentials are not configured. "
+            "Customer builds should use PULSE_TIKTOK_BACKEND_URL."
+        )
+    return {
+        "client_key": credentials["client_key"],
+        "client_secret": credentials["client_secret"],
+        "redirect_uri": credentials["redirect_uri"],
+        "scopes": DEFAULT_SCOPES,
+    }
 
 
 def _generate_code_verifier(length: int = 64) -> str:
@@ -138,7 +207,7 @@ def _generate_code_verifier(length: int = 64) -> str:
 
 
 def _code_challenge(verifier: str) -> str:
-    # TikTok Desktop Login Kit explicitly requires the SHA256 digest encoded as hex.
+    # TikTok Desktop Login Kit uses the SHA256 digest encoded as hex.
     return hashlib.sha256(verifier.encode("utf-8")).hexdigest()
 
 
@@ -185,15 +254,25 @@ def _token_snapshot() -> dict:
 
 
 def connection_status() -> dict:
-    credentials = load_app_credentials()
     tokens = _token_snapshot()
+    if backend_enabled():
+        redirect_uri = DEFAULT_REDIRECT_URI
+        app_ready = True
+        mode = "BACKEND"
+    else:
+        credentials = load_app_credentials()
+        redirect_uri = credentials.get("redirect_uri") if credentials else DEFAULT_REDIRECT_URI
+        app_ready = bool(credentials)
+        mode = "LOCAL_DEV"
+
     return {
-        "app_configured": bool(credentials),
+        "app_configured": app_ready,
         "connected": bool(tokens.get("access_token") and tokens.get("refresh_token")),
         "open_id": tokens.get("open_id") or "",
         "scope": tokens.get("scope") or "",
         "access_expires_at": tokens.get("access_expires_at") or 0,
-        "redirect_uri": credentials.get("redirect_uri") if credentials else DEFAULT_REDIRECT_URI,
+        "redirect_uri": redirect_uri,
+        "mode": mode,
     }
 
 
@@ -212,8 +291,19 @@ def _parse_token_response(response: requests.Response, action: str) -> dict:
 def _exchange_code(
     code: str,
     verifier: str,
-    credentials: dict,
+    config: dict,
 ) -> dict:
+    if backend_enabled():
+        return _backend_request(
+            "POST",
+            "/v1/tiktok/oauth/exchange",
+            json={
+                "code": code,
+                "code_verifier": verifier,
+                "redirect_uri": config["redirect_uri"],
+            },
+        )
+
     response = requests.post(
         TOKEN_URL,
         headers={
@@ -221,11 +311,11 @@ def _exchange_code(
             "Cache-Control": "no-cache",
         },
         data={
-            "client_key": credentials["client_key"],
-            "client_secret": credentials["client_secret"],
+            "client_key": config["client_key"],
+            "client_secret": config["client_secret"],
             "code": code,
             "grant_type": "authorization_code",
-            "redirect_uri": credentials["redirect_uri"],
+            "redirect_uri": config["redirect_uri"],
             "code_verifier": verifier,
         },
         timeout=REQUEST_TIMEOUT,
@@ -233,7 +323,18 @@ def _exchange_code(
     return _parse_token_response(response, "authorization")
 
 
-def _refresh_token(credentials: dict, refresh_token: str) -> dict:
+def _refresh_token(refresh_token: str) -> dict:
+    if backend_enabled():
+        return _backend_request(
+            "POST",
+            "/v1/tiktok/oauth/refresh",
+            json={"refresh_token": refresh_token},
+        )
+
+    credentials = load_app_credentials()
+    if not credentials:
+        raise RuntimeError("TikTok development credentials are not configured.")
+
     response = requests.post(
         TOKEN_URL,
         headers={
@@ -253,10 +354,6 @@ def _refresh_token(credentials: dict, refresh_token: str) -> dict:
 
 def get_access_token() -> str:
     with _TOKEN_LOCK:
-        credentials = load_app_credentials()
-        if not credentials:
-            raise RuntimeError("TikTok app credentials are not configured.")
-
         tokens = _token_snapshot()
         access = str(tokens.get("access_token") or "")
         refresh = str(tokens.get("refresh_token") or "")
@@ -267,11 +364,12 @@ def get_access_token() -> str:
             return access
         if not refresh:
             raise RuntimeError("TikTok is not connected. Use CONNECT TIKTOK first.")
+
         refresh_expires_at = int(tokens.get("refresh_expires_at") or 0)
         if refresh_expires_at and refresh_expires_at <= now:
             raise RuntimeError("TikTok refresh token has expired. Reconnect TikTok.")
 
-        payload = _refresh_token(credentials, refresh)
+        payload = _refresh_token(refresh)
         _store_token_bundle(payload)
         return str(payload["access_token"])
 
@@ -312,7 +410,11 @@ def _callback_server(redirect_uri: str, expected_state: str):
             if state != expected_state:
                 result["error"] = "OAuth state did not match. Connection was cancelled for safety."
             elif values.get("error"):
-                result["error"] = (values.get("error_description") or values.get("error") or ["TikTok authorization failed."])[0]
+                result["error"] = (
+                    values.get("error_description")
+                    or values.get("error")
+                    or ["TikTok authorization failed."]
+                )[0]
             else:
                 result["code"] = (values.get("code") or [""])[0]
                 result["scopes"] = (values.get("scopes") or [""])[0]
@@ -322,7 +424,7 @@ def _callback_server(redirect_uri: str, expected_state: str):
             body = (
                 "<html><body style='font-family:Segoe UI;background:#06070b;color:#fff;padding:40px'>"
                 "<h2>Pulse Social</h2>"
-                "<p>TikTok connection received. You can close this tab and return to Pulse Social.</p>"
+                "<p>TikTok connected. You can close this tab and return to Pulse Social.</p>"
                 "</body></html>"
             ).encode("utf-8")
             self.send_response(200)
@@ -345,18 +447,17 @@ def connect(
     *,
     timeout_seconds: int = 180,
 ) -> dict:
-    credentials = load_app_credentials()
-    if not credentials:
-        raise RuntimeError("Set TikTok app credentials before connecting.")
+    config = _oauth_config()
 
     verifier = _generate_code_verifier()
     challenge = _code_challenge(verifier)
     state = secrets.token_urlsafe(32)
-    scope = ",".join(DEFAULT_SCOPES)
-    redirect_uri = credentials["redirect_uri"]
+    scopes = config.get("scopes") or DEFAULT_SCOPES
+    scope = ",".join(scopes)
+    redirect_uri = config["redirect_uri"]
 
     params = {
-        "client_key": credentials["client_key"],
+        "client_key": config["client_key"],
         "response_type": "code",
         "scope": scope,
         "redirect_uri": redirect_uri,
@@ -374,7 +475,8 @@ def connect(
         ) from exc
 
     if log:
-        log("TIKTOK LOGIN | opening TikTok authorization in your browser")
+        mode = "Pulse service" if backend_enabled() else "local development"
+        log(f"TIKTOK LOGIN | {mode} | opening TikTok authorization")
     webbrowser.open(authorize_url)
 
     deadline = time.time() + timeout_seconds
@@ -391,8 +493,8 @@ def connect(
 
     code = result.get("code") or ""
     if log:
-        log("TIKTOK LOGIN | authorization received; exchanging code")
-    payload = _exchange_code(code, verifier, credentials)
+        log("TIKTOK LOGIN | authorization received; completing secure exchange")
+    payload = _exchange_code(code, verifier, config)
 
     granted_scope = str(payload.get("scope") or result.get("scopes") or "")
     granted = {item.strip() for item in granted_scope.split(",") if item.strip()}
