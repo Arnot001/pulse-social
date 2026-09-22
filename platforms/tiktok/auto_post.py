@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 import shutil
@@ -14,10 +13,11 @@ from typing import Callable
 
 import requests
 
+from .oauth import get_access_token
+
 APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "Pulse Social"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_FILE = APP_DIR / "tiktok_auto_post_queue.json"
-SETTINGS_FILE = APP_DIR / "tiktok_auto_post_settings.json"
 HISTORY_FILE = APP_DIR / "tiktok_auto_post_history.txt"
 MEDIA_CACHE_DIR = APP_DIR / "tiktok_media_cache"
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -123,66 +123,6 @@ def remove_post(post_id: str) -> None:
     save_queue([item for item in load_queue() if item.post_id != post_id])
 
 
-def _protect_secret(value: str) -> str:
-    if os.name != "nt":
-        raise RuntimeError("TikTok token storage currently requires Windows.")
-    try:
-        import win32crypt
-    except ImportError as exc:
-        raise RuntimeError("pywin32 is required to store the TikTok token securely.") from exc
-
-    encrypted = win32crypt.CryptProtectData(
-        value.encode("utf-8"),
-        "Pulse Social TikTok access token",
-        None,
-        None,
-        None,
-        0,
-    )[1]
-    return base64.b64encode(encrypted).decode("ascii")
-
-
-def _unprotect_secret(value: str) -> str:
-    if os.name != "nt":
-        raise RuntimeError("TikTok token storage currently requires Windows.")
-    try:
-        import win32crypt
-    except ImportError as exc:
-        raise RuntimeError("pywin32 is required to read the TikTok token securely.") from exc
-
-    encrypted = base64.b64decode(value.encode("ascii"))
-    clear = win32crypt.CryptUnprotectData(encrypted, None, None, None, 0)[1]
-    return clear.decode("utf-8")
-
-
-def save_access_token(token: str) -> None:
-    clean = token.strip()
-    if not clean:
-        raise ValueError("Access token is empty.")
-    SETTINGS_FILE.write_text(
-        json.dumps({"access_token_dpapi": _protect_secret(clean)}, indent=2),
-        encoding="utf-8",
-    )
-
-
-def load_access_token() -> str:
-    if not SETTINGS_FILE.exists():
-        return ""
-    try:
-        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        encrypted = str(data.get("access_token_dpapi") or "")
-        return _unprotect_secret(encrypted) if encrypted else ""
-    except Exception:
-        return ""
-
-
-def clear_access_token() -> None:
-    try:
-        SETTINGS_FILE.unlink()
-    except FileNotFoundError:
-        pass
-
-
 def _check_api_response(response: requests.Response, action: str) -> dict:
     try:
         payload = response.json()
@@ -216,9 +156,9 @@ def _post_json(url: str, token: str, body: dict, action: str) -> dict:
 
 
 def query_creator_info(token: str | None = None) -> dict:
-    access_token = (token or load_access_token()).strip()
+    access_token = (token or get_access_token()).strip()
     if not access_token:
-        raise RuntimeError("TikTok is not connected. Add an access token with video.publish permission.")
+        raise RuntimeError("TikTok is not connected. Use CONNECT TIKTOK first.")
     return _post_json(CREATOR_INFO_URL, access_token, {}, "creator info")
 
 
@@ -402,9 +342,9 @@ def submit_direct_post(
     item: TikTokQueuedPost,
     log: Callable[[str], None] | None = None,
 ) -> str:
-    token = load_access_token().strip()
+    token = get_access_token().strip()
     if not token:
-        raise RuntimeError("TikTok is not connected. Add an access token with video.publish permission.")
+        raise RuntimeError("TikTok is not connected. Use CONNECT TIKTOK first.")
 
     source = Path(item.video_path)
     if not source.exists():
@@ -422,7 +362,7 @@ def submit_direct_post(
 
 
 def fetch_publish_status(publish_id: str, token: str | None = None) -> dict:
-    access_token = (token or load_access_token()).strip()
+    access_token = (token or get_access_token()).strip()
     if not access_token:
         raise RuntimeError("TikTok is not connected.")
     return _post_json(
