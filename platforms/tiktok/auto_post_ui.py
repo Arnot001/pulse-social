@@ -17,6 +17,7 @@ from .auto_post import (
 from .oauth import (
     DEFAULT_REDIRECT_URI,
     app_credentials_configured,
+    backend_enabled,
     connect,
     connection_status,
     disconnect,
@@ -170,9 +171,10 @@ class TikTokAutoPostView(tk.Frame):
         self._button(connect_row, "CONNECT TIKTOK", self._connect_tiktok, accent=True, compact=True).pack(
             side="right", padx=4, pady=6
         )
-        self._button(connect_row, "SET APP", self._set_app_credentials, compact=True).pack(
-            side="right", padx=4, pady=6
-        )
+        if not backend_enabled():
+            self._button(connect_row, "DEV SET APP", self._set_app_credentials, compact=True).pack(
+                side="right", padx=4, pady=6
+            )
 
         top = tk.Frame(self, bg=BG)
         top.pack(fill="x", padx=26, pady=(0, 10))
@@ -448,7 +450,7 @@ class TikTokAutoPostView(tk.Frame):
         if not app_credentials_configured():
             messagebox.showinfo(
                 "TikTok",
-                "Set the TikTok app Client Key, Client Secret and redirect URI first.",
+                "TikTok is not ready on this build yet. Ask the Pulse administrator to configure the TikTok connection service.",
                 parent=self.winfo_toplevel(),
             )
             return
@@ -503,7 +505,10 @@ class TikTokAutoPostView(tk.Frame):
 
     def _disconnect_tiktok(self):
         disconnect()
-        self.connection_var.set("APP READY" if app_credentials_configured() else "SETUP REQUIRED")
+        if backend_enabled():
+            self.connection_var.set("READY TO CONNECT")
+        else:
+            self.connection_var.set("DEV APP READY" if app_credentials_configured() else "DEV SETUP REQUIRED")
         self.privacy_options = ["SELF_ONLY"]
         self.privacy_menu.configure(values=self.privacy_options)
         self.privacy_var.set("SELF_ONLY")
@@ -513,10 +518,12 @@ class TikTokAutoPostView(tk.Frame):
         state = connection_status()
         if state.get("connected"):
             self.connection_var.set("CONNECTED")
+        elif backend_enabled():
+            self.connection_var.set("READY TO CONNECT")
         elif state.get("app_configured"):
-            self.connection_var.set("APP READY")
+            self.connection_var.set("DEV APP READY")
         else:
-            self.connection_var.set("SETUP REQUIRED")
+            self.connection_var.set("DEV SETUP REQUIRED")
 
     def _test_connection(self):
         state = connection_status()
