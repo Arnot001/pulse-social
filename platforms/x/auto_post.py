@@ -318,23 +318,41 @@ def publish_post(
             raise RuntimeError("Media file missing: " + ", ".join(missing))
 
         prepared_media, temporary_media = _prepare_media_for_x(media, log)
+        posting_page = None
         try:
             with sync_playwright() as p:
-                _browser, context, page, _browser_label = _connect_x_browser(p)
+                _browser, context, _existing_page, _browser_label = _connect_x_browser(p)
                 if not context:
                     raise RuntimeError("Browser attached but no browser context was available.")
-                if "x.com" not in page.url.lower() or "/home" not in page.url.lower():
-                    page.goto("https://x.com/home", wait_until="domcontentloaded")
+
+                # Never depend on whichever X route the user happened to leave open.
+                # Media posts can leave X on a post/media SPA route with a transparent
+                # layer intercepting pointer events. Start every scheduled post from a
+                # brand-new Home tab in the same authenticated browser context.
+                posting_page = context.new_page()
+                page = posting_page
+                if log:
+                    log("X POST PAGE | opening clean Home composer")
+                page.goto(
+                    "https://x.com/home",
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
                 _dismiss_x_overlays(page)
 
-                # Use X's inline Home composer instead of /compose/post. The modal
-                # composer is aggressively autosaved by X and can leave a duplicate
-                # draft after successful media posts.
                 editor = page.locator('[data-testid="tweetTextarea_0"]').first
-                editor.wait_for(state="visible", timeout=10000)
+                try:
+                    editor.wait_for(state="visible", timeout=15000)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"X Home composer did not become ready. Current page: {page.url}"
+                    ) from exc
+
                 if text:
-                    editor.click()
-                    editor.fill(text)
+                    # Programmatic focus avoids X's transparent SPA layers stealing
+                    # mouse clicks from the composer after a previous media post.
+                    editor.focus()
+                    page.keyboard.insert_text(text)
 
                 if prepared_media:
                     file_input = page.locator('input[type="file"]').first
@@ -371,8 +389,14 @@ def publish_post(
                 # not need modal cleanup. Wait briefly for X to clear the composer.
                 page.wait_for_timeout(1500)
         finally:
+            if posting_page is not None:
+                try:
+                    posting_page.close()
+                except Exception:
+                    pass
             for path in temporary_media:
                 path.unlink(missing_ok=True)
+
 
 def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> None:
     log("AUTO POST scheduler started.")
