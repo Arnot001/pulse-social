@@ -21,6 +21,7 @@ HISTORY_FILE = APP_DIR / "x_auto_post_history.txt"
 MEDIA_CACHE_DIR = APP_DIR / "x_media_cache"
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
+POSTING_PAGE_NAME = "pulse-social-auto-post"
 CDP_PORTS = (9222, 9223, 9224, 9225)
 BROWSER_USER_DATA_DIRS = (
     ("Chrome", Path(os.environ["LOCALAPPDATA"]) / "Google" / "Chrome" / "User Data"),
@@ -193,6 +194,25 @@ def _close_x_composer(page) -> None:
             pass
 
 
+def _get_or_create_posting_page(context):
+    """Reuse one dedicated Pulse posting tab inside the authenticated browser."""
+    for page in context.pages:
+        try:
+            if page.is_closed():
+                continue
+            if page.evaluate("window.name") == POSTING_PAGE_NAME:
+                return page, False
+        except Exception:
+            continue
+
+    page = context.new_page()
+    try:
+        page.evaluate("(name) => { window.name = name; }", POSTING_PAGE_NAME)
+    except Exception:
+        pass
+    return page, True
+
+
 def _x_media_processing_error(page) -> str | None:
     """Return X's visible media-upload error, if it has already rejected the file."""
     try:
@@ -318,21 +338,22 @@ def publish_post(
             raise RuntimeError("Media file missing: " + ", ".join(missing))
 
         prepared_media, temporary_media = _prepare_media_for_x(media, log)
-        posting_page = None
         try:
             with sync_playwright() as p:
                 _browser, context, _existing_page, _browser_label = _connect_x_browser(p)
                 if not context:
                     raise RuntimeError("Browser attached but no browser context was available.")
 
-                # Never depend on whichever X route the user happened to leave open.
-                # Media posts can leave X on a post/media SPA route with a transparent
-                # layer intercepting pointer events. Start every scheduled post from a
-                # brand-new Home tab in the same authenticated browser context.
-                posting_page = context.new_page()
-                page = posting_page
+                # Keep one dedicated Pulse tab and reuse it for every scheduled post.
+                # We still hard-navigate it back to Home each time, so stale media/profile
+                # route state cannot poison the next post, but tabs no longer accumulate.
+                page, created = _get_or_create_posting_page(context)
                 if log:
-                    log("X POST PAGE | opening clean Home composer")
+                    log(
+                        "X POST PAGE | opening dedicated Home composer"
+                        if created
+                        else "X POST PAGE | reusing dedicated Home composer"
+                    )
                 page.goto(
                     "https://x.com/home",
                     wait_until="domcontentloaded",
@@ -389,11 +410,6 @@ def publish_post(
                 # not need modal cleanup. Wait briefly for X to clear the composer.
                 page.wait_for_timeout(1500)
         finally:
-            if posting_page is not None:
-                try:
-                    posting_page.close()
-                except Exception:
-                    pass
             for path in temporary_media:
                 path.unlink(missing_ok=True)
 
