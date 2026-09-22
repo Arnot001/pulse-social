@@ -9,13 +9,18 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from .auto_post import (
     MAX_CAPTION_UTF16,
     add_post,
-    clear_access_token,
-    load_access_token,
     load_queue,
     query_creator_info,
     remove_post,
     run_scheduler,
-    save_access_token,
+)
+from .oauth import (
+    DEFAULT_REDIRECT_URI,
+    app_credentials_configured,
+    connect,
+    connection_status,
+    disconnect,
+    save_app_credentials,
 )
 
 BG = "#06070b"
@@ -37,6 +42,7 @@ class TikTokAutoPostView(tk.Frame):
         super().__init__(master, bg=BG, **kwargs)
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
+        self.oauth_worker: threading.Thread | None = None
         self.selected_video = ""
         self.mapping = {}
         self.privacy_options = ["SELF_ONLY"]
@@ -150,18 +156,21 @@ class TikTokAutoPostView(tk.Frame):
         connect_row.pack(fill="x", padx=26, pady=(0, 10))
         tk.Label(
             connect_row,
-            text="OFFICIAL TIKTOK CONTENT POSTING API",
+            text="OFFICIAL TIKTOK CONTENT POSTING API  /  DESKTOP OAUTH",
             fg=MUTED,
             bg=PANEL,
             font=("Consolas", 8, "bold"),
         ).pack(side="left", padx=14, pady=10)
-        self._button(connect_row, "CLEAR TOKEN", self._clear_token, danger=True, compact=True).pack(
+        self._button(connect_row, "DISCONNECT", self._disconnect_tiktok, danger=True, compact=True).pack(
             side="right", padx=(4, 10), pady=6
         )
         self._button(connect_row, "TEST", self._test_connection, compact=True).pack(
             side="right", padx=4, pady=6
         )
-        self._button(connect_row, "SET ACCESS TOKEN", self._set_token, accent=True, compact=True).pack(
+        self._button(connect_row, "CONNECT TIKTOK", self._connect_tiktok, accent=True, compact=True).pack(
+            side="right", padx=4, pady=6
+        )
+        self._button(connect_row, "SET APP", self._set_app_credentials, compact=True).pack(
             side="right", padx=4, pady=6
         )
 
@@ -397,61 +406,142 @@ class TikTokAutoPostView(tk.Frame):
         self.selected_video = ""
         self.media_var.set("NO VIDEO")
 
-    def _set_token(self):
-        token = simpledialog.askstring(
-            "TikTok access token",
-            "Paste a TikTok user access token with video.publish permission.\n\n"
-            "Pulse stores it encrypted with Windows DPAPI.",
+    def _set_app_credentials(self):
+        current = connection_status()
+        client_key = simpledialog.askstring(
+            "TikTok Client Key",
+            "Enter the Client Key from TikTok for Developers.",
+            parent=self.winfo_toplevel(),
+        )
+        if not client_key:
+            return
+
+        client_secret = simpledialog.askstring(
+            "TikTok Client Secret",
+            "Enter the Client Secret from TikTok for Developers.\n\n"
+            "Development mode: Pulse encrypts it with Windows DPAPI on this PC. "
+            "A public Pulse release should move this secret to a backend service.",
             show="•",
             parent=self.winfo_toplevel(),
         )
-        if not token:
+        if not client_secret:
             return
+
+        redirect_uri = simpledialog.askstring(
+            "TikTok Redirect URI",
+            "Enter the Desktop Login Kit redirect URI registered in TikTok.\n\n"
+            "Default:",
+            initialvalue=str(current.get("redirect_uri") or DEFAULT_REDIRECT_URI),
+            parent=self.winfo_toplevel(),
+        )
+        if not redirect_uri:
+            return
+
         try:
-            save_access_token(token)
+            save_app_credentials(client_key, client_secret, redirect_uri)
             self._refresh_connection_label()
-            self._test_connection()
+            self.write(f"APP READY | redirect {redirect_uri}")
         except Exception as exc:
-            messagebox.showerror("TikTok", str(exc), parent=self.winfo_toplevel())
+            messagebox.showerror("TikTok app setup", str(exc), parent=self.winfo_toplevel())
 
-    def _clear_token(self):
-        clear_access_token()
-        self.connection_var.set("NOT CONNECTED")
-        self.privacy_options = ["SELF_ONLY"]
-        self.privacy_menu.configure(values=self.privacy_options)
-        self.privacy_var.set("SELF_ONLY")
-
-    def _refresh_connection_label(self):
-        self.connection_var.set("TOKEN SAVED" if load_access_token() else "NOT CONNECTED")
-
-    def _test_connection(self):
-        if not load_access_token():
+    def _connect_tiktok(self):
+        if not app_credentials_configured():
             messagebox.showinfo(
                 "TikTok",
-                "Set a TikTok access token first.",
+                "Set the TikTok app Client Key, Client Secret and redirect URI first.",
                 parent=self.winfo_toplevel(),
             )
             return
+        if self.oauth_worker and self.oauth_worker.is_alive():
+            self.connection_var.set("CONNECTING...")
+            return
+
+        self.connection_var.set("CONNECTING...")
+        self.status_var.set("AUTHORIZING")
+        self.oauth_worker = threading.Thread(target=self._oauth_connect_worker, daemon=True)
+        self.oauth_worker.start()
+
+    def _oauth_connect_worker(self):
+        try:
+            connect(log=self.write)
+            info = query_creator_info()
+            self.after(0, lambda: self._apply_creator_info(info))
+        except Exception as exc:
+            message = str(exc)
+            self.write(f"CONNECTION ERROR | {message}")
+            self.after(0, lambda msg=message: self._oauth_error(msg))
+
+    def _oauth_error(self, message: str):
+        if self._destroyed:
+            return
+        self.connection_var.set("CONNECTION ERROR")
+        self.status_var.set("STOPPED")
+        messagebox.showerror("TikTok connection", message, parent=self.winfo_toplevel())
+
+    def _apply_creator_info(self, info: dict):
+        if self._destroyed:
+            return
+        options = list(info.get("privacy_level_options") or [])
+        if options:
+            self.privacy_options = options
+            self.privacy_menu.configure(values=options)
+            if self.privacy_var.get() not in options:
+                self.privacy_var.set(options[0])
+
+        # TikTok can disable these creator capabilities; reflect that immediately.
+        if info.get("comment_disabled"):
+            self.comments_var.set(False)
+        if info.get("duet_disabled"):
+            self.duet_var.set(False)
+        if info.get("stitch_disabled"):
+            self.stitch_var.set(False)
+
+        nickname = info.get("creator_nickname") or info.get("creator_username") or "CONNECTED"
+        self.connection_var.set(str(nickname).upper())
+        self.status_var.set("STOPPED")
+        self.write(f"CONNECTED | {nickname} | privacy: {', '.join(self.privacy_options)}")
+
+    def _disconnect_tiktok(self):
+        disconnect()
+        self.connection_var.set("APP READY" if app_credentials_configured() else "SETUP REQUIRED")
+        self.privacy_options = ["SELF_ONLY"]
+        self.privacy_menu.configure(values=self.privacy_options)
+        self.privacy_var.set("SELF_ONLY")
+        self.write("TIKTOK DISCONNECTED")
+
+    def _refresh_connection_label(self):
+        state = connection_status()
+        if state.get("connected"):
+            self.connection_var.set("CONNECTED")
+        elif state.get("app_configured"):
+            self.connection_var.set("APP READY")
+        else:
+            self.connection_var.set("SETUP REQUIRED")
+
+    def _test_connection(self):
+        state = connection_status()
+        if not state.get("connected"):
+            messagebox.showinfo(
+                "TikTok",
+                "Connect TikTok first.",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        if self.oauth_worker and self.oauth_worker.is_alive():
+            return
 
         self.connection_var.set("CHECKING...")
-        self.update_idletasks()
+        self.oauth_worker = threading.Thread(target=self._test_connection_worker, daemon=True)
+        self.oauth_worker.start()
+
+    def _test_connection_worker(self):
         try:
             info = query_creator_info()
-            options = list(info.get("privacy_level_options") or [])
-            if options:
-                self.privacy_options = options
-                self.privacy_menu.configure(values=options)
-                if self.privacy_var.get() not in options:
-                    self.privacy_var.set(options[0])
-            nickname = info.get("creator_nickname") or info.get("creator_username") or "CONNECTED"
-            self.connection_var.set(str(nickname).upper())
-            self.write(
-                f"CONNECTED | {nickname} | privacy: {', '.join(self.privacy_options)}"
-            )
+            self.after(0, lambda: self._apply_creator_info(info))
         except Exception as exc:
-            self.connection_var.set("CONNECTION ERROR")
-            self.write(f"CONNECTION ERROR | {exc}")
-            messagebox.showerror("TikTok connection", str(exc), parent=self.winfo_toplevel())
+            message = str(exc)
+            self.write(f"CONNECTION ERROR | {message}")
+            self.after(0, lambda msg=message: self._oauth_error(msg))
 
     def _due_time(self) -> tuple[datetime, str]:
         now = datetime.now()
