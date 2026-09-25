@@ -415,7 +415,7 @@ class TikTokAutoPostView(tk.Frame):
 
         Normal/customer builds use the hosted Pulse backend and never see this.
         """
-        if not local_backend_enabled() or load_app_credentials():
+        if load_app_credentials():
             return True
 
         dialog = tk.Toplevel(self.winfo_toplevel())
@@ -546,7 +546,10 @@ class TikTokAutoPostView(tk.Frame):
             messagebox.showerror("TikTok app setup", str(exc), parent=self.winfo_toplevel())
 
     def _connect_tiktok(self):
-        if local_backend_enabled() and not self._ensure_local_credentials():
+        # On our development machine, CONNECT TIKTOK performs the one-time
+        # credential bootstrap itself. Customer builds use the hosted Pulse
+        # backend, so end users never see this step.
+        if not backend_enabled() and not self._ensure_local_credentials():
             self.connection_var.set("NOT CONNECTED")
             return
 
