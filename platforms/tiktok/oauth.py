@@ -38,6 +38,31 @@ def backend_enabled() -> bool:
     return bool(BACKEND_BASE_URL)
 
 
+def backend_health() -> tuple[bool, str]:
+    """Check whether the configured Pulse TikTok service is reachable and ready."""
+    if not backend_enabled():
+        return False, "Pulse TikTok backend is not configured."
+
+    try:
+        response = requests.get(f"{BACKEND_BASE_URL}/health", timeout=5)
+    except requests.RequestException as exc:
+        return False, f"Pulse TikTok service is offline: {exc}"
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return False, f"Pulse TikTok service returned invalid health data (HTTP {response.status_code})."
+
+    status = str(payload.get("status") or "")
+    if response.status_code >= 400:
+        return False, f"Pulse TikTok service health check failed (HTTP {response.status_code})."
+    if status == "ok":
+        return True, "Pulse TikTok service ready."
+    if status == "not_configured":
+        return False, "Pulse TikTok service is running but TikTok app credentials are not configured."
+    return False, f"Pulse TikTok service returned unexpected health status: {status or 'unknown'}."
+
+
 def _protect_secret(value: str) -> str:
     if os.name != "nt":
         raise RuntimeError("TikTok OAuth storage currently requires Windows.")
