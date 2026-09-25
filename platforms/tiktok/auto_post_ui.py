@@ -9,11 +9,13 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from .auto_post import (
     MAX_CAPTION_UTF16,
     add_post,
+    item_media_paths,
     load_queue,
     query_creator_info,
     remove_post,
     run_scheduler,
 )
+from .browser_session import open_tiktok_browser, tiktok_browser_status
 from .oauth import (
     DEFAULT_REDIRECT_URI,
     app_credentials_configured,
@@ -48,15 +50,15 @@ class TikTokAutoPostView(tk.Frame):
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
         self.oauth_worker: threading.Thread | None = None
-        self.selected_video = ""
+        self.selected_media: list[str] = []
         self.mapping = {}
         self.privacy_options = ["SELF_ONLY"]
         self._destroyed = False
 
-        self.connection_var = tk.StringVar(value="NOT CONNECTED")
+        self.connection_var = tk.StringVar(value=tiktok_browser_status())
         self.status_var = tk.StringVar(value="STOPPED")
         self.char_var = tk.StringVar(value=f"0 / {MAX_CAPTION_UTF16}")
-        self.media_var = tk.StringVar(value="NO VIDEO")
+        self.media_var = tk.StringVar(value="NO MEDIA")
         self.next_var = tk.StringVar(value="No posts queued")
         self.schedule_mode = tk.StringVar(value="delay")
         self.delay_var = tk.StringVar(value="1")
@@ -79,8 +81,6 @@ class TikTokAutoPostView(tk.Frame):
         self._build()
         self.refresh()
         self._refresh_connection_label()
-        if backend_enabled():
-            self.after(150, self._probe_backend)
         self.bind("<Destroy>", self._on_destroy, add="+")
 
     def _configure_style(self):
@@ -163,20 +163,18 @@ class TikTokAutoPostView(tk.Frame):
         connect_row.pack(fill="x", padx=26, pady=(0, 10))
         tk.Label(
             connect_row,
-            text="OFFICIAL TIKTOK CONTENT POSTING API  /  DESKTOP OAUTH",
+            text="CONTROLLED BRAVE  /  EXISTING TIKTOK LOGIN",
             fg=MUTED,
             bg=PANEL,
             font=("Consolas", 8, "bold"),
         ).pack(side="left", padx=14, pady=10)
-        self._button(connect_row, "DISCONNECT", self._disconnect_tiktok, danger=True, compact=True).pack(
-            side="right", padx=(4, 10), pady=6
-        )
-        self._button(connect_row, "TEST", self._test_connection, compact=True).pack(
-            side="right", padx=4, pady=6
-        )
-        self._button(connect_row, "CONNECT TIKTOK", self._connect_tiktok, accent=True, compact=True).pack(
-            side="right", padx=4, pady=6
-        )
+        self._button(
+            connect_row,
+            "CONNECT / REFRESH",
+            self._connect_tiktok_browser,
+            accent=True,
+            compact=True,
+        ).pack(side="right", padx=(4, 10), pady=6)
 
         top = tk.Frame(self, bg=BG)
         top.pack(fill="x", padx=26, pady=(0, 10))
@@ -211,7 +209,8 @@ class TikTokAutoPostView(tk.Frame):
         media_row = tk.Frame(compose, bg=PANEL)
         media_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 12))
         self._button(media_row, "ADD VIDEO", self._choose_video, compact=True).pack(side="left")
-        self._button(media_row, "CLEAR", self._clear_video, compact=True).pack(side="left", padx=6)
+        self._button(media_row, "ADD IMAGES", self._choose_images, compact=True).pack(side="left", padx=(6, 0))
+        self._button(media_row, "CLEAR", self._clear_media, compact=True).pack(side="left", padx=6)
         tk.Label(
             media_row,
             textvariable=self.media_var,
@@ -335,7 +334,7 @@ class TikTokAutoPostView(tk.Frame):
         self._button(queue_head, "STOP", self.stop, danger=True, compact=True).pack(side="right", padx=6)
         self._button(queue_head, "REMOVE", self._remove_selected, compact=True).pack(side="right")
 
-        cols = ("due", "status", "privacy", "video", "caption")
+        cols = ("due", "status", "privacy", "media", "caption")
         self.tree = ttk.Treeview(
             queue_card,
             columns=cols,
@@ -347,7 +346,7 @@ class TikTokAutoPostView(tk.Frame):
             "due": 130,
             "status": 105,
             "privacy": 155,
-            "video": 180,
+            "media": 220,
             "caption": 420,
         }
         for col in cols:
@@ -403,12 +402,37 @@ class TikTokAutoPostView(tk.Frame):
             ],
         )
         if path:
-            self.selected_video = str(path)
-            self.media_var.set(Path(path).name)
+            self.selected_media = [str(path)]
+            self.media_var.set(f"VIDEO // {Path(path).name}")
 
-    def _clear_video(self):
-        self.selected_video = ""
-        self.media_var.set("NO VIDEO")
+    def _choose_images(self):
+        paths = filedialog.askopenfilenames(
+            parent=self.winfo_toplevel(),
+            title="Choose TikTok images",
+            filetypes=[
+                ("Images", "*.jpg *.jpeg *.png *.webp"),
+                ("All files", "*.*"),
+            ],
+        )
+        if paths:
+            self.selected_media = [str(path) for path in paths]
+            names = [Path(path).name for path in self.selected_media]
+            preview = ", ".join(names[:3])
+            if len(names) > 3:
+                preview += f" +{len(names) - 3} more"
+            self.media_var.set(f"IMAGES {len(names)} // {preview}")
+
+    def _clear_media(self):
+        self.selected_media = []
+        self.media_var.set("NO MEDIA")
+
+    def _connect_tiktok_browser(self):
+        ok, message = open_tiktok_browser()
+        self.connection_var.set(tiktok_browser_status())
+        if ok:
+            self.write(f"TIKTOK BROWSER | {message}")
+            return
+        messagebox.showerror("TikTok Browser", message, parent=self.winfo_toplevel())
 
     def _ensure_local_credentials(self) -> bool:
         """One-time maintainer bootstrap hidden behind CONNECT TIKTOK.
@@ -628,15 +652,7 @@ class TikTokAutoPostView(tk.Frame):
         self.write("TIKTOK DISCONNECTED")
 
     def _refresh_connection_label(self):
-        state = connection_status()
-        if state.get("connected"):
-            self.connection_var.set("CONNECTED")
-        elif backend_enabled():
-            self.connection_var.set("CHECKING SERVICE...")
-        elif state.get("app_configured"):
-            self.connection_var.set("READY TO CONNECT")
-        else:
-            self.connection_var.set("NOT CONNECTED")
+        self.connection_var.set(tiktok_browser_status())
 
     def _probe_backend(self):
         if self._destroyed or not backend_enabled():
@@ -712,8 +728,12 @@ class TikTokAutoPostView(tk.Frame):
         return due, f"IN {minutes}m"
 
     def _queue_post(self):
-        if not self.selected_video:
-            messagebox.showerror("TikTok", "Choose a video first.", parent=self.winfo_toplevel())
+        if not self.selected_media:
+            messagebox.showerror(
+                "TikTok",
+                "Choose a video or one/more images first.",
+                parent=self.winfo_toplevel(),
+            )
             return
         try:
             due, note = self._due_time()
@@ -721,7 +741,7 @@ class TikTokAutoPostView(tk.Frame):
             item = add_post(
                 caption,
                 due,
-                self.selected_video,
+                self.selected_media,
                 privacy_level=self.privacy_var.get(),
                 disable_comment=not self.comments_var.get(),
                 disable_duet=not self.duet_var.get(),
@@ -734,12 +754,21 @@ class TikTokAutoPostView(tk.Frame):
             messagebox.showerror("TikTok queue", str(exc), parent=self.winfo_toplevel())
             return
 
+        media = item_media_paths(item)
+        image_count = sum(
+            1 for path in media if Path(path).suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+        )
+        media_note = (
+            f"IMAGES {image_count}"
+            if image_count
+            else f"VIDEO {Path(media[0]).name if media else '<missing>'}"
+        )
         self.write(
             f"QUEUED | {note} | due {due:%d/%m %H:%M} | "
-            f"{Path(item.video_path).name} | {item.caption[:100]}"
+            f"{media_note} | {item.caption[:100]}"
         )
         self.caption.delete("1.0", tk.END)
-        self._clear_video()
+        self._clear_media()
         self._update_chars()
         self.refresh()
 
@@ -751,7 +780,9 @@ class TikTokAutoPostView(tk.Frame):
         item = self.mapping.get(selected[0])
         if item:
             remove_post(item.post_id)
-            self.write(f"REMOVED | {item.caption[:80] or Path(item.video_path).name}")
+            media = item_media_paths(item)
+            media_name = Path(media[0]).name if media else "media"
+            self.write(f"REMOVED | {item.caption[:80] or media_name}")
             self.refresh()
 
     def start(self):
@@ -818,7 +849,15 @@ class TikTokAutoPostView(tk.Frame):
                     due_text,
                     status.upper(),
                     item.privacy_level,
-                    Path(item.video_path).name,
+                    (
+                        f"{len(item_media_paths(item))} IMAGES"
+                        if len(item_media_paths(item)) > 1
+                        else (
+                            Path(item_media_paths(item)[0]).name
+                            if item_media_paths(item)
+                            else "<missing>"
+                        )
+                    ),
                     item.caption.replace("\n", " "),
                 ),
                 tags=(status if status in {"posted", "processing", "error"} else "",),
