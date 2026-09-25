@@ -6,6 +6,8 @@ import json
 import os
 import secrets
 import string
+import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -30,6 +32,8 @@ TOKEN_REFRESH_SKEW_SECONDS = 300
 BACKEND_BASE_URL = os.environ.get("PULSE_TIKTOK_BACKEND_URL", "").strip().rstrip("/")
 
 _TOKEN_LOCK = threading.Lock()
+_BACKEND_START_LOCK = threading.Lock()
+_BACKEND_PROCESS: subprocess.Popen | None = None
 _UNRESERVED = string.ascii_letters + string.digits + "-._~"
 
 
@@ -61,6 +65,112 @@ def backend_health() -> tuple[bool, str]:
     if status == "not_configured":
         return False, "Pulse TikTok service is running but TikTok app credentials are not configured."
     return False, f"Pulse TikTok service returned unexpected health status: {status or 'unknown'}."
+
+
+def local_backend_enabled() -> bool:
+    """True when Pulse is pointed at its local development OAuth service."""
+    if not backend_enabled():
+        return False
+    parsed = urllib.parse.urlparse(BACKEND_BASE_URL)
+    return parsed.hostname in {"127.0.0.1", "localhost"}
+
+
+def ensure_local_backend(log: Callable[[str], None] | None = None) -> tuple[bool, str]:
+    """Start the local development backend automatically when possible.
+
+    Customer builds use a hosted HTTPS backend and never enter this path. Local
+    development can therefore stay one-click after the developer credentials
+    have been saved once with DEV SET APP.
+    """
+    global _BACKEND_PROCESS
+
+    if not local_backend_enabled():
+        return backend_health()
+
+    ok, detail = backend_health()
+    if ok:
+        return True, detail
+
+    with _BACKEND_START_LOCK:
+        ok, detail = backend_health()
+        if ok:
+            return True, detail
+
+        client_key = os.environ.get("TIKTOK_CLIENT_KEY", "").strip()
+        client_secret = os.environ.get("TIKTOK_CLIENT_SECRET", "").strip()
+        redirect_uri = os.environ.get("TIKTOK_REDIRECT_URI", "").strip()
+
+        if not client_key or not client_secret:
+            credentials = load_app_credentials()
+            client_key = client_key or str(credentials.get("client_key") or "")
+            client_secret = client_secret or str(credentials.get("client_secret") or "")
+            redirect_uri = redirect_uri or str(credentials.get("redirect_uri") or "")
+
+        if not client_key or not client_secret:
+            return (
+                False,
+                "Local TikTok service needs one-time developer credentials. "
+                "Click DEV SET APP, save the TikTok Client Key/Secret, then CONNECT TIKTOK again.",
+            )
+
+        redirect_uri = redirect_uri or DEFAULT_REDIRECT_URI
+        parsed = urllib.parse.urlparse(BACKEND_BASE_URL)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 8765
+        repo_root = Path(__file__).resolve().parents[2]
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "TIKTOK_CLIENT_KEY": client_key,
+                "TIKTOK_CLIENT_SECRET": client_secret,
+                "TIKTOK_REDIRECT_URI": redirect_uri,
+                "TIKTOK_SCOPES": ",".join(DEFAULT_SCOPES),
+            }
+        )
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            _BACKEND_PROCESS = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    "pulse_backend.app:app",
+                    "--host",
+                    host,
+                    "--port",
+                    str(port),
+                ],
+                cwd=str(repo_root),
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+        except OSError as exc:
+            return False, f"Could not start the local Pulse TikTok service: {exc}"
+
+        if log:
+            log(f"TIKTOK SERVICE | starting local service on {host}:{port}")
+
+        deadline = time.time() + 8
+        last_detail = "Local Pulse TikTok service is starting."
+        while time.time() < deadline:
+            time.sleep(0.25)
+            ok, last_detail = backend_health()
+            if ok:
+                if log:
+                    log("TIKTOK SERVICE | local service ready")
+                return True, last_detail
+            if _BACKEND_PROCESS.poll() is not None:
+                return (
+                    False,
+                    "Local Pulse TikTok service stopped during startup. "
+                    "Check that uvicorn/FastAPI are installed in this Python environment.",
+                )
+
+        return False, last_detail
 
 
 def _protect_secret(value: str) -> str:
