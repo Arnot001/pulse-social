@@ -6,13 +6,14 @@ import shutil
 import subprocess
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 import requests
 
+from .browser_post import IMAGE_SUFFIXES, VIDEO_SUFFIXES, publish_browser_post
 from .oauth import get_access_token
 
 APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "Pulse Social"
@@ -43,7 +44,8 @@ class TikTokQueuedPost:
     post_id: str
     caption: str
     due_at: str
-    video_path: str
+    video_path: str = ""
+    media_paths: list[str] = field(default_factory=list)
     privacy_level: str = "SELF_ONLY"
     disable_comment: bool = False
     disable_duet: bool = False
@@ -78,10 +80,41 @@ def _utf16_length(value: str) -> int:
     return len(value.encode("utf-16-le")) // 2
 
 
+def _normalize_media_paths(media_paths: str | list[str]) -> list[str]:
+    if isinstance(media_paths, str):
+        raw = [media_paths] if media_paths else []
+    else:
+        raw = list(media_paths or [])
+
+    paths = [Path(path) for path in raw]
+    if not paths:
+        raise ValueError("Choose at least one TikTok image or video.")
+    missing = [str(path) for path in paths if not path.exists() or not path.is_file()]
+    if missing:
+        raise ValueError("TikTok media file missing: " + ", ".join(missing))
+
+    suffixes = {path.suffix.lower() for path in paths}
+    image_only = suffixes.issubset(IMAGE_SUFFIXES)
+    video_only = len(paths) == 1 and paths[0].suffix.lower() in VIDEO_SUFFIXES
+    if not image_only and not video_only:
+        raise ValueError(
+            "Choose either one video or one/more images for each TikTok post."
+        )
+    return [str(path) for path in paths]
+
+
+def item_media_paths(item: TikTokQueuedPost) -> list[str]:
+    if item.media_paths:
+        return list(item.media_paths)
+    if item.video_path:
+        return [item.video_path]
+    return []
+
+
 def add_post(
     caption: str,
     due_at: datetime,
-    video_path: str,
+    media_paths: str | list[str],
     *,
     privacy_level: str = "SELF_ONLY",
     disable_comment: bool = False,
@@ -95,15 +128,15 @@ def add_post(
     if _utf16_length(clean) > MAX_CAPTION_UTF16:
         raise ValueError("TikTok captions can be at most 2200 UTF-16 characters.")
 
-    path = Path(video_path)
-    if not path.exists() or not path.is_file():
-        raise ValueError("Choose a video file that exists.")
+    media = _normalize_media_paths(media_paths)
+    legacy_video_path = media[0] if len(media) == 1 and Path(media[0]).suffix.lower() in VIDEO_SUFFIXES else ""
 
     item = TikTokQueuedPost(
         post_id=f"{int(time.time() * 1000)}",
         caption=clean,
         due_at=due_at.isoformat(timespec="seconds"),
-        video_path=str(path),
+        video_path=legacy_video_path,
+        media_paths=media,
         privacy_level=privacy_level,
         disable_comment=disable_comment,
         disable_duet=disable_duet,
@@ -377,7 +410,7 @@ def _record_history(item: TikTokQueuedPost) -> None:
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with HISTORY_FILE.open("a", encoding="utf-8") as handle:
         handle.write(
-            f"{stamp} | POSTED | publish_id={item.publish_id} | "
+            f"{stamp} | POSTED | media={len(item_media_paths(item))} | "
             f"privacy={item.privacy_level} | {item.caption.replace(chr(10), ' ')}\n"
         )
 
@@ -404,16 +437,24 @@ def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> No
                         continue
 
                     try:
-                        log(
-                            f"POSTING | {item.caption[:100]} | VIDEO {Path(item.video_path).name}"
+                        media = item_media_paths(item)
+                        image_count = sum(
+                            1 for path in media if Path(path).suffix.lower() in IMAGE_SUFFIXES
                         )
-                        item.publish_id = submit_direct_post(item, log=log)
-                        item.status = "processing"
-                        item.remote_status = "PROCESSING_UPLOAD"
+                        media_note = (
+                            f"IMAGES {image_count}"
+                            if image_count
+                            else f"VIDEO {Path(media[0]).name if media else '<missing>'}"
+                        )
+                        log(f"POSTING | {item.caption[:100]} | {media_note}")
+                        publish_browser_post(item.caption, media, log=log)
+                        item.status = "posted"
+                        item.publish_id = ""
+                        item.remote_status = "BROWSER_POSTED"
                         item.fail_reason = ""
+                        _record_history(item)
                         changed = True
-                        save_queue(items)
-                        log(f"SUBMITTED | {item.publish_id} | waiting for TikTok processing")
+                        log("POSTED successfully.")
                     except Exception as exc:
                         item.status = "error"
                         item.fail_reason = str(exc)
