@@ -22,6 +22,7 @@ from .oauth import (
     connect,
     ensure_local_backend,
     local_backend_enabled,
+    load_app_credentials,
     connection_status,
     disconnect,
     save_app_credentials,
@@ -176,10 +177,6 @@ class TikTokAutoPostView(tk.Frame):
         self._button(connect_row, "CONNECT TIKTOK", self._connect_tiktok, accent=True, compact=True).pack(
             side="right", padx=4, pady=6
         )
-        if not backend_enabled() or local_backend_enabled():
-            self._button(connect_row, "DEV SET APP", self._set_app_credentials, compact=True).pack(
-                side="right", padx=4, pady=6
-            )
 
         top = tk.Frame(self, bg=BG)
         top.pack(fill="x", padx=26, pady=(0, 10))
@@ -413,6 +410,101 @@ class TikTokAutoPostView(tk.Frame):
         self.selected_video = ""
         self.media_var.set("NO VIDEO")
 
+    def _ensure_local_credentials(self) -> bool:
+        """One-time maintainer bootstrap hidden behind CONNECT TIKTOK.
+
+        Normal/customer builds use the hosted Pulse backend and never see this.
+        """
+        if not local_backend_enabled() or load_app_credentials():
+            return True
+
+        dialog = tk.Toplevel(self.winfo_toplevel())
+        dialog.title("Connect TikTok")
+        dialog.configure(bg=PANEL)
+        dialog.resizable(False, False)
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+
+        tk.Label(
+            dialog,
+            text="ONE-TIME PULSE SETUP",
+            fg=ACCENT,
+            bg=PANEL,
+            font=("Consolas", 9, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=18, pady=(16, 4))
+        tk.Label(
+            dialog,
+            text=(
+                "This development PC needs the Pulse TikTok app credentials once. "
+                "They are encrypted on this Windows account. People you send Pulse to "
+                "will only press CONNECT TIKTOK."
+            ),
+            fg=TEXT,
+            bg=PANEL,
+            justify="left",
+            wraplength=460,
+            font=("Segoe UI", 9),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=18, pady=(0, 14))
+
+        key_var = tk.StringVar()
+        secret_var = tk.StringVar()
+        tk.Label(dialog, text="CLIENT KEY", fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).grid(
+            row=2, column=0, sticky="w", padx=(18, 10), pady=6
+        )
+        key_entry = tk.Entry(
+            dialog,
+            textvariable=key_var,
+            width=48,
+            bg=PANEL_3,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+        )
+        key_entry.grid(row=2, column=1, sticky="ew", padx=(0, 18), pady=6, ipady=5)
+
+        tk.Label(dialog, text="CLIENT SECRET", fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).grid(
+            row=3, column=0, sticky="w", padx=(18, 10), pady=6
+        )
+        secret_entry = tk.Entry(
+            dialog,
+            textvariable=secret_var,
+            width=48,
+            show="•",
+            bg=PANEL_3,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+        )
+        secret_entry.grid(row=3, column=1, sticky="ew", padx=(0, 18), pady=6, ipady=5)
+
+        result = {"ok": False}
+
+        def save_and_close():
+            try:
+                save_app_credentials(
+                    key_var.get(),
+                    secret_var.get(),
+                    DEFAULT_REDIRECT_URI,
+                )
+            except Exception as exc:
+                messagebox.showerror("TikTok setup", str(exc), parent=dialog)
+                return
+            result["ok"] = True
+            dialog.destroy()
+
+        actions = tk.Frame(dialog, bg=PANEL)
+        actions.grid(row=4, column=0, columnspan=2, sticky="e", padx=18, pady=(10, 16))
+        self._button(actions, "CANCEL", dialog.destroy, compact=True).pack(side="right")
+        self._button(actions, "SAVE & CONNECT", save_and_close, accent=True, compact=True).pack(
+            side="right", padx=(0, 8)
+        )
+
+        key_entry.focus_set()
+        dialog.bind("<Return>", lambda _event: save_and_close())
+        self.wait_window(dialog)
+        return bool(result["ok"])
+
+
     def _set_app_credentials(self):
         current = connection_status()
         client_key = simpledialog.askstring(
@@ -454,6 +546,10 @@ class TikTokAutoPostView(tk.Frame):
             messagebox.showerror("TikTok app setup", str(exc), parent=self.winfo_toplevel())
 
     def _connect_tiktok(self):
+        if local_backend_enabled() and not self._ensure_local_credentials():
+            self.connection_var.set("NOT CONNECTED")
+            return
+
         if not app_credentials_configured():
             messagebox.showinfo(
                 "TikTok",
@@ -522,7 +618,7 @@ class TikTokAutoPostView(tk.Frame):
         if backend_enabled():
             self.connection_var.set("READY TO CONNECT")
         else:
-            self.connection_var.set("DEV APP READY" if app_credentials_configured() else "DEV SETUP REQUIRED")
+            self.connection_var.set("READY TO CONNECT" if app_credentials_configured() else "NOT CONNECTED")
         self.privacy_options = ["SELF_ONLY"]
         self.privacy_menu.configure(values=self.privacy_options)
         self.privacy_var.set("SELF_ONLY")
@@ -535,9 +631,9 @@ class TikTokAutoPostView(tk.Frame):
         elif backend_enabled():
             self.connection_var.set("CHECKING SERVICE...")
         elif state.get("app_configured"):
-            self.connection_var.set("DEV APP READY")
+            self.connection_var.set("READY TO CONNECT")
         else:
-            self.connection_var.set("DEV SETUP REQUIRED")
+            self.connection_var.set("NOT CONNECTED")
 
     def _probe_backend(self):
         if self._destroyed or not backend_enabled():
