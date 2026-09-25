@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
+from ctypes import wintypes
 
 import requests
 
@@ -173,36 +175,82 @@ def ensure_local_backend(log: Callable[[str], None] | None = None) -> tuple[bool
         return False, last_detail
 
 
+class _DataBlob(ctypes.Structure):
+    _fields_ = [
+        ("cbData", wintypes.DWORD),
+        ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+    ]
+
+
+def _bytes_to_blob(data: bytes):
+    buffer = ctypes.create_string_buffer(data)
+    blob = _DataBlob(
+        len(data),
+        ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)),
+    )
+    return blob, buffer
+
+
 def _protect_secret(value: str) -> str:
     if os.name != "nt":
         raise RuntimeError("TikTok OAuth storage currently requires Windows.")
-    try:
-        import win32crypt
-    except ImportError as exc:
-        raise RuntimeError("pywin32 is required for secure TikTok OAuth storage.") from exc
 
-    encrypted = win32crypt.CryptProtectData(
-        value.encode("utf-8"),
+    data = value.encode("utf-8")
+    in_blob, _in_buffer = _bytes_to_blob(data)
+    out_blob = _DataBlob()
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+
+    ok = crypt32.CryptProtectData(
+        ctypes.byref(in_blob),
         "Pulse Social TikTok OAuth",
         None,
         None,
         None,
         0,
-    )[1]
-    return base64.b64encode(encrypted).decode("ascii")
+        ctypes.byref(out_blob),
+    )
+    if not ok:
+        raise RuntimeError(f"Windows could not encrypt TikTok OAuth data (error {ctypes.get_last_error()}).")
+
+    try:
+        encrypted = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        return base64.b64encode(encrypted).decode("ascii")
+    finally:
+        if out_blob.pbData:
+            kernel32.LocalFree(out_blob.pbData)
 
 
 def _unprotect_secret(value: str) -> str:
     if os.name != "nt":
         raise RuntimeError("TikTok OAuth storage currently requires Windows.")
-    try:
-        import win32crypt
-    except ImportError as exc:
-        raise RuntimeError("pywin32 is required for secure TikTok OAuth storage.") from exc
 
     encrypted = base64.b64decode(value.encode("ascii"))
-    clear = win32crypt.CryptUnprotectData(encrypted, None, None, None, 0)[1]
-    return clear.decode("utf-8")
+    in_blob, _in_buffer = _bytes_to_blob(encrypted)
+    out_blob = _DataBlob()
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+
+    ok = crypt32.CryptUnprotectData(
+        ctypes.byref(in_blob),
+        None,
+        None,
+        None,
+        None,
+        0,
+        ctypes.byref(out_blob),
+    )
+    if not ok:
+        raise RuntimeError(f"Windows could not decrypt TikTok OAuth data (error {ctypes.get_last_error()}).")
+
+    try:
+        clear = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        return clear.decode("utf-8")
+    finally:
+        if out_blob.pbData:
+            kernel32.LocalFree(out_blob.pbData)
 
 
 def _load_settings() -> dict:
