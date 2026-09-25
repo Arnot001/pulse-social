@@ -6,6 +6,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
+from platforms.tiktok.browser_session import open_tiktok_browser, tiktok_browser_status
 from platforms.x.browser_session import browser_status, open_x_browser
 
 BG = "#06070b"
@@ -75,8 +76,8 @@ def button(parent, text, command, accent=False, danger=False):
 
 root = tk.Tk()
 root.title("Pulse Social")
-root.geometry("980x610")
-root.minsize(900, 560)
+root.geometry("980x665")
+root.minsize(900, 610)
 root.configure(bg=BG)
 
 # HEADER
@@ -133,6 +134,54 @@ def connect_x_browser() -> None:
 
 
 button(browser_strip, "CONNECT / REFRESH", connect_x_browser, accent=True).pack(side="right", padx=12, pady=7)
+
+tiktok_browser_status_var = tk.StringVar(value=tiktok_browser_status())
+tiktok_browser_glow = tk.Frame(root, bg=CYAN_SOFT, padx=2, pady=2)
+tiktok_browser_glow.pack(fill="x", padx=32, pady=(0, 14))
+tiktok_browser_strip = tk.Frame(
+    tiktok_browser_glow,
+    bg=PANEL,
+    highlightthickness=1,
+    highlightbackground=CYAN,
+)
+tiktok_browser_strip.pack(fill="x")
+
+tk.Label(
+    tiktok_browser_strip,
+    text="TIKTOK BROWSER",
+    fg=MUTED,
+    bg=PANEL,
+    font=("Consolas", 8, "bold"),
+).pack(side="left", padx=(16, 8), pady=12)
+tk.Label(
+    tiktok_browser_strip,
+    text="●",
+    fg=CYAN,
+    bg=PANEL,
+    font=("Segoe UI", 10, "bold"),
+).pack(side="left")
+tk.Label(
+    tiktok_browser_strip,
+    textvariable=tiktok_browser_status_var,
+    fg=TEXT,
+    bg=PANEL,
+    font=("Consolas", 9, "bold"),
+).pack(side="left", padx=(6, 12))
+
+
+def connect_tiktok_browser() -> None:
+    ok, msg = open_tiktok_browser()
+    tiktok_browser_status_var.set(tiktok_browser_status() if ok else msg.upper())
+    if not ok:
+        messagebox.showerror("TikTok Browser", msg, parent=root)
+
+
+button(
+    tiktok_browser_strip,
+    "CONNECT / REFRESH",
+    connect_tiktok_browser,
+    accent=True,
+).pack(side="right", padx=12, pady=7)
 
 # PLATFORM CARDS
 nav = tk.Frame(root, bg=BG)
@@ -206,8 +255,8 @@ platform_card(
     "Commerce intelligence plus scheduled TikTok publishing.",
     [
         "Live category collection and deal intelligence",
+        "Shared controlled-browser session",
         "Scheduled video posts with captions",
-        "Official TikTok Content Posting API workflow",
     ],
     "OPEN SHOP",
     lambda: launch("tiktok_shop_ui.py"),
