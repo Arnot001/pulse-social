@@ -20,6 +20,8 @@ from .oauth import (
     backend_enabled,
     backend_health,
     connect,
+    ensure_local_backend,
+    local_backend_enabled,
     connection_status,
     disconnect,
     save_app_credentials,
@@ -174,7 +176,7 @@ class TikTokAutoPostView(tk.Frame):
         self._button(connect_row, "CONNECT TIKTOK", self._connect_tiktok, accent=True, compact=True).pack(
             side="right", padx=4, pady=6
         )
-        if not backend_enabled():
+        if not backend_enabled() or local_backend_enabled():
             self._button(connect_row, "DEV SET APP", self._set_app_credentials, compact=True).pack(
                 side="right", padx=4, pady=6
             )
@@ -446,6 +448,8 @@ class TikTokAutoPostView(tk.Frame):
             save_app_credentials(client_key, client_secret, redirect_uri)
             self._refresh_connection_label()
             self.write(f"APP READY | redirect {redirect_uri}")
+            if local_backend_enabled():
+                threading.Thread(target=self._probe_backend_worker, daemon=True).start()
         except Exception as exc:
             messagebox.showerror("TikTok app setup", str(exc), parent=self.winfo_toplevel())
 
@@ -469,7 +473,10 @@ class TikTokAutoPostView(tk.Frame):
     def _oauth_connect_worker(self):
         try:
             if backend_enabled():
-                ok, detail = backend_health()
+                if local_backend_enabled():
+                    ok, detail = ensure_local_backend(log=self.write)
+                else:
+                    ok, detail = backend_health()
                 if not ok:
                     raise RuntimeError(detail)
             connect(log=self.write)
@@ -538,7 +545,10 @@ class TikTokAutoPostView(tk.Frame):
         threading.Thread(target=self._probe_backend_worker, daemon=True).start()
 
     def _probe_backend_worker(self):
-        ok, detail = backend_health()
+        if local_backend_enabled():
+            ok, detail = ensure_local_backend(log=self.write)
+        else:
+            ok, detail = backend_health()
 
         def apply():
             if self._destroyed:
