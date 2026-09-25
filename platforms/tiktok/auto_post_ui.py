@@ -18,6 +18,7 @@ from .oauth import (
     DEFAULT_REDIRECT_URI,
     app_credentials_configured,
     backend_enabled,
+    backend_health,
     connect,
     connection_status,
     disconnect,
@@ -75,6 +76,8 @@ class TikTokAutoPostView(tk.Frame):
         self._build()
         self.refresh()
         self._refresh_connection_label()
+        if backend_enabled():
+            self.after(150, self._probe_backend)
         self.bind("<Destroy>", self._on_destroy, add="+")
 
     def _configure_style(self):
@@ -465,6 +468,10 @@ class TikTokAutoPostView(tk.Frame):
 
     def _oauth_connect_worker(self):
         try:
+            if backend_enabled():
+                ok, detail = backend_health()
+                if not ok:
+                    raise RuntimeError(detail)
             connect(log=self.write)
             info = query_creator_info()
             self.after(0, lambda: self._apply_creator_info(info))
@@ -519,11 +526,31 @@ class TikTokAutoPostView(tk.Frame):
         if state.get("connected"):
             self.connection_var.set("CONNECTED")
         elif backend_enabled():
-            self.connection_var.set("READY TO CONNECT")
+            self.connection_var.set("CHECKING SERVICE...")
         elif state.get("app_configured"):
             self.connection_var.set("DEV APP READY")
         else:
             self.connection_var.set("DEV SETUP REQUIRED")
+
+    def _probe_backend(self):
+        if self._destroyed or not backend_enabled():
+            return
+        threading.Thread(target=self._probe_backend_worker, daemon=True).start()
+
+    def _probe_backend_worker(self):
+        ok, detail = backend_health()
+
+        def apply():
+            if self._destroyed:
+                return
+            self.connection_var.set("READY TO CONNECT" if ok else "SERVICE OFFLINE")
+            if not ok:
+                self.write(f"TIKTOK SERVICE | {detail}")
+
+        try:
+            self.after(0, apply)
+        except tk.TclError:
+            pass
 
     def _test_connection(self):
         state = connection_status()
