@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from urllib.parse import quote
 from typing import Callable
 
 from playwright.sync_api import Locator, Page, sync_playwright
@@ -9,6 +10,7 @@ from playwright.sync_api import Locator, Page, sync_playwright
 from .browser_session import CDP_URL
 
 UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload"
+SEARCH_URL = "https://www.tiktok.com/search?q={query}"
 POSTING_PAGE_NAME = "pulse-social-tiktok-auto-post"
 SOUND_SEARCH_PAGE_NAME = "pulse-social-tiktok-sound-search"
 
@@ -103,30 +105,43 @@ def _file_input_for_kind(page: Page, kind: str) -> Locator:
         try:
             last_count = inputs.count()
             if last_count:
-                preferred = []
-                fallback = []
+                blank_accept = []
                 for index in range(last_count):
                     item = inputs.nth(index)
                     accept = (item.get_attribute("accept") or "").lower()
-                    if kind == "image" and ("image" in accept or ".jpg" in accept or ".png" in accept):
-                        preferred.append(item)
-                    elif kind == "video" and ("video" in accept or ".mp4" in accept or ".webm" in accept):
-                        preferred.append(item)
-                    else:
-                        fallback.append(item)
-
-                if preferred:
-                    return preferred[0]
-
-                # TikTok sometimes leaves accept blank and validates after selection.
-                for item in fallback:
-                    accept = (item.get_attribute("accept") or "").strip()
-                    if not accept:
+                    if kind == "image" and (
+                        "image" in accept
+                        or ".jpg" in accept
+                        or ".jpeg" in accept
+                        or ".png" in accept
+                        or ".webp" in accept
+                    ):
                         return item
+                    if kind == "video" and (
+                        "video" in accept
+                        or ".mp4" in accept
+                        or ".mov" in accept
+                        or ".webm" in accept
+                    ):
+                        return item
+                    if not accept.strip():
+                        blank_accept.append(item)
+
+                # A blank accept input is a safe fallback only for video. On the
+                # current TikTok Studio page, using it for a PNG can make the UI
+                # look like a broken video upload.
+                if kind == "video" and blank_accept:
+                    return blank_accept[0]
         except Exception:
             pass
 
         page.wait_for_timeout(300)
+
+    if kind == "image":
+        raise RuntimeError(
+            "PHOTO UPLOAD NOT EXPOSED | TikTok Studio is showing its video uploader "
+            "instead of a photo picker on this account/session."
+        )
 
     raise RuntimeError(
         f"TikTok upload page did not expose a {kind} file picker "
@@ -354,37 +369,44 @@ def _sound_result_texts(page: Page, limit: int = 25) -> list[str]:
     return results
 
 
-def _prepare_media_for_sound_search(page: Page, media_paths: list[str]) -> None:
-    if not media_paths:
-        raise RuntimeError("Choose an image or video before searching TikTok sounds.")
+def _search_page_sound_results(page: Page, limit: int = 25) -> list[str]:
+    results: list[str] = []
+    seen: set[str] = set()
 
-    paths = [Path(path) for path in media_paths]
-    missing = [str(path) for path in paths if not path.exists()]
-    if missing:
-        raise RuntimeError("TikTok media file missing: " + ", ".join(missing))
+    try:
+        anchors = page.locator('a[href*="/music/"]')
+        for index in range(min(anchors.count(), 100)):
+            item = anchors.nth(index)
+            if not item.is_visible():
+                continue
 
-    suffixes = {path.suffix.lower() for path in paths}
-    image_only = bool(suffixes) and suffixes.issubset(IMAGE_SUFFIXES)
-    video_only = len(paths) == 1 and paths[0].suffix.lower() in VIDEO_SUFFIXES
-    if not image_only and not video_only:
-        raise RuntimeError("Choose either one video or one/more images before searching sounds.")
+            text = ""
+            try:
+                text = _clean_sound_result(item.inner_text(timeout=500))
+            except Exception:
+                pass
+            if not text:
+                text = (item.get_attribute("aria-label") or item.get_attribute("title") or "").strip()
 
-    kind = "image" if image_only else "video"
-    if kind == "image":
-        _select_photo_mode(page)
+            clean = " ".join(text.split())
+            if not clean or len(clean) > 220:
+                continue
+            key = clean.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(clean)
+            if len(results) >= limit:
+                break
+    except Exception:
+        pass
 
-    file_input = _file_input_for_kind(page, kind)
-    file_input.set_input_files([str(path) for path in paths])
-    page.wait_for_timeout(2500)
-
-    error = _visible_error(page)
-    if error:
-        raise RuntimeError(f"TikTok rejected the media while searching sounds: {error}")
+    return results
 
 
 def search_tiktok_sounds(
     query: str,
-    media_paths: list[str],
+    media_paths: list[str] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> list[str]:
     clean_query = query.strip()
@@ -404,8 +426,12 @@ def search_tiktok_sounds(
             raise RuntimeError("Controlled browser has no usable context.")
 
         page, _created = _sound_search_page(context)
-        page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(1500)
+        page.goto(
+            SEARCH_URL.format(query=quote(clean_query)),
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        page.wait_for_timeout(1800)
 
         if _looks_logged_out(page):
             page.bring_to_front()
@@ -414,13 +440,17 @@ def search_tiktok_sounds(
                 "Log in once in the TikTok tab, then retry."
             )
 
-        _prepare_media_for_sound_search(page, media_paths)
-        _search_sound_picker(page, clean_query)
-        results = _sound_result_texts(page)
+        # Prefer TikTok's Sounds tab when it is present. This is deliberately a
+        # normal TikTok search page, not the Studio uploader, so searching for a
+        # sound no longer uploads or touches the queued media.
+        _click_first_visible(page, ("Sounds", "Sound"))
+        page.wait_for_timeout(900)
+
+        results = _search_page_sound_results(page)
         if not results:
             page.bring_to_front()
             raise RuntimeError(
-                f'SOUND RESULTS EMPTY | TikTok showed no selectable results for "{clean_query}".'
+                f'SOUND RESULTS EMPTY | TikTok returned no visible sound results for "{clean_query}".'
             )
 
         if log:
