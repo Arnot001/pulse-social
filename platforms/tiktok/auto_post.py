@@ -53,6 +53,7 @@ class TikTokQueuedPost:
     brand_content_toggle: bool = False
     brand_organic_toggle: bool = False
     is_aigc: bool = False
+    music_query: str = ""
     status: str = "queued"
     publish_id: str = ""
     remote_status: str = ""
@@ -123,6 +124,7 @@ def add_post(
     brand_content_toggle: bool = False,
     brand_organic_toggle: bool = False,
     is_aigc: bool = False,
+    music_query: str = "",
 ) -> TikTokQueuedPost:
     clean = caption.strip()
     if _utf16_length(clean) > MAX_CAPTION_UTF16:
@@ -144,6 +146,7 @@ def add_post(
         brand_content_toggle=brand_content_toggle,
         brand_organic_toggle=brand_organic_toggle,
         is_aigc=is_aigc,
+        music_query=music_query.strip(),
     )
     items = load_queue()
     items.append(item)
@@ -411,7 +414,8 @@ def _record_history(item: TikTokQueuedPost) -> None:
     with HISTORY_FILE.open("a", encoding="utf-8") as handle:
         handle.write(
             f"{stamp} | POSTED | media={len(item_media_paths(item))} | "
-            f"privacy={item.privacy_level} | {item.caption.replace(chr(10), ' ')}\n"
+            f"music={item.music_query or 'none'} | privacy={item.privacy_level} | "
+            f"{item.caption.replace(chr(10), ' ')}\n"
         )
 
 
@@ -446,8 +450,14 @@ def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> No
                             if image_count
                             else f"VIDEO {Path(media[0]).name if media else '<missing>'}"
                         )
-                        log(f"POSTING | {item.caption[:100]} | {media_note}")
-                        publish_browser_post(item.caption, media, log=log)
+                        music_note = f' | SOUND "{item.music_query}"' if item.music_query else ""
+                        log(f"POSTING | {item.caption[:100]} | {media_note}{music_note}")
+                        publish_browser_post(
+                            item.caption,
+                            media,
+                            log=log,
+                            music_query=item.music_query,
+                        )
                         item.status = "posted"
                         item.publish_id = ""
                         item.remote_status = "BROWSER_POSTED"
