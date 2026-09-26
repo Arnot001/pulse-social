@@ -596,7 +596,9 @@ def _preview_control_for_result(result: Locator) -> Locator | None:
     containers = [result]
     for hops in (1, 2, 3):
         try:
-            containers.append(result.locator("xpath=" + "/.." * hops))
+            containers.append(
+                result.locator("xpath=" + "/".join([".."] * hops))
+            )
         except Exception:
             pass
 
