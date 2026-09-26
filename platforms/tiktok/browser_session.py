@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import time
 import urllib.request
 
 from playwright.sync_api import sync_playwright
@@ -48,25 +49,38 @@ def open_tiktok_browser() -> tuple[bool, str]:
             "Pulse browser control is not connected. Connect the X/Brave browser first.",
         )
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp(CDP_URL, timeout=5000)
-            if not browser.contexts:
-                return False, "Browser connected, but no browser context was available."
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.connect_over_cdp(CDP_URL, timeout=10000)
+                if not browser.contexts:
+                    last_error = RuntimeError(
+                        "Browser connected, but no browser context was available."
+                    )
+                else:
+                    for context in browser.contexts:
+                        for page in context.pages:
+                            try:
+                                if "tiktok.com" in page.url.lower():
+                                    page.bring_to_front()
+                                    return True, "CONNECTED // EXISTING TIKTOK TAB"
+                            except Exception:
+                                pass
 
-            for context in browser.contexts:
-                for page in context.pages:
-                    try:
-                        if "tiktok.com" in page.url.lower():
-                            page.bring_to_front()
-                            return True, "CONNECTED // EXISTING TIKTOK TAB"
-                    except Exception:
-                        pass
+                    context = browser.contexts[0]
+                    page = context.new_page()
+                    page.goto(TIKTOK_URL, wait_until="domcontentloaded", timeout=30000)
+                    page.bring_to_front()
+                    return True, "CONNECTED // TIKTOK OPENED"
+        except Exception as exc:
+            last_error = exc
 
-            context = browser.contexts[0]
-            page = context.new_page()
-            page.goto(TIKTOK_URL, wait_until="domcontentloaded", timeout=30000)
-            page.bring_to_front()
-            return True, "CONNECTED // TIKTOK OPENED"
-    except Exception as exc:
-        return False, f"Could not attach TikTok to the controlled browser: {exc}"
+        if attempt < 3:
+            time.sleep(0.8)
+
+    return (
+        False,
+        "Could not attach TikTok to the controlled browser after 3 attempts: "
+        f"{last_error}",
+    )
