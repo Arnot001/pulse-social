@@ -54,6 +54,7 @@ class TikTokQueuedPost:
     brand_organic_toggle: bool = False
     is_aigc: bool = False
     music_query: str = ""
+    music_search: str = ""
     status: str = "queued"
     publish_id: str = ""
     remote_status: str = ""
@@ -125,6 +126,7 @@ def add_post(
     brand_organic_toggle: bool = False,
     is_aigc: bool = False,
     music_query: str = "",
+    music_search: str = "",
 ) -> TikTokQueuedPost:
     clean = caption.strip()
     if _utf16_length(clean) > MAX_CAPTION_UTF16:
@@ -147,6 +149,7 @@ def add_post(
         brand_organic_toggle=brand_organic_toggle,
         is_aigc=is_aigc,
         music_query=music_query.strip(),
+        music_search=music_search.strip(),
     )
     items = load_queue()
     items.append(item)
@@ -457,6 +460,7 @@ def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> No
                             media,
                             log=log,
                             music_query=item.music_query,
+                            music_search=item.music_search,
                         )
                         item.status = "posted"
                         item.publish_id = ""
