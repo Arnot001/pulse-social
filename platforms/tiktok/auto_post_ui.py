@@ -15,7 +15,11 @@ from .auto_post import (
     remove_post,
     run_scheduler,
 )
-from .browser_post import search_tiktok_sounds
+from .browser_post import (
+    preview_tiktok_sound,
+    search_tiktok_sounds,
+    stop_tiktok_sound_preview,
+)
 from .browser_session import open_tiktok_browser, tiktok_browser_status
 from .oauth import (
     DEFAULT_REDIRECT_URI,
@@ -570,7 +574,87 @@ class TikTokAutoPostView(tk.Frame):
             status_var.set(f'Loading media + searching TikTok for "{query}"...')
             threading.Thread(target=search_worker, args=(query,), daemon=True).start()
 
-        def use_selected():
+        search_button.configure(command=run_search)
+
+        preview_button = self._button(
+            dialog,
+            "▶ PREVIEW",
+            lambda: None,
+            compact=True,
+        )
+        preview_button.grid(row=5, column=0, sticky="w", padx=(18, 6), pady=(4, 16))
+
+        stop_preview_button = self._button(
+            dialog,
+            "■ STOP",
+            lambda: None,
+            danger=True,
+            compact=True,
+        )
+        stop_preview_button.grid(row=5, column=1, sticky="w", padx=(0, 6), pady=(4, 16))
+
+        def apply_preview_status(message: str) -> None:
+            if not dialog.winfo_exists():
+                return
+            status_var.set(message)
+            preview_button.configure(state="normal")
+            stop_preview_button.configure(state="normal")
+
+        def preview_worker(selection: str, query: str) -> None:
+            try:
+                preview_tiktok_sound(
+                    selection,
+                    query,
+                    list(self.selected_media),
+                    log=self.write,
+                )
+                self.after(
+                    0,
+                    lambda name=selection: apply_preview_status(
+                        f'Playing "{name}" in Brave. Try another or USE SELECTED.'
+                    ),
+                )
+            except Exception as exc:
+                message = str(exc)
+                self.write(f"SOUND PREVIEW ERROR | {message}")
+                self.after(0, lambda msg=message: apply_preview_status(msg))
+
+        def run_preview():
+            selection = result_var.get().strip()
+            query = search_var.get().strip()
+            if not selection:
+                status_var.set("Choose a sound from the dropdown first.")
+                return
+            preview_button.configure(state="disabled")
+            stop_preview_button.configure(state="disabled")
+            status_var.set(f'Loading preview for "{selection}"...')
+            threading.Thread(
+                target=preview_worker,
+                args=(selection, query),
+                daemon=True,
+            ).start()
+
+        def stop_preview():
+            def worker():
+                stop_tiktok_sound_preview(log=self.write)
+                self.after(
+                    0,
+                    lambda: apply_preview_status("Preview stopped."),
+                )
+
+            preview_button.configure(state="disabled")
+            stop_preview_button.configure(state="disabled")
+            threading.Thread(target=worker, daemon=True).start()
+
+        def close_dialog():
+            threading.Thread(
+                target=stop_tiktok_sound_preview,
+                kwargs={"log": self.write},
+                daemon=True,
+            ).start()
+            dialog.destroy()
+
+        def use_selected_and_close():
             selected = result_var.get().strip()
             query = search_var.get().strip()
             if not selected:
@@ -580,20 +664,31 @@ class TikTokAutoPostView(tk.Frame):
             self.music_search = query
             self.music_var.set(f"TIKTOK SOUND // {selected}")
             self.write(f'TIKTOK SOUND CHOSEN | "{selected}" | search "{query}"')
+            threading.Thread(
+                target=stop_tiktok_sound_preview,
+                kwargs={"log": self.write},
+                daemon=True,
+            ).start()
             dialog.destroy()
 
-        search_button.configure(command=run_search)
+        preview_button.configure(command=run_preview)
+        stop_preview_button.configure(command=stop_preview)
 
         actions = tk.Frame(dialog, bg=PANEL)
-        actions.grid(row=5, column=0, columnspan=3, sticky="e", padx=18, pady=(4, 16))
-        self._button(actions, "CANCEL", dialog.destroy, compact=True).pack(side="right")
-        self._button(actions, "USE SELECTED", use_selected, accent=True, compact=True).pack(
-            side="right", padx=(0, 8)
-        )
+        actions.grid(row=5, column=2, sticky="e", padx=(6, 18), pady=(4, 16))
+        self._button(actions, "CANCEL", close_dialog, compact=True).pack(side="right")
+        self._button(
+            actions,
+            "USE SELECTED",
+            use_selected_and_close,
+            accent=True,
+            compact=True,
+        ).pack(side="right", padx=(0, 8))
 
         search_entry.focus_set()
         search_entry.bind("<Return>", run_search)
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.bind("<Escape>", lambda _event: close_dialog())
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
         self.wait_window(dialog)
 
     def _clear_music(self):
