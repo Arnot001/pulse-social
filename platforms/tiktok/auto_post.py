@@ -7,13 +7,18 @@ import subprocess
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
 import requests
 
-from .browser_post import IMAGE_SUFFIXES, VIDEO_SUFFIXES, publish_browser_post
+from .browser_post import (
+    IMAGE_SUFFIXES,
+    VIDEO_SUFFIXES,
+    delete_browser_post,
+    publish_browser_post,
+)
 from .oauth import get_access_token
 
 APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "Pulse Social"
@@ -59,6 +64,10 @@ class TikTokQueuedPost:
     publish_id: str = ""
     remote_status: str = ""
     fail_reason: str = ""
+    delete_after_minutes: int = 0
+    posted_at: str = ""
+    delete_due_at: str = ""
+    deleted_at: str = ""
 
 
 def load_queue() -> list[TikTokQueuedPost]:
@@ -127,6 +136,7 @@ def add_post(
     is_aigc: bool = False,
     music_query: str = "",
     music_search: str = "",
+    delete_after_minutes: int = 0,
 ) -> TikTokQueuedPost:
     clean = caption.strip()
     if _utf16_length(clean) > MAX_CAPTION_UTF16:
@@ -150,6 +160,7 @@ def add_post(
         is_aigc=is_aigc,
         music_query=music_query.strip(),
         music_search=music_search.strip(),
+        delete_after_minutes=max(0, int(delete_after_minutes or 0)),
     )
     items = load_queue()
     items.append(item)
@@ -418,8 +429,29 @@ def _record_history(item: TikTokQueuedPost) -> None:
         handle.write(
             f"{stamp} | POSTED | media={len(item_media_paths(item))} | "
             f"music={item.music_query or 'none'} | privacy={item.privacy_level} | "
+            f"auto_delete={item.delete_after_minutes or 0}m | "
             f"{item.caption.replace(chr(10), ' ')}\n"
         )
+
+
+def _record_delete_history(item: TikTokQueuedPost) -> None:
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with HISTORY_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(
+            f"{stamp} | DELETED | auto_delete | "
+            f"{item.caption.replace(chr(10), ' ')}\n"
+        )
+
+
+def _arm_auto_delete(item: TikTokQueuedPost) -> None:
+    posted = datetime.now()
+    item.posted_at = posted.isoformat(timespec="seconds")
+    if item.delete_after_minutes > 0:
+        item.delete_due_at = (
+            posted + timedelta(minutes=item.delete_after_minutes)
+        ).isoformat(timespec="seconds")
+    else:
+        item.delete_due_at = ""
 
 
 def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> None:
@@ -467,9 +499,17 @@ def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> No
                         item.publish_id = ""
                         item.remote_status = "BROWSER_POSTED"
                         item.fail_reason = ""
+                        _arm_auto_delete(item)
                         _record_history(item)
                         changed = True
-                        log("POSTED successfully.")
+                        if item.delete_due_at:
+                            delete_due = datetime.fromisoformat(item.delete_due_at)
+                            log(
+                                f"POSTED successfully. AUTO DELETE armed for "
+                                f"{delete_due:%d/%m %H:%M}."
+                            )
+                        else:
+                            log("POSTED successfully.")
                     except Exception as exc:
                         item.status = "error"
                         item.fail_reason = str(exc)
@@ -488,9 +528,17 @@ def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> No
                         if remote_status == "PUBLISH_COMPLETE":
                             item.status = "posted"
                             item.fail_reason = ""
+                            _arm_auto_delete(item)
                             _record_history(item)
                             changed = True
-                            log("POSTED successfully.")
+                            if item.delete_due_at:
+                                delete_due = datetime.fromisoformat(item.delete_due_at)
+                                log(
+                                    f"POSTED successfully. AUTO DELETE armed for "
+                                    f"{delete_due:%d/%m %H:%M}."
+                                )
+                            else:
+                                log("POSTED successfully.")
                         elif remote_status == "FAILED":
                             item.status = "error"
                             item.fail_reason = str(data.get("fail_reason") or "TikTok publish failed.")
@@ -498,6 +546,38 @@ def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> No
                             log(f"POST ERROR | {item.fail_reason}")
                     except Exception as exc:
                         log(f"STATUS CHECK ERROR | {item.publish_id} | {exc}")
+
+                elif (
+                    item.status == "posted"
+                    and item.delete_after_minutes > 0
+                    and item.delete_due_at
+                    and not item.deleted_at
+                ):
+                    try:
+                        delete_due = datetime.fromisoformat(item.delete_due_at)
+                    except ValueError:
+                        item.status = "delete_error"
+                        item.fail_reason = "Invalid auto-delete date/time."
+                        changed = True
+                        log(f"AUTO DELETE ERROR | {item.fail_reason}")
+                        continue
+
+                    if delete_due > now:
+                        continue
+
+                    try:
+                        delete_browser_post(item.caption, log=log)
+                        item.status = "deleted"
+                        item.deleted_at = datetime.now().isoformat(timespec="seconds")
+                        item.fail_reason = ""
+                        _record_delete_history(item)
+                        changed = True
+                        log("AUTO DELETE complete.")
+                    except Exception as exc:
+                        item.status = "delete_error"
+                        item.fail_reason = str(exc)
+                        changed = True
+                        log(f"AUTO DELETE ERROR | {exc}")
 
             if changed:
                 save_queue(items)
