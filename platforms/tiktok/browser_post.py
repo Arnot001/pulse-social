@@ -16,6 +16,7 @@ SEARCH_URL = "https://www.tiktok.com/search?q={query}"
 POSTING_PAGE_NAME = "pulse-social-tiktok-auto-post"
 SOUND_SEARCH_PAGE_NAME = "pulse-social-tiktok-sound-search"
 SOUND_PREVIEW_PAGE_NAME = "pulse-social-tiktok-sound-preview"
+DELETE_PAGE_NAME = "pulse-social-tiktok-auto-delete"
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
@@ -1134,6 +1135,283 @@ def _set_post_privacy(page: Page, privacy_level: str) -> None:
     raise RuntimeError(
         f"PRIVACY OPTION NOT FOUND | TikTok did not expose {normalized} in its audience menu."
     )
+
+
+def _open_tiktok_posts(page: Page) -> None:
+    page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_timeout(1000)
+
+    if _looks_logged_out(page):
+        raise RuntimeError(
+            "TikTok is not logged in in the controlled Brave profile. "
+            "Log in once in the TikTok tab, then retry."
+        )
+
+    # Use TikTok Studio's own Posts navigation so we do not depend on a
+    # private/unstable content-management URL.
+    for role in ("link", "button"):
+        try:
+            posts = page.get_by_role(role, name="Posts", exact=True)
+            for index in range(min(posts.count(), 8)):
+                item = posts.nth(index)
+                if item.is_visible():
+                    item.click(timeout=5000)
+                    page.wait_for_timeout(1200)
+                    return
+        except Exception:
+            pass
+
+    try:
+        posts = page.get_by_text("Posts", exact=True)
+        for index in range(min(posts.count(), 12)):
+            item = posts.nth(index)
+            if item.is_visible():
+                item.click(timeout=5000)
+                page.wait_for_timeout(1200)
+                return
+    except Exception:
+        pass
+
+    raise RuntimeError("POSTS PAGE NOT FOUND | TikTok Studio did not expose its Posts section.")
+
+
+def _post_row_for_caption(page: Page, caption: str) -> Locator:
+    clean = " ".join((caption or "").split())
+    if not clean:
+        raise RuntimeError(
+            "AUTO DELETE NEEDS A CAPTION | Pulse will not guess which TikTok post to delete."
+        )
+
+    matches: list[Locator] = []
+
+    def collect(locator: Locator) -> None:
+        try:
+            for index in range(min(locator.count(), 20)):
+                item = locator.nth(index)
+                if item.is_visible():
+                    matches.append(item)
+        except Exception:
+            pass
+
+    # Prefer the full caption. TikTok normalises whitespace in text matching.
+    try:
+        collect(page.get_by_text(clean, exact=True))
+    except Exception:
+        pass
+
+    # TikTok Studio can truncate captions in the table. Only use a reasonably
+    # distinctive prefix and still refuse if more than one row matches.
+    if not matches:
+        prefix = clean[:80].strip()
+        if len(prefix) >= 12:
+            try:
+                collect(page.get_by_text(prefix, exact=False))
+            except Exception:
+                pass
+
+    # De-duplicate locator handles by their DOM text/position as best we can.
+    unique: list[Locator] = []
+    seen = set()
+    for item in matches:
+        try:
+            box = item.bounding_box()
+            key = (
+                " ".join(item.inner_text(timeout=400).split()),
+                None if box is None else round(box.get("y", 0), 1),
+            )
+        except Exception:
+            key = (str(len(unique)), None)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+
+    if not unique:
+        raise RuntimeError(
+            f'AUTO DELETE POST NOT FOUND | TikTok Studio has no visible post matching "{clean[:80]}".'
+        )
+    if len(unique) > 1:
+        raise RuntimeError(
+            f'AUTO DELETE AMBIGUOUS | {len(unique)} visible posts match "{clean[:80]}". '
+            "Pulse refused to guess."
+        )
+
+    match = unique[0]
+
+    # Prefer semantic table/list rows.
+    for xpath in (
+        "ancestor::tr[1]",
+        "ancestor::*[@role='row'][1]",
+    ):
+        try:
+            row = match.locator(f"xpath={xpath}")
+            if row.count() and row.first.is_visible():
+                return row.first
+        except Exception:
+            pass
+
+    # TikTok Studio also uses nested div cards. Walk outward until we find a
+    # container with the post text and at least one action button.
+    current = match
+    for _ in range(7):
+        try:
+            current = current.locator("xpath=..")
+            if not current.count() or not current.first.is_visible():
+                continue
+            buttons = current.first.locator('button, [role="button"]')
+            if buttons.count() >= 1:
+                return current.first
+        except Exception:
+            pass
+
+    raise RuntimeError(
+        "AUTO DELETE ROW NOT FOUND | Pulse found the post text but not its action controls."
+    )
+
+
+def _more_action_button(row: Locator) -> Locator | None:
+    selectors = (
+        'button[aria-label*="more" i]',
+        'button[title*="more" i]',
+        '[role="button"][aria-label*="more" i]',
+        '[role="button"][title*="more" i]',
+        'button[aria-label*="action" i]',
+        '[role="button"][aria-label*="action" i]',
+    )
+    for selector in selectors:
+        try:
+            controls = row.locator(selector)
+            for index in range(min(controls.count(), 12)):
+                control = controls.nth(index)
+                if control.is_visible():
+                    return control
+        except Exception:
+            pass
+
+    # The current Studio action is an ellipsis icon. Accept a button only when
+    # its accessible/text label clearly looks like an ellipsis/more control.
+    try:
+        buttons = row.locator('button, [role="button"]')
+        for index in range(min(buttons.count(), 20)):
+            button = buttons.nth(index)
+            if not button.is_visible():
+                continue
+            label = " ".join(
+                [
+                    button.get_attribute("aria-label") or "",
+                    button.get_attribute("title") or "",
+                    button.inner_text(timeout=300) or "",
+                ]
+            ).strip().casefold()
+            if any(token in label for token in ("more", "ellipsis", "...", "⋯", "•••")):
+                return button
+    except Exception:
+        pass
+
+    return None
+
+
+def delete_browser_post(
+    caption: str,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    """Delete one exact TikTok Studio post; never guess when matching is ambiguous."""
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.connect_over_cdp(CDP_URL, timeout=5000)
+        except Exception as exc:
+            raise RuntimeError(
+                "TikTok browser is not controllable. Connect the Pulse Brave browser first."
+            ) from exc
+
+        context = _existing_tiktok_context(browser)
+        if context is None:
+            raise RuntimeError("Controlled browser has no usable context.")
+
+        page, _created = _background_named_page(browser, context, DELETE_PAGE_NAME)
+        try:
+            _open_tiktok_posts(page)
+            row = _post_row_for_caption(page, caption)
+
+            more = _more_action_button(row)
+            if more is None:
+                raise RuntimeError(
+                    "AUTO DELETE ACTION NOT FOUND | Pulse found the post but not TikTok's More menu."
+                )
+
+            more.click(timeout=5000)
+            page.wait_for_timeout(400)
+
+            delete_action = None
+            for role in ("menuitem", "button"):
+                try:
+                    options = page.get_by_role(role, name="Delete", exact=True)
+                    for index in range(min(options.count(), 8)):
+                        item = options.nth(index)
+                        if item.is_visible():
+                            delete_action = item
+                            break
+                    if delete_action is not None:
+                        break
+                except Exception:
+                    pass
+
+            if delete_action is None:
+                try:
+                    options = page.get_by_text("Delete", exact=True)
+                    for index in range(min(options.count(), 12)):
+                        item = options.nth(index)
+                        if item.is_visible():
+                            delete_action = item
+                            break
+                except Exception:
+                    pass
+
+            if delete_action is None:
+                raise RuntimeError(
+                    "AUTO DELETE MENU OPTION NOT FOUND | TikTok's More menu had no visible Delete action."
+                )
+
+            delete_action.click(timeout=5000)
+            page.wait_for_timeout(500)
+
+            # Confirmation is expected. Only click a Delete button inside a
+            # visible dialog; otherwise stop rather than guessing.
+            confirm = None
+            try:
+                dialogs = page.locator('[role="dialog"]')
+                for dialog_index in range(dialogs.count() - 1, -1, -1):
+                    dialog = dialogs.nth(dialog_index)
+                    if not dialog.is_visible():
+                        continue
+                    buttons = dialog.get_by_role("button", name="Delete", exact=True)
+                    for index in range(min(buttons.count(), 6)):
+                        item = buttons.nth(index)
+                        if item.is_visible():
+                            confirm = item
+                            break
+                    if confirm is not None:
+                        break
+            except Exception:
+                pass
+
+            if confirm is None:
+                raise RuntimeError(
+                    "AUTO DELETE CONFIRMATION NOT FOUND | Pulse refused to confirm an unverified delete."
+                )
+
+            confirm.click(timeout=5000)
+            page.wait_for_timeout(1200)
+
+            if log:
+                clean = " ".join((caption or "").split())
+                log(f'AUTO DELETE | deleted "{clean[:100]}"')
+        finally:
+            try:
+                if not page.is_closed():
+                    page.close()
+            except Exception:
+                pass
 
 
 def _post_button(page: Page) -> Locator:
