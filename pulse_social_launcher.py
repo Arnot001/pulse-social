@@ -6,8 +6,14 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
-from platforms.tiktok.browser_session import open_tiktok_browser, tiktok_browser_status
-from platforms.x.browser_session import browser_status, open_x_browser
+from platforms.browser_control import (
+    browser_status,
+    cdp_responding,
+    connect_browser,
+    dedicated_browser_name,
+    installed_browser_names,
+    running_browser_names,
+)
 
 BG = "#06070b"
 SURFACE = "#0b0f17"
@@ -76,8 +82,8 @@ def button(parent, text, command, accent=False, danger=False):
 
 root = tk.Tk()
 root.title("Pulse Social")
-root.geometry("980x665")
-root.minsize(900, 610)
+root.geometry("980x620")
+root.minsize(900, 575)
 root.configure(bg=BG)
 
 # HEADER
@@ -108,78 +114,144 @@ tk.Label(
 browser_status_var = tk.StringVar(value=browser_status())
 browser_glow = tk.Frame(root, bg=CYAN_SOFT, padx=2, pady=2)
 browser_glow.pack(fill="x", padx=32, pady=(18, 14))
-browser_strip = tk.Frame(browser_glow, bg=PANEL, highlightthickness=1, highlightbackground=CYAN)
-browser_strip.pack(fill="x")
-
-tk.Label(browser_strip, text="X BROWSER", fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).pack(side="left", padx=(16, 8), pady=12)
-tk.Label(browser_strip, text="●", fg=CYAN, bg=PANEL, font=("Segoe UI", 10, "bold")).pack(side="left")
-tk.Label(browser_strip, textvariable=browser_status_var, fg=TEXT, bg=PANEL, font=("Consolas", 9, "bold")).pack(side="left", padx=(6, 12))
-
-
-def connect_x_browser() -> None:
-    ok, msg = open_x_browser(restart_existing=False)
-    if not ok and "already open without Pulse control" in msg:
-        if not messagebox.askyesno(
-            "Restart browser for Pulse?",
-            msg + "\n\nPulse needs to restart it with browser control enabled. "
-            "Open tabs should be restorable by the browser. Restart now?",
-            parent=root,
-        ):
-            browser_status_var.set(browser_status())
-            return
-        ok, msg = open_x_browser(restart_existing=True)
-    browser_status_var.set(browser_status() if ok else msg.upper())
-    if not ok:
-        messagebox.showerror("X Browser", msg, parent=root)
-
-
-button(browser_strip, "CONNECT / REFRESH", connect_x_browser, accent=True).pack(side="right", padx=12, pady=7)
-
-tiktok_browser_status_var = tk.StringVar(value=tiktok_browser_status())
-tiktok_browser_glow = tk.Frame(root, bg=CYAN_SOFT, padx=2, pady=2)
-tiktok_browser_glow.pack(fill="x", padx=32, pady=(0, 14))
-tiktok_browser_strip = tk.Frame(
-    tiktok_browser_glow,
+browser_strip = tk.Frame(
+    browser_glow,
     bg=PANEL,
     highlightthickness=1,
     highlightbackground=CYAN,
 )
-tiktok_browser_strip.pack(fill="x")
+browser_strip.pack(fill="x")
 
 tk.Label(
-    tiktok_browser_strip,
-    text="TIKTOK BROWSER",
+    browser_strip,
+    text="PULSE BROWSER",
     fg=MUTED,
     bg=PANEL,
     font=("Consolas", 8, "bold"),
 ).pack(side="left", padx=(16, 8), pady=12)
 tk.Label(
-    tiktok_browser_strip,
+    browser_strip,
     text="●",
     fg=CYAN,
     bg=PANEL,
     font=("Segoe UI", 10, "bold"),
 ).pack(side="left")
 tk.Label(
-    tiktok_browser_strip,
-    textvariable=tiktok_browser_status_var,
+    browser_strip,
+    textvariable=browser_status_var,
     fg=TEXT,
     bg=PANEL,
     font=("Consolas", 9, "bold"),
 ).pack(side="left", padx=(6, 12))
 
 
-def connect_tiktok_browser() -> None:
-    ok, msg = open_tiktok_browser()
-    tiktok_browser_status_var.set(tiktok_browser_status() if ok else msg.upper())
+def choose_browser(names: list[str], title: str) -> str | None:
+    if not names:
+        return None
+    if len(names) == 1:
+        return names[0]
+
+    dialog = tk.Toplevel(root)
+    dialog.title(title)
+    dialog.configure(bg=PANEL)
+    dialog.resizable(False, False)
+    dialog.transient(root)
+    dialog.grab_set()
+
+    tk.Label(
+        dialog,
+        text="CHOOSE PULSE BROWSER",
+        fg=CYAN,
+        bg=PANEL,
+        font=("Consolas", 9, "bold"),
+    ).pack(anchor="w", padx=18, pady=(16, 4))
+    tk.Label(
+        dialog,
+        text=(
+            "Pulse will use this browser as the shared dedicated session for "
+            "X and TikTok."
+        ),
+        fg=TEXT,
+        bg=PANEL,
+        justify="left",
+        wraplength=420,
+        font=("Segoe UI", 9),
+    ).pack(anchor="w", padx=18, pady=(0, 12))
+
+    result = {"name": None}
+
+    def pick(name: str) -> None:
+        result["name"] = name
+        dialog.destroy()
+
+    buttons = tk.Frame(dialog, bg=PANEL)
+    buttons.pack(fill="x", padx=18, pady=(0, 16))
+    for name in names:
+        button(
+            buttons,
+            name.upper(),
+            lambda selected=name: pick(selected),
+            accent=True,
+        ).pack(side="left", padx=(0, 8))
+
+    dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+    root.wait_window(dialog)
+    return result["name"]
+
+
+def browser_to_attach() -> str | None:
+    running = running_browser_names()
+    if running:
+        return choose_browser(running, "Use open browser for Pulse")
+
+    installed = installed_browser_names()
+    saved = dedicated_browser_name()
+    if saved and saved in installed:
+        return saved
+    return choose_browser(installed, "Choose browser for Pulse")
+
+
+def connect_pulse_browser() -> None:
+    if cdp_responding():
+        ok, msg = connect_browser()
+        browser_status_var.set(browser_status() if ok else msg.upper())
+        if not ok:
+            messagebox.showerror("Pulse Browser", msg, parent=root)
+        return
+
+    name = browser_to_attach()
+    if not name:
+        messagebox.showerror(
+            "Pulse Browser",
+            "No supported Brave, Chrome or Edge browser was found.",
+            parent=root,
+        )
+        browser_status_var.set(browser_status())
+        return
+
+    ok, msg = connect_browser(name, restart_existing=False)
+
+    if not ok and "restart this browser once" in msg.lower():
+        if not messagebox.askyesno(
+            "Make this the Pulse browser?",
+            msg
+            + "\n\nPulse will restore the browser session and use it for both "
+              "X and TikTok. Restart it now?",
+            parent=root,
+        ):
+            browser_status_var.set(browser_status())
+            return
+        ok, msg = connect_browser(name, restart_existing=True)
+
+    browser_status_var.set(browser_status() if ok else msg.upper())
     if not ok:
-        messagebox.showerror("TikTok Browser", msg, parent=root)
+        messagebox.showerror("Pulse Browser", msg, parent=root)
 
 
 button(
-    tiktok_browser_strip,
-    "CONNECT / REFRESH",
-    connect_tiktok_browser,
+    browser_strip,
+    "ATTACH / REFRESH",
+    connect_pulse_browser,
     accent=True,
 ).pack(side="right", padx=12, pady=7)
 
@@ -240,7 +312,7 @@ platform_card(
     [
         "Cleanup posts, replies, reposts and likes",
         "Schedule queued posts",
-        "Shared controlled-browser session",
+        "Shared dedicated Pulse browser",
     ],
     "OPEN CLEANUP",
     lambda: launch("pulse_social_ui.py"),
@@ -255,7 +327,7 @@ platform_card(
     "Commerce intelligence plus scheduled TikTok publishing.",
     [
         "Live category collection and deal intelligence",
-        "Shared controlled-browser session",
+        "Shared dedicated Pulse browser",
         "Scheduled video posts with captions",
     ],
     "OPEN SHOP",
