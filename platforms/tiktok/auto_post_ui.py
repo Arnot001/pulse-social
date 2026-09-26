@@ -57,7 +57,7 @@ class TikTokAutoPostView(tk.Frame):
         self.oauth_worker: threading.Thread | None = None
         self.selected_media: list[str] = []
         self.mapping = {}
-        self.privacy_options = ["SELF_ONLY"]
+        self.privacy_options = ["PUBLIC", "FRIENDS", "PRIVATE"]
         self._destroyed = False
 
         self.connection_var = tk.StringVar(value=tiktok_browser_status())
@@ -71,7 +71,7 @@ class TikTokAutoPostView(tk.Frame):
         self.schedule_mode = tk.StringVar(value="delay")
         self.delay_var = tk.StringVar(value="1")
         self.clock_var = tk.StringVar(value=(datetime.now() + timedelta(minutes=5)).strftime("%H:%M"))
-        self.privacy_var = tk.StringVar(value="SELF_ONLY")
+        self.privacy_var = tk.StringVar(value="PUBLIC")
         self.comments_var = tk.BooleanVar(value=True)
         self.duet_var = tk.BooleanVar(value=True)
         self.stitch_var = tk.BooleanVar(value=True)
@@ -890,12 +890,12 @@ class TikTokAutoPostView(tk.Frame):
     def _apply_creator_info(self, info: dict):
         if self._destroyed:
             return
-        options = list(info.get("privacy_level_options") or [])
-        if options:
-            self.privacy_options = options
-            self.privacy_menu.configure(values=options)
-            if self.privacy_var.get() not in options:
-                self.privacy_var.set(options[0])
+        # Browser posting uses the human-facing TikTok audience choices.
+        # Keep these stable even if the legacy API returns internal privacy codes.
+        self.privacy_options = ["PUBLIC", "FRIENDS", "PRIVATE"]
+        self.privacy_menu.configure(values=self.privacy_options)
+        if self.privacy_var.get() not in self.privacy_options:
+            self.privacy_var.set("PUBLIC")
 
         # TikTok can disable these creator capabilities; reflect that immediately.
         if info.get("comment_disabled"):
@@ -916,9 +916,9 @@ class TikTokAutoPostView(tk.Frame):
             self.connection_var.set("READY TO CONNECT")
         else:
             self.connection_var.set("READY TO CONNECT" if app_credentials_configured() else "NOT CONNECTED")
-        self.privacy_options = ["SELF_ONLY"]
+        self.privacy_options = ["PUBLIC", "FRIENDS", "PRIVATE"]
         self.privacy_menu.configure(values=self.privacy_options)
-        self.privacy_var.set("SELF_ONLY")
+        self.privacy_var.set("PUBLIC")
         self.write("TIKTOK DISCONNECTED")
 
     def _refresh_connection_label(self):
@@ -1038,7 +1038,7 @@ class TikTokAutoPostView(tk.Frame):
         sound_note = f' | SOUND "{item.music_query}"' if item.music_query else ""
         self.write(
             f"QUEUED | {note} | due {due:%d/%m %H:%M} | "
-            f"{media_note}{sound_note} | {item.caption[:100]}"
+            f"{item.privacy_level} | {media_note}{sound_note} | {item.caption[:100]}"
         )
         self.caption.delete("1.0", tk.END)
         self._clear_media()
