@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import html
+import re
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 from typing import Callable
 
 from playwright.sync_api import Locator, Page, sync_playwright
@@ -369,35 +371,81 @@ def _sound_result_texts(page: Page, limit: int = 25) -> list[str]:
     return results
 
 
+def _sound_name_from_href(href: str) -> str:
+    value = unquote((href or "").split("?", 1)[0]).rstrip("/")
+    if not value:
+        return ""
+    slug = value.rsplit("/", 1)[-1]
+    slug = re.sub(r"-\\d{8,}$", "", slug)
+    slug = slug.replace("-", " ").replace("_", " ")
+    return " ".join(slug.split())
+
+
 def _search_page_sound_results(page: Page, limit: int = 25) -> list[str]:
     results: list[str] = []
     seen: set[str] = set()
 
-    try:
-        anchors = page.locator('a[href*="/music/"]')
-        for index in range(min(anchors.count(), 100)):
-            item = anchors.nth(index)
-            if not item.is_visible():
-                continue
+    def add(raw: str) -> None:
+        clean = _clean_sound_result(html.unescape(raw or ""))
+        clean = " ".join(clean.split())
+        if not clean or len(clean) > 220:
+            return
+        key = clean.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        results.append(clean)
 
+    # TikTok has used both /music/ and /sound/ routes. Do not require the
+    # anchors to be in the current viewport because search results are lazy
+    # rendered and their audio links can be off-screen.
+    try:
+        anchors = page.locator('a[href*="/music/"], a[href*="/sound/"]')
+        for index in range(min(anchors.count(), 250)):
+            item = anchors.nth(index)
             text = ""
             try:
-                text = _clean_sound_result(item.inner_text(timeout=500))
+                text = item.inner_text(timeout=400)
             except Exception:
                 pass
-            if not text:
-                text = (item.get_attribute("aria-label") or item.get_attribute("title") or "").strip()
 
-            clean = " ".join(text.split())
-            if not clean or len(clean) > 220:
-                continue
-            key = clean.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            results.append(clean)
+            if not text:
+                text = (
+                    item.get_attribute("aria-label")
+                    or item.get_attribute("title")
+                    or ""
+                )
+
+            if not text:
+                href = item.get_attribute("href") or ""
+                text = _sound_name_from_href(href)
+
+            add(text)
             if len(results) >= limit:
-                break
+                return results
+    except Exception:
+        pass
+
+    # Current TikTok search often keeps music metadata in the page hydration
+    # payload even when it does not render a dedicated Sounds tab. Pull only
+    # explicit music-title fields as a fallback; never populate the dropdown
+    # with arbitrary video/search text.
+    try:
+        markup = page.content()
+        patterns = (
+            r'"musicName"\\s*:\\s*"([^"]{1,180})"',
+            r'"musicTitle"\\s*:\\s*"([^"]{1,180})"',
+            r'"music_title"\\s*:\\s*"([^"]{1,180})"',
+        )
+        for pattern in patterns:
+            for match in re.findall(pattern, markup, flags=re.IGNORECASE):
+                try:
+                    decoded = bytes(match, "utf-8").decode("unicode_escape")
+                except Exception:
+                    decoded = match
+                add(decoded)
+                if len(results) >= limit:
+                    return results
     except Exception:
         pass
 
@@ -440,21 +488,64 @@ def search_tiktok_sounds(
                 "Log in once in the TikTok tab, then retry."
             )
 
-        # Prefer TikTok's Sounds tab when it is present. This is deliberately a
-        # normal TikTok search page, not the Studio uploader, so searching for a
-        # sound no longer uploads or touches the queued media.
-        _click_first_visible(page, ("Sounds", "Sound"))
-        page.wait_for_timeout(900)
+        # Prefer TikTok's Sounds tab when one exists. Search tabs are links on
+        # some builds and buttons/tabs on others, so cover both.
+        switched_to_sounds = _click_first_visible(page, ("Sounds", "Sound"))
+        if not switched_to_sounds:
+            for label in ("Sounds", "Sound"):
+                try:
+                    links = page.get_by_role("link", name=label, exact=False)
+                    for index in range(min(links.count(), 6)):
+                        item = links.nth(index)
+                        if item.is_visible():
+                            item.click(timeout=3000)
+                            switched_to_sounds = True
+                            break
+                    if switched_to_sounds:
+                        break
+                except Exception:
+                    pass
 
-        results = _search_page_sound_results(page)
+        page.wait_for_timeout(1400)
+
+        # TikTok lazy-loads result metadata. Scan, scroll, and scan again rather
+        # than assuming everything is in the first viewport.
+        results: list[str] = []
+        for _attempt in range(5):
+            results = _search_page_sound_results(page)
+            if len(results) >= 3:
+                break
+            try:
+                page.mouse.wheel(0, 900)
+            except Exception:
+                pass
+            page.wait_for_timeout(700)
+
         if not results:
+            try:
+                music_links = page.locator('a[href*="/music/"], a[href*="/sound/"]').count()
+                all_links = page.locator("a[href]").count()
+            except Exception:
+                music_links = -1
+                all_links = -1
+            if log:
+                log(
+                    f'TIKTOK SOUND DIAG | url={page.url} | '
+                    f'sounds_tab={switched_to_sounds} | '
+                    f'music_links={music_links} | all_links={all_links}'
+                )
             page.bring_to_front()
             raise RuntimeError(
-                f'SOUND RESULTS EMPTY | TikTok returned no visible sound results for "{clean_query}".'
+                f'SOUND RESULTS EMPTY | TikTok loaded the search for "{clean_query}" '
+                "but exposed no sound metadata. The TikTok search tab has been brought forward "
+                "so we can see what this account is rendering."
             )
 
         if log:
-            log(f'TIKTOK SOUND SEARCH | "{clean_query}" | {len(results)} result(s)')
+            log(
+                f'TIKTOK SOUND SEARCH | "{clean_query}" | '
+                f'{len(results)} result(s) | sounds_tab={switched_to_sounds}'
+            )
         return results
 
 
