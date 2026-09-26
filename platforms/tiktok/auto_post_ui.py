@@ -451,6 +451,15 @@ class TikTokAutoPostView(tk.Frame):
         self.media_var.set("NO MEDIA")
 
     def _choose_music(self):
+        if not self.selected_media:
+            messagebox.showinfo(
+                "TikTok sound",
+                "Add the image/video first, then choose music. TikTok only exposes "
+                "the post sound picker after media is loaded.",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
         dialog = tk.Toplevel(self.winfo_toplevel())
         dialog.title("Choose TikTok sound")
         dialog.configure(bg=PANEL)
@@ -473,8 +482,8 @@ class TikTokAutoPostView(tk.Frame):
         tk.Label(
             dialog,
             text=(
-                "Search the sounds currently visible on your logged-in TikTok. "
-                "Pick the exact result you want Pulse to use."
+                "Pulse loads your selected media into TikTok's real post sound picker, "
+                "then returns the exact sounds TikTok offers for that post."
             ),
             fg=TEXT,
             bg=PANEL,
@@ -541,7 +550,11 @@ class TikTokAutoPostView(tk.Frame):
 
         def search_worker(query: str) -> None:
             try:
-                results = search_tiktok_sounds(query, log=self.write)
+                results = search_tiktok_sounds(
+                    query,
+                    media_paths=list(self.selected_media),
+                    log=self.write,
+                )
                 self.after(0, lambda q=query, r=results: apply_results(q, r))
             except Exception as exc:
                 message = str(exc)
@@ -554,7 +567,7 @@ class TikTokAutoPostView(tk.Frame):
                 status_var.set("Type something to search for first.")
                 return
             search_button.configure(state="disabled")
-            status_var.set(f'Searching TikTok for "{query}"...')
+            status_var.set(f'Loading media + searching TikTok for "{query}"...')
             threading.Thread(target=search_worker, args=(query,), daemon=True).start()
 
         def use_selected():
