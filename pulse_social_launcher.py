@@ -263,7 +263,18 @@ nav.grid_columnconfigure(1, weight=1)
 nav.grid_rowconfigure(0, weight=1)
 
 
-def platform_card(parent, column, eyebrow, title, subtitle, features, primary_text, primary_command, secondary=None):
+def platform_card(
+    parent,
+    column,
+    eyebrow,
+    title,
+    subtitle,
+    features,
+    primary_text,
+    primary_command,
+    secondary=None,
+    tertiary=None,
+):
     glow_colour = GLOW if column == 0 else CYAN
     soft_colour = GLOW_SOFT if column == 0 else CYAN_SOFT
     outer = tk.Frame(parent, bg=soft_colour, padx=3, pady=3)
@@ -301,6 +312,9 @@ def platform_card(parent, column, eyebrow, title, subtitle, features, primary_te
     if secondary:
         text, command = secondary
         button(actions, text, command).pack(side="left", padx=8)
+    if tertiary:
+        text, command = tertiary
+        button(actions, text, command).pack(side="left")
 
 
 platform_card(
@@ -328,11 +342,12 @@ platform_card(
     [
         "Live category collection and deal intelligence",
         "Shared dedicated Pulse browser",
-        "Scheduled video posts with captions",
+        "Auto post plus selective TikTok cleanup",
     ],
     "OPEN SHOP",
     lambda: launch("tiktok_shop_ui.py"),
     ("AUTO POST", lambda: launch("tiktok_auto_post_ui.py")),
+    ("CLEANUP", lambda: launch("tiktok_cleanup_ui.py")),
 )
 
 # FOOTER
@@ -341,7 +356,7 @@ footer_glow.pack(fill="x", padx=34, pady=(0, 10))
 footer = tk.Frame(root, bg=BG)
 footer.pack(fill="x", padx=36, pady=(0, 20))
 tk.Label(footer, text="PULSE SOCIAL", fg=MUTED, bg=BG, font=("Consolas", 8, "bold")).pack(side="left")
-tk.Label(footer, text="X CLEANUP  •  X AUTO POST  •  TIKTOK SHOP  •  TIKTOK AUTO POST", fg=MUTED, bg=BG, font=("Consolas", 8)).pack(side="right")
+tk.Label(footer, text="X CLEANUP  •  X AUTO POST  •  TIKTOK SHOP  •  TIKTOK AUTO POST  •  TIKTOK CLEANUP", fg=MUTED, bg=BG, font=("Consolas", 8)).pack(side="right")
 
 root.protocol("WM_DELETE_WINDOW", close_all)
 root.mainloop()
