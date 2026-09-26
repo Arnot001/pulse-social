@@ -306,9 +306,17 @@ def _search_sound_picker(page: Page, query: str) -> None:
 
 def _sound_candidate_locator(page: Page) -> Locator:
     return page.locator(
-        '[role="dialog"] button, [role="dialog"] [role="option"], '
-        '[role="dialog"] [data-e2e*="sound"], [role="dialog"] [data-e2e*="music"], '
-        '[data-e2e*="sound-item"], [data-e2e*="music-item"]'
+        '[role="dialog"] button, '
+        '[role="dialog"] [role="button"], '
+        '[role="dialog"] [role="option"], '
+        '[role="dialog"] li, '
+        '[role="dialog"] [data-e2e], '
+        '[data-e2e*="sound" i], '
+        '[data-e2e*="music" i], '
+        '[data-e2e*="audio" i], '
+        '[class*="sound" i], '
+        '[class*="music" i], '
+        '[class*="audio" i]'
     )
 
 
@@ -333,55 +341,104 @@ def _clean_sound_result(text: str) -> str:
 def _sound_result_texts(page: Page, limit: int = 25) -> list[str]:
     results: list[str] = []
     seen: set[str] = set()
+    ignored = {
+        "add",
+        "add sound",
+        "add music",
+        "use",
+        "use sound",
+        "done",
+        "confirm",
+        "cancel",
+        "search",
+        "sounds",
+        "sound",
+        "music",
+        "commercial sounds",
+        "volume",
+        "original sound",
+    }
+
+    def add(raw: str) -> None:
+        clean = _clean_sound_result(raw)
+        clean = " ".join(clean.split())
+        key = clean.casefold()
+        if (
+            not clean
+            or len(clean) > 220
+            or key in seen
+            or key in ignored
+        ):
+            return
+        seen.add(key)
+        results.append(clean)
 
     try:
         candidates = _sound_candidate_locator(page)
-        for index in range(min(candidates.count(), 100)):
+        for index in range(min(candidates.count(), 350)):
             item = candidates.nth(index)
             if not item.is_visible():
                 continue
+            text = ""
             try:
-                clean = _clean_sound_result(item.inner_text(timeout=500))
+                text = item.inner_text(timeout=350)
             except Exception:
-                continue
-            if not clean or len(clean) > 220:
-                continue
-            key = clean.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            results.append(clean)
+                pass
+            if not text:
+                text = (
+                    item.get_attribute("aria-label")
+                    or item.get_attribute("title")
+                    or ""
+                )
+            add(text)
             if len(results) >= limit:
                 return results
     except Exception:
         pass
 
-    # Some TikTok picker variants render result rows as plain divs rather than
-    # buttons/options. Fall back to concise visible lines from the open dialog.
+    # Picker rows are sometimes rendered in a React portal outside role=dialog.
+    # Scan concise visible body lines as a final fallback, while filtering the
+    # stable Studio chrome so it cannot pollute the dropdown.
     try:
-        dialog = page.locator('[role="dialog"]').last
-        text = dialog.inner_text(timeout=1500)
-        for raw in text.splitlines():
+        body_text = page.locator("body").inner_text(timeout=1500)
+        chrome = {
+            "upload",
+            "videos",
+            "photos",
+            "post",
+            "discard",
+            "caption",
+            "description",
+            "select video",
+            "select photos",
+            "select photo",
+            "comments",
+            "duet",
+            "stitch",
+            "copyright check",
+            "manage",
+            "home",
+            "posts",
+            "view analytics",
+            "monetisation",
+            "royalty-free sounds",
+        }
+        for raw in body_text.splitlines():
             clean = " ".join(raw.split())
             key = clean.casefold()
             if (
                 not clean
-                or len(clean) > 120
+                or len(clean) > 160
+                or key in ignored
+                or key in chrome
                 or key in seen
-                or key in {
-                    "add sound",
-                    "add music",
-                    "sounds",
-                    "music",
-                    "search",
-                    "cancel",
-                    "done",
-                    "use",
-                }
             ):
                 continue
-            seen.add(key)
-            results.append(clean)
+            # Sound rows normally contain a title/artist/duration-sized phrase.
+            # Exclude obvious sentences and uploader help copy.
+            if clean.count(" ") > 14:
+                continue
+            add(clean)
             if len(results) >= limit:
                 break
     except Exception:
@@ -544,7 +601,17 @@ def search_tiktok_sounds(
                 )
 
             _search_sound_picker(page, clean_query)
-            results = _sound_result_texts(page)
+
+            # TikTok's sound search is asynchronous and can take several seconds
+            # even after the search box has accepted the query.
+            results: list[str] = []
+            deadline = time.time() + 12
+            while time.time() < deadline:
+                results = _sound_result_texts(page)
+                if results:
+                    break
+                page.wait_for_timeout(500)
+
             if not results:
                 try:
                     dialog_text = " ".join(
@@ -552,10 +619,19 @@ def search_tiktok_sounds(
                     )
                 except Exception:
                     dialog_text = ""
-                detail = f" | picker={dialog_text[:220]}" if dialog_text else ""
+                try:
+                    candidate_count = _sound_candidate_locator(page).count()
+                except Exception:
+                    candidate_count = -1
+                detail = (
+                    f" | picker={dialog_text[:220]}"
+                    if dialog_text
+                    else ""
+                )
                 raise RuntimeError(
                     f'SOUND RESULTS EMPTY | TikTok opened the post sound picker for '
-                    f'"{clean_query}" but Pulse found no selectable sound rows{detail}'
+                    f'"{clean_query}" but Pulse found no selectable sound rows'
+                    f'{detail} | candidates={candidate_count}'
                 )
 
             if log:
@@ -579,9 +655,51 @@ def _find_sound_result(page: Page, selection: str) -> Locator | None:
     if not clean_selection:
         return None
 
-    result = _find_sound_result(page, clean_selection)
+    selection_terms = [
+        term.lower()
+        for term in clean_selection.replace("—", " ").split()
+        if len(term) > 1
+    ]
 
-    return result
+    try:
+        candidates = _sound_candidate_locator(page)
+        for index in range(min(candidates.count(), 350)):
+            item = candidates.nth(index)
+            if not item.is_visible():
+                continue
+            text = ""
+            try:
+                text = _clean_sound_result(item.inner_text(timeout=350))
+            except Exception:
+                pass
+            if not text:
+                text = (
+                    item.get_attribute("aria-label")
+                    or item.get_attribute("title")
+                    or ""
+                )
+            lowered = " ".join(text.split()).lower()
+            if lowered and (
+                lowered == clean_selection.lower()
+                or (
+                    selection_terms
+                    and all(term in lowered for term in selection_terms)
+                )
+            ):
+                return item
+    except Exception:
+        pass
+
+    try:
+        text_match = page.get_by_text(clean_selection, exact=False)
+        for index in range(min(text_match.count(), 20)):
+            item = text_match.nth(index)
+            if item.is_visible():
+                return item
+    except Exception:
+        pass
+
+    return None
 
 
 def _preview_control_for_result(result: Locator) -> Locator | None:
@@ -775,43 +893,7 @@ def _add_tiktok_sound(
     lookup = search_query.strip() or clean_selection
     _search_sound_picker(page, lookup)
 
-    result = None
-    selection_terms = [
-        term.lower()
-        for term in clean_selection.replace("—", " ").split()
-        if len(term) > 1
-    ]
-
-    try:
-        candidates = _sound_candidate_locator(page)
-        for index in range(min(candidates.count(), 100)):
-            item = candidates.nth(index)
-            if not item.is_visible():
-                continue
-            try:
-                text = _clean_sound_result(item.inner_text(timeout=500))
-            except Exception:
-                text = ""
-            lowered = text.lower()
-            if text and (
-                lowered == clean_selection.lower()
-                or (selection_terms and all(term in lowered for term in selection_terms))
-            ):
-                result = item
-                break
-    except Exception:
-        pass
-
-    if result is None:
-        try:
-            text_match = page.get_by_text(clean_selection, exact=False)
-            for index in range(min(text_match.count(), 12)):
-                item = text_match.nth(index)
-                if item.is_visible():
-                    result = item
-                    break
-        except Exception:
-            pass
+    result = _find_sound_result(page, clean_selection)
 
     if result is None:
         raise RuntimeError(
