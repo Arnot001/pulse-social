@@ -1,21 +1,18 @@
 from __future__ import annotations
 
 import json
-import socket
 import time
 import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-CDP_PORT = 9222
-CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
+from platforms.browser_control import CDP_PORT, CDP_URL, port_open
+
 TIKTOK_URL = "https://www.tiktok.com/"
 
 
 def _port_open() -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.35)
-        return sock.connect_ex(("127.0.0.1", CDP_PORT)) == 0
+    return port_open(CDP_PORT)
 
 
 def _targets() -> list[dict]:
@@ -31,7 +28,7 @@ def _targets() -> list[dict]:
 
 def tiktok_browser_status() -> str:
     if not _port_open():
-        return "BROWSER NOT CONNECTED"
+        return "PULSE BROWSER NOT CONNECTED"
 
     for target in _targets():
         url = str(target.get("url") or "").lower()
@@ -42,11 +39,11 @@ def tiktok_browser_status() -> str:
 
 
 def open_tiktok_browser() -> tuple[bool, str]:
-    """Open or focus TikTok inside the already-controlled Brave/Chrome session."""
+    """Open or focus TikTok inside the dedicated Pulse Chromium browser."""
     if not _port_open():
         return (
             False,
-            "Pulse browser control is not connected. Connect the X/Brave browser first.",
+            "Pulse browser control is not connected. Attach the dedicated Pulse browser first.",
         )
 
     last_error: Exception | None = None
@@ -81,6 +78,6 @@ def open_tiktok_browser() -> tuple[bool, str]:
 
     return (
         False,
-        "Could not attach TikTok to the controlled browser after 3 attempts: "
+        "Could not attach TikTok to the dedicated Pulse browser after 3 attempts: "
         f"{last_error}",
     )
