@@ -965,6 +965,177 @@ def _add_tiktok_sound(
         log(f'TIKTOK SOUND | selected "{clean_selection}"')
 
 
+def _normalize_privacy_level(value: str) -> str:
+    clean = (value or "").strip().upper()
+    aliases = {
+        "PUBLIC": "PUBLIC",
+        "PUBLIC_TO_EVERYONE": "PUBLIC",
+        "EVERYONE": "PUBLIC",
+        "FRIENDS": "FRIENDS",
+        "MUTUAL_FOLLOW_FRIENDS": "FRIENDS",
+        "PRIVATE": "PRIVATE",
+        "SELF_ONLY": "PRIVATE",
+        "ONLY YOU": "PRIVATE",
+        "ONLY_YOU": "PRIVATE",
+    }
+    return aliases.get(clean, clean or "PUBLIC")
+
+
+def _privacy_target_labels(level: str) -> tuple[str, ...]:
+    normalized = _normalize_privacy_level(level)
+    if normalized == "PUBLIC":
+        return ("Everyone", "Public")
+    if normalized == "FRIENDS":
+        return ("Friends",)
+    if normalized == "PRIVATE":
+        return ("Only you", "Private")
+    raise RuntimeError(f"Unsupported TikTok privacy option: {level}")
+
+
+def _set_post_privacy(page: Page, privacy_level: str) -> None:
+    normalized = _normalize_privacy_level(privacy_level)
+    targets = _privacy_target_labels(normalized)
+
+    # TikTok Studio has used several labels for this field across uploader
+    # versions. Prefer controls near a privacy / audience label so we do not
+    # accidentally click an unrelated "Public" or "Friends" element.
+    trigger = None
+    trigger_selectors = (
+        'button[aria-label*="privacy" i]',
+        'button[aria-label*="audience" i]',
+        '[role="combobox"][aria-label*="privacy" i]',
+        '[role="combobox"][aria-label*="audience" i]',
+        '[data-e2e*="privacy" i]',
+        '[data-e2e*="audience" i]',
+    )
+
+    for selector in trigger_selectors:
+        try:
+            locator = page.locator(selector)
+            for index in range(min(locator.count(), 12)):
+                item = locator.nth(index)
+                if item.is_visible():
+                    trigger = item
+                    break
+            if trigger is not None:
+                break
+        except Exception:
+            pass
+
+    if trigger is None:
+        # Locate the row by its visible label, then search nearby for a button
+        # or combobox. Current Studio wording includes variants of "Who can
+        # view/watch this post".
+        label_terms = (
+            "Who can view",
+            "Who can watch",
+            "Visibility",
+            "Privacy",
+            "Audience",
+        )
+        for term in label_terms:
+            try:
+                labels = page.get_by_text(term, exact=False)
+                for index in range(min(labels.count(), 10)):
+                    label = labels.nth(index)
+                    if not label.is_visible():
+                        continue
+                    containers = [label]
+                    for hops in (1, 2, 3, 4):
+                        try:
+                            containers.append(
+                                label.locator("xpath=" + "/".join([".."] * hops))
+                            )
+                        except Exception:
+                            pass
+                    for container in containers:
+                        try:
+                            controls = container.locator(
+                                'button, [role="combobox"], [role="button"]'
+                            )
+                            for ctrl_index in range(min(controls.count(), 12)):
+                                control = controls.nth(ctrl_index)
+                                if control.is_visible():
+                                    trigger = control
+                                    break
+                            if trigger is not None:
+                                break
+                        except Exception:
+                            pass
+                    if trigger is not None:
+                        break
+                if trigger is not None:
+                    break
+            except Exception:
+                pass
+
+    # Some builds expose the current audience itself as the clickable control.
+    if trigger is None:
+        for current in (
+            "Everyone",
+            "Public",
+            "Friends",
+            "Only you",
+            "Private",
+        ):
+            try:
+                matches = page.get_by_text(current, exact=True)
+                for index in range(min(matches.count(), 12)):
+                    item = matches.nth(index)
+                    if item.is_visible():
+                        trigger = item
+                        break
+                if trigger is not None:
+                    break
+            except Exception:
+                pass
+
+    if trigger is None:
+        raise RuntimeError(
+            f"PRIVACY CONTROL NOT FOUND | Could not set TikTok visibility to {normalized}."
+        )
+
+    # If the requested value is already displayed, no dropdown action is needed.
+    try:
+        current_text = " ".join(trigger.inner_text(timeout=500).split()).casefold()
+    except Exception:
+        current_text = ""
+    if any(target.casefold() in current_text for target in targets):
+        return
+
+    trigger.click(timeout=5000)
+    page.wait_for_timeout(350)
+
+    for target in targets:
+        # Prefer listbox/menu options, then fall back to exact visible text.
+        for role in ("option", "menuitem", "radio", "button"):
+            try:
+                options = page.get_by_role(role, name=target, exact=False)
+                for index in range(min(options.count(), 12)):
+                    option = options.nth(index)
+                    if option.is_visible():
+                        option.click(timeout=4000)
+                        page.wait_for_timeout(350)
+                        return
+            except Exception:
+                pass
+
+        try:
+            options = page.get_by_text(target, exact=True)
+            for index in range(min(options.count(), 20)):
+                option = options.nth(index)
+                if option.is_visible():
+                    option.click(timeout=4000)
+                    page.wait_for_timeout(350)
+                    return
+        except Exception:
+            pass
+
+    raise RuntimeError(
+        f"PRIVACY OPTION NOT FOUND | TikTok did not expose {normalized} in its audience menu."
+    )
+
+
 def _post_button(page: Page) -> Locator:
     deadline = time.time() + 20
     while time.time() < deadline:
@@ -1013,6 +1184,7 @@ def publish_browser_post(
     *,
     music_query: str = "",
     music_search: str = "",
+    privacy_level: str = "PUBLIC",
 ) -> None:
     if not media_paths:
         raise RuntimeError("Choose at least one TikTok image or video.")
@@ -1087,6 +1259,9 @@ def publish_browser_post(
             )
 
         _fill_caption(page, caption)
+        _set_post_privacy(page, privacy_level)
+        if log:
+            log(f"PRIVACY | {_normalize_privacy_level(privacy_level)}")
 
         post_button = _post_button(page)
         deadline = time.time() + 120
