@@ -198,6 +198,121 @@ def _fill_caption(page: Page, caption: str) -> None:
         page.keyboard.insert_text(caption)
 
 
+def _music_search_input(page: Page) -> Locator | None:
+    selectors = (
+        'input[placeholder*="search" i]',
+        'input[aria-label*="search" i]',
+        'input[data-e2e*="search" i]',
+    )
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            for index in range(min(locator.count(), 12)):
+                item = locator.nth(index)
+                if not item.is_visible():
+                    continue
+                context_text = ""
+                try:
+                    context_text = item.evaluate(
+                        "(el) => (el.closest('[role=dialog]') || el.parentElement || el).innerText"
+                    )
+                except Exception:
+                    pass
+                if any(word in str(context_text).lower() for word in ("sound", "music", "song", "audio")):
+                    return item
+        except Exception:
+            pass
+    return None
+
+
+def _add_tiktok_sound(
+    page: Page,
+    query: str,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    clean_query = query.strip()
+    if not clean_query:
+        return
+
+    opened = _click_first_visible(
+        page,
+        (
+            "Add sound",
+            "Add music",
+            "Choose sound",
+            "Choose music",
+            "Sounds",
+            "Music",
+        ),
+    )
+    if not opened:
+        raise RuntimeError(
+            "SOUND PICKER NOT FOUND. TikTok did not expose an Add sound/music control on this upload page."
+        )
+
+    search = _music_search_input(page)
+    if search is None:
+        raise RuntimeError(
+            "SOUND SEARCH NOT FOUND. TikTok opened the sound picker but Pulse could not find its search box."
+        )
+
+    search.fill(clean_query)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(1600)
+
+    result = None
+    terms = [term.lower() for term in clean_query.split() if len(term) > 1]
+    try:
+        candidates = page.locator(
+            '[role="dialog"] button, [role="dialog"] [role="option"], '
+            '[role="dialog"] [data-e2e*="sound"], [role="dialog"] [data-e2e*="music"]'
+        )
+        for index in range(min(candidates.count(), 60)):
+            item = candidates.nth(index)
+            if not item.is_visible():
+                continue
+            try:
+                text = " ".join(item.inner_text(timeout=500).split()).lower()
+            except Exception:
+                text = ""
+            if text and terms and all(term in text for term in terms):
+                result = item
+                break
+    except Exception:
+        pass
+
+    if result is None:
+        try:
+            text_match = page.get_by_text(clean_query, exact=False)
+            for index in range(min(text_match.count(), 12)):
+                item = text_match.nth(index)
+                if item.is_visible():
+                    result = item
+                    break
+        except Exception:
+            pass
+
+    if result is None:
+        raise RuntimeError(
+            f'SOUND NOT FOUND | TikTok returned no visible match for "{clean_query}".'
+        )
+
+    try:
+        result.click(timeout=5000)
+    except Exception:
+        try:
+            result.locator("xpath=ancestor::button[1]").click(timeout=5000)
+        except Exception as exc:
+            raise RuntimeError(
+                f'SOUND SELECT FAILED | Found "{clean_query}" but could not select it.'
+            ) from exc
+
+    page.wait_for_timeout(800)
+    _click_first_visible(page, ("Use", "Use sound", "Add", "Done", "Confirm"))
+    if log:
+        log(f'TIKTOK SOUND | selected "{clean_query}"')
+
+
 def _post_button(page: Page) -> Locator:
     deadline = time.time() + 20
     while time.time() < deadline:
@@ -243,6 +358,8 @@ def publish_browser_post(
     caption: str,
     media_paths: list[str],
     log: Callable[[str], None] | None = None,
+    *,
+    music_query: str = "",
 ) -> None:
     if not media_paths:
         raise RuntimeError("Choose at least one TikTok image or video.")
@@ -307,6 +424,9 @@ def publish_browser_post(
         error = _visible_error(page)
         if error:
             raise RuntimeError(f"TikTok rejected the media: {error}")
+
+        if music_query.strip():
+            _add_tiktok_sound(page, music_query, log=log)
 
         _fill_caption(page, caption)
 
