@@ -59,6 +59,8 @@ class TikTokAutoPostView(tk.Frame):
         self.status_var = tk.StringVar(value="STOPPED")
         self.char_var = tk.StringVar(value=f"0 / {MAX_CAPTION_UTF16}")
         self.media_var = tk.StringVar(value="NO MEDIA")
+        self.music_query = ""
+        self.music_var = tk.StringVar(value="NO MUSIC")
         self.next_var = tk.StringVar(value="No posts queued")
         self.schedule_mode = tk.StringVar(value="delay")
         self.delay_var = tk.StringVar(value="1")
@@ -210,6 +212,7 @@ class TikTokAutoPostView(tk.Frame):
         media_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 12))
         self._button(media_row, "ADD VIDEO", self._choose_video, compact=True).pack(side="left")
         self._button(media_row, "ADD IMAGES", self._choose_images, compact=True).pack(side="left", padx=(6, 0))
+        self._button(media_row, "ADD MUSIC", self._choose_music, compact=True).pack(side="left", padx=(6, 0))
         self._button(media_row, "CLEAR", self._clear_media, compact=True).pack(side="left", padx=6)
         tk.Label(
             media_row,
@@ -218,6 +221,24 @@ class TikTokAutoPostView(tk.Frame):
             bg=PANEL,
             font=("Consolas", 8),
         ).pack(side="left", padx=8)
+
+        music_row = tk.Frame(compose, bg=PANEL)
+        music_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 12))
+        tk.Label(
+            music_row,
+            text="SOUND",
+            fg=MUTED,
+            bg=PANEL,
+            font=("Consolas", 8, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            music_row,
+            textvariable=self.music_var,
+            fg=ACCENT,
+            bg=PANEL,
+            font=("Consolas", 8),
+        ).pack(side="left", padx=8)
+        self._button(music_row, "REMOVE MUSIC", self._clear_music, compact=True).pack(side="right")
 
         options = tk.Frame(top, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         options.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
@@ -334,7 +355,7 @@ class TikTokAutoPostView(tk.Frame):
         self._button(queue_head, "STOP", self.stop, danger=True, compact=True).pack(side="right", padx=6)
         self._button(queue_head, "REMOVE", self._remove_selected, compact=True).pack(side="right")
 
-        cols = ("due", "status", "privacy", "media", "caption")
+        cols = ("due", "status", "privacy", "media", "music", "caption")
         self.tree = ttk.Treeview(
             queue_card,
             columns=cols,
@@ -346,8 +367,9 @@ class TikTokAutoPostView(tk.Frame):
             "due": 130,
             "status": 105,
             "privacy": 155,
-            "media": 220,
-            "caption": 420,
+            "media": 190,
+            "music": 190,
+            "caption": 340,
         }
         for col in cols:
             self.tree.heading(col, text=col.upper())
@@ -425,6 +447,27 @@ class TikTokAutoPostView(tk.Frame):
     def _clear_media(self):
         self.selected_media = []
         self.media_var.set("NO MEDIA")
+
+    def _choose_music(self):
+        query = simpledialog.askstring(
+            "TikTok sound",
+            "Search TikTok's sound library for:\n\n"
+            "Example: Curb Your Enthusiasm, Pedro, original sound name, artist + title",
+            initialvalue=self.music_query,
+            parent=self.winfo_toplevel(),
+        )
+        if query is None:
+            return
+        clean = query.strip()
+        if not clean:
+            self._clear_music()
+            return
+        self.music_query = clean
+        self.music_var.set(f'TIKTOK SOUND // {clean}')
+
+    def _clear_music(self):
+        self.music_query = ""
+        self.music_var.set("NO MUSIC")
 
     def _connect_tiktok_browser(self):
         ok, message = open_tiktok_browser()
@@ -749,6 +792,7 @@ class TikTokAutoPostView(tk.Frame):
                 brand_content_toggle=self.brand_content_var.get(),
                 brand_organic_toggle=self.brand_organic_var.get(),
                 is_aigc=self.aigc_var.get(),
+                music_query=self.music_query,
             )
         except Exception as exc:
             messagebox.showerror("TikTok queue", str(exc), parent=self.winfo_toplevel())
@@ -763,12 +807,14 @@ class TikTokAutoPostView(tk.Frame):
             if image_count
             else f"VIDEO {Path(media[0]).name if media else '<missing>'}"
         )
+        sound_note = f' | SOUND "{item.music_query}"' if item.music_query else ""
         self.write(
             f"QUEUED | {note} | due {due:%d/%m %H:%M} | "
-            f"{media_note} | {item.caption[:100]}"
+            f"{media_note}{sound_note} | {item.caption[:100]}"
         )
         self.caption.delete("1.0", tk.END)
         self._clear_media()
+        self._clear_music()
         self._update_chars()
         self.refresh()
 
@@ -858,6 +904,7 @@ class TikTokAutoPostView(tk.Frame):
                             else "<missing>"
                         )
                     ),
+                    item.music_query or "NONE",
                     item.caption.replace("\n", " "),
                 ),
                 tags=(status if status in {"posted", "processing", "error"} else "",),
