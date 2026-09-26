@@ -15,6 +15,7 @@ from .auto_post import (
     remove_post,
     run_scheduler,
 )
+from .browser_post import search_tiktok_sounds
 from .browser_session import open_tiktok_browser, tiktok_browser_status
 from .oauth import (
     DEFAULT_REDIRECT_URI,
@@ -60,6 +61,7 @@ class TikTokAutoPostView(tk.Frame):
         self.char_var = tk.StringVar(value=f"0 / {MAX_CAPTION_UTF16}")
         self.media_var = tk.StringVar(value="NO MEDIA")
         self.music_query = ""
+        self.music_search = ""
         self.music_var = tk.StringVar(value="NO MUSIC")
         self.next_var = tk.StringVar(value="No posts queued")
         self.schedule_mode = tk.StringVar(value="delay")
@@ -449,24 +451,141 @@ class TikTokAutoPostView(tk.Frame):
         self.media_var.set("NO MEDIA")
 
     def _choose_music(self):
-        query = simpledialog.askstring(
-            "TikTok sound",
-            "Search TikTok's sound library for:\n\n"
-            "Example: Curb Your Enthusiasm, Pedro, original sound name, artist + title",
-            initialvalue=self.music_query,
-            parent=self.winfo_toplevel(),
+        dialog = tk.Toplevel(self.winfo_toplevel())
+        dialog.title("Choose TikTok sound")
+        dialog.configure(bg=PANEL)
+        dialog.resizable(False, False)
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+
+        search_var = tk.StringVar(value=self.music_search or self.music_query)
+        result_var = tk.StringVar()
+        status_var = tk.StringVar(value="Type a phrase, then search TikTok.")
+
+        tk.Label(
+            dialog,
+            text="LIVE TIKTOK SOUND SEARCH",
+            fg=ACCENT,
+            bg=PANEL,
+            font=("Consolas", 9, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=18, pady=(16, 4))
+
+        tk.Label(
+            dialog,
+            text=(
+                "Search the sounds currently visible on your logged-in TikTok. "
+                "Pick the exact result you want Pulse to use."
+            ),
+            fg=TEXT,
+            bg=PANEL,
+            justify="left",
+            wraplength=520,
+            font=("Segoe UI", 9),
+        ).grid(row=1, column=0, columnspan=3, sticky="w", padx=18, pady=(0, 12))
+
+        search_entry = tk.Entry(
+            dialog,
+            textvariable=search_var,
+            width=48,
+            bg=PANEL_3,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 10),
         )
-        if query is None:
-            return
-        clean = query.strip()
-        if not clean:
-            self._clear_music()
-            return
-        self.music_query = clean
-        self.music_var.set(f'TIKTOK SOUND // {clean}')
+        search_entry.grid(row=2, column=0, columnspan=2, sticky="ew", padx=(18, 8), pady=4, ipady=6)
+
+        results_box = ttk.Combobox(
+            dialog,
+            textvariable=result_var,
+            values=(),
+            state="readonly",
+            width=66,
+        )
+        results_box.grid(row=3, column=0, columnspan=3, sticky="ew", padx=18, pady=(10, 4))
+
+        tk.Label(
+            dialog,
+            textvariable=status_var,
+            fg=MUTED,
+            bg=PANEL,
+            font=("Consolas", 8),
+        ).grid(row=4, column=0, columnspan=3, sticky="w", padx=18, pady=(2, 10))
+
+        search_button = self._button(dialog, "SEARCH TIKTOK", lambda: None, accent=True, compact=True)
+        search_button.grid(row=2, column=2, padx=(0, 18), pady=4)
+
+        result_holder: dict[str, list[str]] = {"items": []}
+
+        def apply_results(query: str, results: list[str]) -> None:
+            if not dialog.winfo_exists():
+                return
+            result_holder["items"] = results
+            results_box.configure(values=results)
+            if results:
+                result_var.set(results[0])
+                status_var.set(f"{len(results)} sound(s) found for \"{query}\". Pick one below.")
+            else:
+                result_var.set("")
+                status_var.set("No sounds found.")
+            search_button.configure(state="normal")
+
+        def apply_error(message: str) -> None:
+            if not dialog.winfo_exists():
+                return
+            result_holder["items"] = []
+            results_box.configure(values=())
+            result_var.set("")
+            status_var.set(message)
+            search_button.configure(state="normal")
+
+        def search_worker(query: str) -> None:
+            try:
+                results = search_tiktok_sounds(query, log=self.write)
+                self.after(0, lambda q=query, r=results: apply_results(q, r))
+            except Exception as exc:
+                message = str(exc)
+                self.write(f"SOUND SEARCH ERROR | {message}")
+                self.after(0, lambda msg=message: apply_error(msg))
+
+        def run_search(*_):
+            query = search_var.get().strip()
+            if not query:
+                status_var.set("Type something to search for first.")
+                return
+            search_button.configure(state="disabled")
+            status_var.set(f'Searching TikTok for "{query}"...')
+            threading.Thread(target=search_worker, args=(query,), daemon=True).start()
+
+        def use_selected():
+            selected = result_var.get().strip()
+            query = search_var.get().strip()
+            if not selected:
+                status_var.set("Choose one of the TikTok results first.")
+                return
+            self.music_query = selected
+            self.music_search = query
+            self.music_var.set(f"TIKTOK SOUND // {selected}")
+            self.write(f'TIKTOK SOUND CHOSEN | "{selected}" | search "{query}"')
+            dialog.destroy()
+
+        search_button.configure(command=run_search)
+
+        actions = tk.Frame(dialog, bg=PANEL)
+        actions.grid(row=5, column=0, columnspan=3, sticky="e", padx=18, pady=(4, 16))
+        self._button(actions, "CANCEL", dialog.destroy, compact=True).pack(side="right")
+        self._button(actions, "USE SELECTED", use_selected, accent=True, compact=True).pack(
+            side="right", padx=(0, 8)
+        )
+
+        search_entry.focus_set()
+        search_entry.bind("<Return>", run_search)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        self.wait_window(dialog)
 
     def _clear_music(self):
         self.music_query = ""
+        self.music_search = ""
         self.music_var.set("NO MUSIC")
 
     def _connect_tiktok_browser(self):
@@ -793,6 +912,7 @@ class TikTokAutoPostView(tk.Frame):
                 brand_organic_toggle=self.brand_organic_var.get(),
                 is_aigc=self.aigc_var.get(),
                 music_query=self.music_query,
+                music_search=self.music_search,
             )
         except Exception as exc:
             messagebox.showerror("TikTok queue", str(exc), parent=self.winfo_toplevel())
