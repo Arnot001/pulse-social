@@ -15,6 +15,7 @@ UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload"
 SEARCH_URL = "https://www.tiktok.com/search?q={query}"
 POSTING_PAGE_NAME = "pulse-social-tiktok-auto-post"
 SOUND_SEARCH_PAGE_NAME = "pulse-social-tiktok-sound-search"
+SOUND_PREVIEW_PAGE_NAME = "pulse-social-tiktok-sound-preview"
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
@@ -58,6 +59,10 @@ def _posting_page(context) -> tuple[Page, bool]:
 
 def _sound_search_page(context) -> tuple[Page, bool]:
     return _named_page(context, SOUND_SEARCH_PAGE_NAME)
+
+
+def _sound_preview_page(context) -> tuple[Page, bool]:
+    return _named_page(context, SOUND_PREVIEW_PAGE_NAME)
 
 
 def _visible_text(page: Page) -> str:
@@ -567,6 +572,191 @@ def search_tiktok_sounds(
                     page.close()
             except Exception:
                 pass
+
+
+def _find_sound_result(page: Page, selection: str) -> Locator | None:
+    clean_selection = selection.strip()
+    if not clean_selection:
+        return None
+
+    result = _find_sound_result(page, clean_selection)
+
+    return result
+
+
+def _preview_control_for_result(result: Locator) -> Locator | None:
+    selectors = (
+        'button[aria-label*="play" i]',
+        'button[title*="play" i]',
+        '[role="button"][aria-label*="play" i]',
+        '[role="button"][title*="play" i]',
+        '[data-e2e*="play" i]',
+    )
+
+    containers = [result]
+    for hops in (1, 2, 3):
+        try:
+            containers.append(result.locator("xpath=" + "/.." * hops))
+        except Exception:
+            pass
+
+    for container in containers:
+        for selector in selectors:
+            try:
+                controls = container.locator(selector)
+                for index in range(min(controls.count(), 8)):
+                    control = controls.nth(index)
+                    if control.is_visible():
+                        return control
+            except Exception:
+                pass
+
+    return None
+
+
+def preview_tiktok_sound(
+    selection: str,
+    search_query: str,
+    media_paths: list[str],
+    log: Callable[[str], None] | None = None,
+) -> None:
+    clean_selection = selection.strip()
+    lookup = search_query.strip() or clean_selection
+    if not clean_selection:
+        raise RuntimeError("Choose a TikTok sound result first.")
+    if not media_paths:
+        raise RuntimeError("Add the image/video before previewing a TikTok sound.")
+
+    paths = [Path(path) for path in media_paths]
+    missing = [str(path) for path in paths if not path.exists()]
+    if missing:
+        raise RuntimeError("TikTok media file missing: " + ", ".join(missing))
+
+    suffixes = {path.suffix.lower() for path in paths}
+    image_only = bool(suffixes) and suffixes.issubset(IMAGE_SUFFIXES)
+    video_only = len(paths) == 1 and paths[0].suffix.lower() in VIDEO_SUFFIXES
+    if not image_only and not video_only:
+        raise RuntimeError(
+            "Choose either one video or one/more images before previewing sounds."
+        )
+    kind = "image" if image_only else "video"
+
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.connect_over_cdp(CDP_URL, timeout=5000)
+        except Exception as exc:
+            raise RuntimeError(
+                "TikTok browser is not controllable. Connect the Pulse Brave browser first."
+            ) from exc
+
+        context = _existing_tiktok_context(browser)
+        if context is None:
+            raise RuntimeError("Controlled browser has no usable context.")
+
+        page, _created = _sound_preview_page(context)
+        page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(1400)
+
+        if _looks_logged_out(page):
+            page.bring_to_front()
+            raise RuntimeError(
+                "TikTok is not logged in in the controlled Brave profile. "
+                "Log in once in the TikTok tab, then retry."
+            )
+
+        if kind == "image":
+            _select_photo_mode(page)
+
+        file_input = _file_input_for_kind(page, kind)
+        file_input.set_input_files([str(path) for path in paths])
+        page.wait_for_timeout(2400)
+
+        error = _visible_error(page)
+        if error:
+            raise RuntimeError(
+                f"TikTok rejected the media while preparing the sound preview: {error}"
+            )
+
+        _search_sound_picker(page, lookup)
+        result = _find_sound_result(page, clean_selection)
+        if result is None:
+            page.bring_to_front()
+            raise RuntimeError(
+                f'PREVIEW SOUND NOT FOUND | TikTok could not re-find "{clean_selection}".'
+            )
+
+        control = _preview_control_for_result(result)
+        if control is not None:
+            control.click(timeout=5000)
+        else:
+            # Some picker builds make the whole sound row the preview/select
+            # target rather than exposing a separate play button. This is a
+            # disposable preview tab, so selecting the row is safe.
+            result.click(timeout=5000)
+
+        page.wait_for_timeout(500)
+
+        # If TikTok rendered an audio element but the row/control click only
+        # selected it, explicitly start that already-authorised in-page audio.
+        try:
+            audios = page.locator("audio")
+            for index in range(min(audios.count(), 6)):
+                audio = audios.nth(index)
+                try:
+                    started = audio.evaluate(
+                        """(el) => {
+                            try {
+                                el.currentTime = 0;
+                                const promise = el.play();
+                                return promise ? promise.then(() => true).catch(() => false) : true;
+                            } catch (_) {
+                                return false;
+                            }
+                        }"""
+                    )
+                    if started:
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        page.bring_to_front()
+        if log:
+            log(f'TIKTOK SOUND PREVIEW | playing "{clean_selection}"')
+
+
+def stop_tiktok_sound_preview(
+    log: Callable[[str], None] | None = None,
+) -> bool:
+    stopped = False
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.connect_over_cdp(CDP_URL, timeout=5000)
+        except Exception:
+            return False
+
+        for context in browser.contexts:
+            for page in context.pages:
+                try:
+                    if page.is_closed():
+                        continue
+                    if page.evaluate("window.name") != SOUND_PREVIEW_PAGE_NAME:
+                        continue
+                    try:
+                        page.locator("audio").evaluate_all(
+                            "(items) => items.forEach((audio) => { try { audio.pause(); audio.currentTime = 0; } catch (_) {} })"
+                        )
+                    except Exception:
+                        pass
+                    page.close()
+                    stopped = True
+                except Exception:
+                    pass
+
+    if stopped and log:
+        log("TIKTOK SOUND PREVIEW | stopped")
+    return stopped
 
 
 def _add_tiktok_sound(
