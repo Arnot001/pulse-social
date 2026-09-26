@@ -183,7 +183,7 @@ class TikTokAutoPostView(tk.Frame):
         connect_row.pack(fill="x", padx=26, pady=(0, 10))
         tk.Label(
             connect_row,
-            text="CONTROLLED BRAVE  /  EXISTING TIKTOK LOGIN",
+            text="DEDICATED PULSE BROWSER  /  EXISTING TIKTOK LOGIN",
             fg=MUTED,
             bg=PANEL,
             font=("Consolas", 8, "bold"),
