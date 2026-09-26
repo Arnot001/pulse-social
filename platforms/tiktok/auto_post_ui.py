@@ -48,6 +48,17 @@ ACCENT_2 = "#fe2c55"
 SUCCESS = "#35d07f"
 DANGER = "#ff4d67"
 
+AUTO_DELETE_PRESETS = {
+    "OFF": 0,
+    "30 MIN": 30,
+    "1 HOUR": 60,
+    "6 HOURS": 360,
+    "12 HOURS": 720,
+    "24 HOURS": 1440,
+    "3 DAYS": 4320,
+    "7 DAYS": 10080,
+}
+
 
 class TikTokAutoPostView(tk.Frame):
     def __init__(self, master, **kwargs):
@@ -72,6 +83,7 @@ class TikTokAutoPostView(tk.Frame):
         self.delay_var = tk.StringVar(value="1")
         self.clock_var = tk.StringVar(value=(datetime.now() + timedelta(minutes=5)).strftime("%H:%M"))
         self.privacy_var = tk.StringVar(value="PUBLIC")
+        self.auto_delete_var = tk.StringVar(value="OFF")
         self.comments_var = tk.BooleanVar(value=True)
         self.duet_var = tk.BooleanVar(value=True)
         self.stitch_var = tk.BooleanVar(value=True)
@@ -267,6 +279,24 @@ class TikTokAutoPostView(tk.Frame):
         )
         self.privacy_menu.pack(side="right")
 
+        delete_row = tk.Frame(options, bg=PANEL)
+        delete_row.pack(fill="x", padx=16, pady=(0, 6))
+        tk.Label(
+            delete_row,
+            text="AUTO DELETE",
+            fg=MUTED,
+            bg=PANEL,
+            font=("Consolas", 8, "bold"),
+        ).pack(side="left")
+        self.auto_delete_menu = ttk.Combobox(
+            delete_row,
+            textvariable=self.auto_delete_var,
+            values=list(AUTO_DELETE_PRESETS),
+            state="readonly",
+            width=24,
+        )
+        self.auto_delete_menu.pack(side="right")
+
         checks = tk.Frame(options, bg=PANEL)
         checks.pack(fill="x", padx=12, pady=(2, 8))
         for label, variable in (
@@ -361,7 +391,7 @@ class TikTokAutoPostView(tk.Frame):
         self._button(queue_head, "STOP", self.stop, danger=True, compact=True).pack(side="right", padx=6)
         self._button(queue_head, "REMOVE", self._remove_selected, compact=True).pack(side="right")
 
-        cols = ("due", "status", "privacy", "media", "music", "caption")
+        cols = ("due", "status", "privacy", "delete", "media", "music", "caption")
         self.tree = ttk.Treeview(
             queue_card,
             columns=cols,
@@ -372,8 +402,9 @@ class TikTokAutoPostView(tk.Frame):
         widths = {
             "due": 130,
             "status": 105,
-            "privacy": 155,
-            "media": 190,
+            "privacy": 120,
+            "delete": 120,
+            "media": 170,
             "music": 190,
             "caption": 340,
         }
@@ -381,6 +412,7 @@ class TikTokAutoPostView(tk.Frame):
             self.tree.heading(col, text=col.upper())
             self.tree.column(col, width=widths[col], anchor="w", stretch=(col == "caption"))
         self.tree.tag_configure("posted", foreground=SUCCESS)
+        self.tree.tag_configure("deleted", foreground=MUTED)
         self.tree.tag_configure("error", foreground=DANGER)
         self.tree.tag_configure("processing", foreground=ACCENT)
         self.tree.pack(fill="both", expand=True, padx=12, pady=(0, 12))
@@ -972,6 +1004,9 @@ class TikTokAutoPostView(tk.Frame):
             self.write(f"CONNECTION ERROR | {message}")
             self.after(0, lambda msg=message: self._oauth_error(msg))
 
+    def _delete_after_minutes(self) -> int:
+        return int(AUTO_DELETE_PRESETS.get(self.auto_delete_var.get(), 0))
+
     def _due_time(self) -> tuple[datetime, str]:
         now = datetime.now()
         if self.schedule_mode.get() == "clock":
@@ -1008,6 +1043,11 @@ class TikTokAutoPostView(tk.Frame):
         try:
             due, note = self._due_time()
             caption = self.caption.get("1.0", "end-1c")
+            delete_after_minutes = self._delete_after_minutes()
+            if delete_after_minutes > 0 and not caption.strip():
+                raise ValueError(
+                    "Auto delete needs a caption so Pulse can identify the exact TikTok post safely."
+                )
             item = add_post(
                 caption,
                 due,
@@ -1021,6 +1061,7 @@ class TikTokAutoPostView(tk.Frame):
                 is_aigc=self.aigc_var.get(),
                 music_query=self.music_query,
                 music_search=self.music_search,
+                delete_after_minutes=delete_after_minutes,
             )
         except Exception as exc:
             messagebox.showerror("TikTok queue", str(exc), parent=self.winfo_toplevel())
@@ -1036,9 +1077,15 @@ class TikTokAutoPostView(tk.Frame):
             else f"VIDEO {Path(media[0]).name if media else '<missing>'}"
         )
         sound_note = f' | SOUND "{item.music_query}"' if item.music_query else ""
+        delete_note = (
+            f" | AUTO DELETE {self.auto_delete_var.get()}"
+            if item.delete_after_minutes > 0
+            else ""
+        )
         self.write(
             f"QUEUED | {note} | due {due:%d/%m %H:%M} | "
-            f"{item.privacy_level} | {media_note}{sound_note} | {item.caption[:100]}"
+            f"{item.privacy_level}{delete_note} | {media_note}{sound_note} | "
+            f"{item.caption[:100]}"
         )
         self.caption.delete("1.0", tk.END)
         self._clear_media()
@@ -1108,6 +1155,10 @@ class TikTokAutoPostView(tk.Frame):
             status = item.status.lower()
             if status in counts:
                 counts[status] += 1
+            elif status == "deleted":
+                counts["posted"] += 1
+            elif status == "delete_error":
+                counts["error"] += 1
             try:
                 due_dt = datetime.fromisoformat(item.due_at)
                 due_text = due_dt.strftime("%d/%m/%Y %H:%M")
@@ -1124,6 +1175,17 @@ class TikTokAutoPostView(tk.Frame):
                     status.upper(),
                     item.privacy_level,
                     (
+                        "DELETED"
+                        if status == "deleted"
+                        else "DELETE ERROR"
+                        if status == "delete_error"
+                        else (
+                            datetime.fromisoformat(item.delete_due_at).strftime("%d/%m %H:%M")
+                            if item.delete_due_at
+                            else "OFF"
+                        )
+                    ),
+                    (
                         f"{len(item_media_paths(item))} IMAGES"
                         if len(item_media_paths(item)) > 1
                         else (
@@ -1135,7 +1197,13 @@ class TikTokAutoPostView(tk.Frame):
                     item.music_query or "NONE",
                     item.caption.replace("\n", " "),
                 ),
-                tags=(status if status in {"posted", "processing", "error"} else "",),
+                tags=(
+                    "error"
+                    if status == "delete_error"
+                    else status
+                    if status in {"posted", "processing", "error", "deleted"}
+                    else "",
+                ),
             )
             self.mapping[iid] = item
             if item.post_id == selected_id:
