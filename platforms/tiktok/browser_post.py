@@ -53,16 +53,68 @@ def _named_page(context, page_name: str) -> tuple[Page, bool]:
     return page, True
 
 
+def _background_named_page(browser, context, page_name: str) -> tuple[Page, bool]:
+    """Create/reuse a CDP tab without activating the Brave window."""
+    for page in context.pages:
+        try:
+            if page.is_closed():
+                continue
+            if page.evaluate("window.name") == page_name:
+                return page, False
+        except Exception:
+            continue
+
+    marker = f"about:blank#{page_name}-{int(time.time() * 1000)}"
+    session = None
+    try:
+        session = browser.new_browser_cdp_session()
+        session.send(
+            "Target.createTarget",
+            {
+                "url": marker,
+                "background": True,
+            },
+        )
+
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            for page in context.pages:
+                try:
+                    if page.is_closed():
+                        continue
+                    if page.url == marker:
+                        page.evaluate(
+                            "(name) => { window.name = name; }",
+                            page_name,
+                        )
+                        return page, True
+                except Exception:
+                    continue
+            time.sleep(0.05)
+    except Exception:
+        pass
+    finally:
+        if session is not None:
+            try:
+                session.detach()
+            except Exception:
+                pass
+
+    # Older Chromium builds can reject Target.createTarget(background=True).
+    # Keep a compatible fallback rather than breaking sound search entirely.
+    return _named_page(context, page_name)
+
+
 def _posting_page(context) -> tuple[Page, bool]:
     return _named_page(context, POSTING_PAGE_NAME)
 
 
-def _sound_search_page(context) -> tuple[Page, bool]:
-    return _named_page(context, SOUND_SEARCH_PAGE_NAME)
+def _sound_search_page(browser, context) -> tuple[Page, bool]:
+    return _background_named_page(browser, context, SOUND_SEARCH_PAGE_NAME)
 
 
-def _sound_preview_page(context) -> tuple[Page, bool]:
-    return _named_page(context, SOUND_PREVIEW_PAGE_NAME)
+def _sound_preview_page(browser, context) -> tuple[Page, bool]:
+    return _background_named_page(browser, context, SOUND_PREVIEW_PAGE_NAME)
 
 
 def _visible_text(page: Page) -> str:
@@ -568,7 +620,7 @@ def search_tiktok_sounds(
         if context is None:
             raise RuntimeError("Controlled browser has no usable context.")
 
-        page, _created = _sound_search_page(context)
+        page, _created = _sound_search_page(browser, context)
         try:
             page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(1400)
@@ -773,12 +825,11 @@ def preview_tiktok_sound(
         if context is None:
             raise RuntimeError("Controlled browser has no usable context.")
 
-        page, _created = _sound_preview_page(context)
+        page, _created = _sound_preview_page(browser, context)
         page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(1400)
 
         if _looks_logged_out(page):
-            page.bring_to_front()
             raise RuntimeError(
                 "TikTok is not logged in in the controlled Brave profile. "
                 "Log in once in the TikTok tab, then retry."
@@ -800,7 +851,6 @@ def preview_tiktok_sound(
         _search_sound_picker(page, lookup)
         result = _find_sound_result(page, clean_selection)
         if result is None:
-            page.bring_to_front()
             raise RuntimeError(
                 f'PREVIEW SOUND NOT FOUND | TikTok could not re-find "{clean_selection}".'
             )
@@ -841,9 +891,8 @@ def preview_tiktok_sound(
         except Exception:
             pass
 
-        page.bring_to_front()
         if log:
-            log(f'TIKTOK SOUND PREVIEW | playing "{clean_selection}"')
+            log(f'TIKTOK SOUND PREVIEW | playing "{clean_selection}" in background')
 
 
 def stop_tiktok_sound_preview(
