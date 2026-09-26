@@ -46,7 +46,7 @@ class TikTokQueuedPost:
     due_at: str
     video_path: str = ""
     media_paths: list[str] = field(default_factory=list)
-    privacy_level: str = "SELF_ONLY"
+    privacy_level: str = "PUBLIC"
     disable_comment: bool = False
     disable_duet: bool = False
     disable_stitch: bool = False
@@ -118,7 +118,7 @@ def add_post(
     due_at: datetime,
     media_paths: str | list[str],
     *,
-    privacy_level: str = "SELF_ONLY",
+    privacy_level: str = "PUBLIC",
     disable_comment: bool = False,
     disable_duet: bool = False,
     disable_stitch: bool = False,
@@ -461,6 +461,7 @@ def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> No
                             log=log,
                             music_query=item.music_query,
                             music_search=item.music_search,
+                            privacy_level=item.privacy_level,
                         )
                         item.status = "posted"
                         item.publish_id = ""
