@@ -33,6 +33,24 @@ def launch(script: str) -> None:
     children.append(proc)
 
 
+def open_tiktok_cleanup() -> None:
+    try:
+        from platforms.tiktok.cleanup_ui import open_cleanup_window
+
+        window = open_cleanup_window(root)
+        window.lift()
+        try:
+            window.focus_force()
+        except tk.TclError:
+            pass
+    except Exception as exc:
+        messagebox.showerror(
+            "TikTok Cleanup",
+            "TikTok Cleanup could not open.\n\n" + str(exc),
+            parent=root,
+        )
+
+
 def close_all() -> None:
     for proc in children:
         if proc.poll() is None:
@@ -264,7 +282,7 @@ platform_card(
     "OPEN SHOP",
     lambda: launch("tiktok_shop_ui.py"),
     ("AUTO POST", lambda: launch("tiktok_auto_post_ui.py")),
-    ("CLEANUP", lambda: launch("tiktok_cleanup_ui.py")),
+    ("CLEANUP", open_tiktok_cleanup),
 )
 
 # FOOTER
