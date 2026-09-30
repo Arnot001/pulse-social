@@ -1,3 +1,5 @@
+import threading
+
 import platforms.tiktok.cleanup as cleanup
 from platforms.tiktok.cleanup import TikTokItem, select_targets
 
@@ -96,3 +98,56 @@ def test_unverified_pdh_mutation_blocks_second_delete_attempt(monkeypatch):
 
     assert cleanup.delete_studio_item(object(), item, logs.append) is False
     assert any("PDH HOLD" in line for line in logs)
+
+
+
+def test_pdh_inventory_is_normalized_newest_first(monkeypatch):
+    monkeypatch.setattr(
+        cleanup,
+        "pdh_request",
+        lambda operation, payload, timeout=20.0: {
+            "successful": True,
+            "status": "INVENTORY_READY",
+            "hasMore": False,
+            "items": [
+                {"item_id": "300", "item_type": 1, "desc": "newest", "order": 0, "can_delete": True},
+                {"item_id": "200", "item_type": 2, "desc": "older", "order": 1, "can_delete": True},
+            ],
+        },
+    )
+
+    items, has_more = cleanup._load_pdh_items()
+
+    assert has_more is False
+    assert [item.item_id for item in items] == ["300", "200"]
+    assert [item.kind for item in items] == ["video", "photo"]
+
+
+def test_run_cleanup_uses_pdh_without_starting_cdp(monkeypatch):
+    logs = []
+    stop_event = threading.Event()
+
+    monkeypatch.setattr(
+        cleanup,
+        "_pdh_ping",
+        lambda: {"successful": True, "status": "READY", "version": "0.11.test"},
+    )
+    monkeypatch.setattr(
+        cleanup,
+        "_run_cleanup_via_pdh",
+        lambda options, **kwargs: 4,
+    )
+    monkeypatch.setattr(
+        cleanup,
+        "sync_playwright",
+        lambda: (_ for _ in ()).throw(AssertionError("CDP fallback must not start")),
+    )
+
+    result = cleanup.run_cleanup(
+        cleanup.CleanupOptions(mode="videos", max_actions=4, dry_run=True),
+        log=logs.append,
+        stop_event=stop_event,
+    )
+
+    assert result == 4
+    assert any("PDH CONNECTED" in line for line in logs)
