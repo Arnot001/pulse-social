@@ -16,6 +16,9 @@ from platforms.browser_control import APP_DIR
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 8766
 BRIDGE_URL = f"http://{BRIDGE_HOST}:{BRIDGE_PORT}"
+# Allow a 30-second MV3 alarm interval plus scheduling jitter.
+PDH_WAKE_ALLOWANCE_SECONDS = 35.0
+PDH_HEARTBEAT_SECONDS = 75.0
 TOKEN_FILE = APP_DIR / "pdh_bridge_token.txt"
 
 _lock = threading.Condition()
@@ -80,7 +83,7 @@ class _Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "running": True,
-                    "pdhConnected": bool(age is not None and age < 30),
+                    "pdhConnected": bool(age is not None and age < PDH_HEARTBEAT_SECONDS),
                     "pdhAgeSeconds": age,
                 },
             )
@@ -130,6 +133,12 @@ class _Handler(BaseHTTPRequestHandler):
                 while request_id not in _results and time.time() < deadline:
                     _lock.wait(timeout=max(0.0, deadline - time.time()))
                 result = _results.pop(request_id, None)
+                if result is None:
+                    # Never execute a queued command after its caller timed out.
+                    try:
+                        _commands.remove(payload)
+                    except ValueError:
+                        pass  # Already claimed; never enqueue/replay it.
 
             if result is None:
                 self._send(504, {"error": "pdh_timeout", "requestId": request_id})
@@ -211,11 +220,12 @@ def pdh_request(
         return None
 
     request_id = f"pulse-social-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+    wait_timeout = max(1.0, min(float(timeout) + PDH_WAKE_ALLOWANCE_SECONDS, 60.0))
     command = {
         "requestId": request_id,
         "operation": str(operation or "").strip(),
         "payload": dict(payload or {}),
-        "_timeoutSeconds": max(1.0, min(float(timeout), 60.0)),
+        "_timeoutSeconds": wait_timeout,
     }
 
     request = urllib.request.Request(
@@ -229,7 +239,7 @@ def pdh_request(
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout + 2.0) as response:
+        with urllib.request.urlopen(request, timeout=wait_timeout + 2.0) as response:
             result = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
         return None

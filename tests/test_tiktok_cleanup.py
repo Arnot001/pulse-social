@@ -123,6 +123,16 @@ def test_pdh_inventory_is_normalized_newest_first(monkeypatch):
     assert [item.kind for item in items] == ["video", "photo"]
 
 
+def test_pdh_failure_before_mutation_allows_existing_fallback(monkeypatch):
+    visited = []
+    monkeypatch.setattr(cleanup, "_request_pdh_delete", lambda *args: {
+        "successful": False, "verified": False, "mutated": False, "status": "ITEM_NOT_FOUND",
+    })
+    monkeypatch.setattr(cleanup, "_find_item_row", lambda page, item: visited.append(item.item_id))
+    assert cleanup.delete_studio_item(object(), _item("123", 1, 10), lambda line: None) is False
+    assert visited == ["123"]
+
+
 def test_run_cleanup_uses_pdh_without_starting_cdp(monkeypatch):
     logs = []
     stop_event = threading.Event()
