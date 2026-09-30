@@ -168,8 +168,9 @@ def choose_browser(names: list[str], title: str) -> str | None:
     tk.Label(
         dialog,
         text=(
-            "Pulse will use this browser as the shared dedicated session for "
-            "X and TikTok."
+            "Pulse uses the browser you choose here. If it is already open "
+            "without Pulse control, Pulse opens a controllable window of that "
+            "same browser alongside it for X, TikTok and Instagram."
         ),
         fg=TEXT,
         bg=PANEL,
@@ -213,10 +214,7 @@ def browser_to_attach() -> str | None:
 
 def connect_pulse_browser() -> None:
     if cdp_responding():
-        ok, msg = connect_browser()
-        browser_status_var.set(browser_status() if ok else msg.upper())
-        if not ok:
-            messagebox.showerror("Pulse Browser", msg, parent=root)
+        browser_status_var.set(browser_status())
         return
 
     name = browser_to_attach()
@@ -230,19 +228,6 @@ def connect_pulse_browser() -> None:
         return
 
     ok, msg = connect_browser(name, restart_existing=False)
-
-    if not ok and "restart this browser once" in msg.lower():
-        if not messagebox.askyesno(
-            "Make this the Pulse browser?",
-            msg
-            + "\n\nPulse will restore the browser session and use it for both "
-              "X and TikTok. Restart it now?",
-            parent=root,
-        ):
-            browser_status_var.set(browser_status())
-            return
-        ok, msg = connect_browser(name, restart_existing=True)
-
     browser_status_var.set(browser_status() if ok else msg.upper())
     if not ok:
         messagebox.showerror("Pulse Browser", msg, parent=root)
