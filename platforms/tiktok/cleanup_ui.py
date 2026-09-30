@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from platforms.browser_control import browser_status
+from platforms.pdh_bridge import ensure_bridge_server, pdh_connected
 
 from .cleanup import CLEANUP_LOG_FILE, CleanupOptions, run_cleanup
 
@@ -21,6 +22,13 @@ SUCCESS = "#35d07f"
 DANGER = "#ff4d67"
 
 
+def _cleanup_browser_status() -> str:
+    ensure_bridge_server()
+    if pdh_connected():
+        return "PDH CONNECTED // EXISTING BROWSER"
+    return browser_status()
+
+
 class TikTokCleanupView(tk.Frame):
     def __init__(self, master, **kwargs):
         super().__init__(master, bg=BG, **kwargs)
@@ -35,7 +43,7 @@ class TikTokCleanupView(tk.Frame):
         self.dry_run_var = tk.BooleanVar(value=True)
         self.delay_var = tk.StringVar(value="1.25")
         self.status_var = tk.StringVar(value="READY // SAFE MODE")
-        self.browser_var = tk.StringVar(value=browser_status())
+        self.browser_var = tk.StringVar(value=_cleanup_browser_status())
 
         self._build()
         self.bind("<Destroy>", self._on_destroy, add="+")
@@ -102,7 +110,7 @@ class TikTokCleanupView(tk.Frame):
         ).pack(side="left", padx=(0, 12), pady=8)
         tk.Label(
             browser,
-            text="USES YOUR TIKTOK STUDIO LOGIN",
+            text="USES YOUR EXISTING BROWSER + TIKTOK LOGIN",
             fg=MUTED,
             bg=PANEL_2,
             font=("Consolas", 8),
@@ -298,7 +306,7 @@ class TikTokCleanupView(tk.Frame):
         self.arm_event.clear()
         self._set_locked(True)
         self.stop_btn.config(state="normal")
-        self.browser_var.set(browser_status())
+        self.browser_var.set(_cleanup_browser_status())
         self.worker = threading.Thread(
             target=self._worker,
             args=(options,),
@@ -362,7 +370,7 @@ class TikTokCleanupView(tk.Frame):
             self.stop_btn.config(state="disabled")
             self._set_locked(False)
             self._toggle_delete_all()
-            self.browser_var.set(browser_status())
+            self.browser_var.set(_cleanup_browser_status())
 
     def _set_locked(self, locked: bool):
         state = "disabled" if locked else "normal"
