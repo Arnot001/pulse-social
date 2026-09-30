@@ -11,6 +11,7 @@ from typing import Callable
 from playwright.sync_api import Locator, Page, Response, sync_playwright
 
 from platforms.browser_control import CDP_URL
+from platforms.pdh_bridge import ensure_bridge_server, pdh_request
 
 CONTENT_URL = "https://www.tiktok.com/tiktokstudio/content"
 CLEANUP_PAGE_NAME = "pulse-social-tiktok-cleanup"
@@ -216,6 +217,199 @@ def _request_pdh_delete(page: Page, item: TikTokItem) -> dict | None:
         return None
 
     return result if isinstance(result, dict) else None
+
+
+def _pdh_ping() -> dict | None:
+    ensure_bridge_server()
+    result = pdh_request("pdh.ping", {}, timeout=5.0)
+    if not isinstance(result, dict):
+        return None
+    if result.get("successful") is not True or result.get("status") != "READY":
+        return None
+    return result
+
+
+def _load_pdh_items() -> tuple[list[TikTokItem], bool]:
+    result = pdh_request("tiktok.inventory", {}, timeout=25.0)
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            "PDH did not return TikTok inventory. Make sure the Pulse Data Hunter "
+            "extension is loaded in the browser you are using."
+        )
+    if result.get("successful") is not True:
+        status = str(result.get("status") or "UNRESOLVED")
+        detail = str(result.get("error") or "").strip()
+        raise RuntimeError(f"PDH TikTok inventory failed: {status}{': ' + detail if detail else ''}")
+
+    raw_items = result.get("items") or []
+    if not isinstance(raw_items, list):
+        raw_items = []
+
+    total = len(raw_items)
+    items: list[TikTokItem] = []
+    for index, raw in enumerate(raw_items):
+        if not isinstance(raw, dict):
+            continue
+        normal = dict(raw)
+        if not normal.get("post_time"):
+            normal["post_time"] = max(1, total - index)
+        items.append(normalize_item(normal))
+
+    items.sort(key=lambda item: (item.post_time, item.item_id), reverse=True)
+    return items, bool(result.get("hasMore"))
+
+
+def _delete_pdh_item(item: TikTokItem) -> dict | None:
+    return pdh_request(
+        "tiktok.delete_item",
+        {
+            "itemId": item.item_id,
+            "caption": item.desc,
+        },
+        timeout=20.0,
+    )
+
+
+def _run_cleanup_via_pdh(
+    options: CleanupOptions,
+    *,
+    log: Callable[[str], None],
+    stop_event,
+    arm_event=None,
+    state: Callable[[str], None] | None = None,
+) -> int:
+    items, has_more = _load_pdh_items()
+    failed_ids: set[str] = set()
+    matching = select_targets(items, options.mode, excluded_ids=failed_ids)
+    initial_limit = None if options.delete_all else options.max_actions
+    initial_targets = matching if initial_limit is None else matching[:initial_limit]
+
+    counts = {
+        "videos": sum(1 for item in items if item.kind == "video"),
+        "photos": sum(1 for item in items if item.kind == "photo"),
+    }
+    log(
+        f"PDH SCAN | loaded {len(items)} post(s) | {counts['videos']} videos | "
+        f"{counts['photos']} photos | existing browser"
+    )
+    if has_more:
+        log("PDH SCAN | more TikTok posts may exist beyond the current Studio view.")
+
+    if not initial_targets:
+        log(f"CLEANUP COMPLETE | no matching {options.mode} found.")
+        if state:
+            state("idle")
+        return 0
+
+    target_label = "DELETE ALL" if options.delete_all else f"DELETE {options.max_actions}"
+    log(
+        f"RUN LOCKED | {'PREVIEW ONLY' if options.dry_run else 'LIVE DELETE'} | "
+        f"{options.mode.upper()} | {target_label} | PDH"
+    )
+
+    if arm_event is not None:
+        if state:
+            state("armed")
+        log("Click ARM / CONTINUE once to begin.")
+        arm_event.wait()
+
+    if stop_event.is_set():
+        log("Stopped before cleanup began.")
+        if state:
+            state("idle")
+        return 0
+
+    if state:
+        state("running")
+
+    if options.dry_run:
+        for item in initial_targets:
+            if stop_event.is_set():
+                break
+            log(_preview_line(item))
+        log(f"Done. Previewed {len(initial_targets)} matching post(s); nothing deleted.")
+        if state:
+            state("idle")
+        return len(initial_targets)
+
+    deleted = 0
+    stale_rounds = 0
+
+    while not stop_event.is_set():
+        remaining = None
+        if not options.delete_all:
+            remaining = options.max_actions - deleted
+            if remaining <= 0:
+                break
+
+        items, has_more = _load_pdh_items()
+        candidates = select_targets(
+            items,
+            options.mode,
+            remaining,
+            excluded_ids=failed_ids,
+        )
+        if not candidates:
+            log(f"No matching {options.mode} remain.")
+            break
+
+        progressed = False
+        for item in candidates:
+            if stop_event.is_set():
+                break
+
+            result = _delete_pdh_item(item)
+            status = str((result or {}).get("status") or "PDH_UNAVAILABLE")
+            if (
+                isinstance(result, dict)
+                and result.get("successful") is True
+                and result.get("verified") is True
+            ):
+                _log_deleted(item)
+                deleted += 1
+                progressed = True
+                stale_rounds = 0
+                log(f"PDH DELETED | {item.kind.upper()} | {item.item_id} | {status}")
+                limit = "ALL" if options.delete_all else str(options.max_actions)
+                log(f"PROGRESS | {deleted}/{limit}")
+                if options.delay_seconds > 0:
+                    time.sleep(options.delay_seconds)
+            else:
+                failed_ids.add(item.item_id)
+                if isinstance(result, dict) and result.get("mutated") is True:
+                    log(
+                        f"PDH HOLD | {item.item_id} | {status} | "
+                        "mutation was not verified; no second delete will be attempted."
+                    )
+                else:
+                    detail = str((result or {}).get("error") or "").strip()
+                    log(
+                        f"PDH FAILED | {item.item_id} | {status}"
+                        + (f" | {detail}" if detail else "")
+                    )
+
+            if not options.delete_all and deleted >= options.max_actions:
+                break
+
+        if not options.delete_all and deleted >= options.max_actions:
+            break
+
+        if not progressed:
+            stale_rounds += 1
+            if stale_rounds >= 2:
+                log("No PDH progress after repeated passes. Stopping safely.")
+                break
+        else:
+            stale_rounds = 0
+
+    if stop_event.is_set():
+        log("STOPPED | no further posts will be deleted.")
+    else:
+        log(f"CLEANUP COMPLETE | deleted {deleted} post(s) through PDH.")
+
+    if state:
+        state("idle")
+    return deleted
 
 
 def _background_named_page(browser, context, page_name: str) -> tuple[Page, bool]:
@@ -598,6 +792,21 @@ def run_cleanup(
 
     if state:
         state("attaching")
+
+    log("Looking for Pulse Data Hunter in the browser you already have open...")
+    ping = _pdh_ping()
+    if ping is not None:
+        version = str(ping.get("version") or "unknown")
+        log(f"PDH CONNECTED | v{version} | no CDP browser launch required")
+        return _run_cleanup_via_pdh(
+            options,
+            log=log,
+            stop_event=stop_event,
+            arm_event=arm_event,
+            state=state,
+        )
+
+    log("PDH NOT CONNECTED | trying legacy CDP fallback.")
     log("Attaching to the dedicated Pulse browser...")
 
     with sync_playwright() as playwright:
