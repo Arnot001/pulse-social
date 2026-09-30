@@ -171,10 +171,6 @@ def dedicated_browser_name() -> str | None:
     saved = str(_load_state().get("browser") or "").strip()
     if browser_spec(saved) is not None:
         return saved
-
-    running = running_browser_names()
-    if len(running) == 1:
-        return running[0]
     return None
 
 
@@ -182,13 +178,14 @@ def choose_browser_name(preferred: str | None = None) -> str | None:
     if browser_spec(preferred) is not None:
         return browser_spec(preferred).name
 
-    saved = dedicated_browser_name()
-    if saved:
-        return saved
-
+    # What the user is actually running now wins over an old saved choice.
     running = running_browser_names()
     if running:
         return running[0]
+
+    saved = dedicated_browser_name()
+    if saved:
+        return saved
 
     installed = installed_browser_names()
     return installed[0] if installed else None
@@ -198,15 +195,10 @@ def browser_status() -> str:
     dedicated = dedicated_browser_name()
 
     if cdp_responding():
-        name = dedicated or choose_browser_name() or "BROWSER"
-        if dedicated is None and name != "BROWSER":
-            _save_state(name)
+        name = dedicated or "PULSE BROWSER"
         return f"{name.upper()} // CONNECTED // CDP :{CDP_PORT}"
 
     running = running_browser_names()
-    if dedicated:
-        return f"{dedicated.upper()} // PULSE PROFILE READY TO ATTACH"
-
     if len(running) == 1:
         return f"{running[0].upper()} OPEN // READY TO ATTACH"
 
@@ -214,9 +206,11 @@ def browser_status() -> str:
         return "CHOOSE OPEN BROWSER // " + " / ".join(name.upper() for name in running)
 
     installed = installed_browser_names()
+    if dedicated and dedicated in installed:
+        return f"{dedicated.upper()} // PULSE PROFILE READY TO LAUNCH"
+
     if installed:
-        name = dedicated if dedicated in installed else installed[0]
-        return f"{name.upper()} READY TO LAUNCH"
+        return f"{installed[0].upper()} READY TO LAUNCH"
 
     return "NO SUPPORTED CHROMIUM BROWSER FOUND"
 
