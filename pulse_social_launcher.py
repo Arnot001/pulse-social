@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tkinter import messagebox
 
@@ -26,6 +27,9 @@ SUCCESS = "#35d07f"
 DANGER = "#ff4d67"
 ROOT = Path(__file__).resolve().parent
 children: list[subprocess.Popen] = []
+status_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdh-status")
+status_future = None
+status_after_id = None
 
 
 def launch(script: str) -> None:
@@ -52,6 +56,9 @@ def open_tiktok_cleanup() -> None:
 
 
 def close_all() -> None:
+    if status_after_id is not None:
+        root.after_cancel(status_after_id)
+    status_executor.shutdown(wait=False, cancel_futures=True)
     for proc in children:
         if proc.poll() is None:
             try:
@@ -179,8 +186,22 @@ tk.Label(
 
 
 def refresh_pdh_browser() -> None:
-    ensure_bridge_server()
-    browser_status_var.set(pdh_browser_status())
+    global status_future
+    if status_future is None:
+        status_future = status_executor.submit(pdh_browser_status)
+
+
+def poll_pdh_browser_status() -> None:
+    global status_future, status_after_id
+    # Process/browser checks run off the Tk thread. Only Tk's timer updates UI.
+    if status_future is not None and status_future.done():
+        try:
+            browser_status_var.set(status_future.result())
+        except Exception:
+            browser_status_var.set("PDH STATUS UNAVAILABLE")
+        status_future = None
+    refresh_pdh_browser()
+    status_after_id = root.after(2000, poll_pdh_browser_status)
 
 
 button(
@@ -294,4 +315,5 @@ tk.Label(footer, text="PULSE SOCIAL", fg=MUTED, bg=BG, font=("Consolas", 8, "bol
 tk.Label(footer, text="X CLEANUP  •  X AUTO POST  •  TIKTOK SHOP  •  TIKTOK AUTO POST  •  TIKTOK CLEANUP", fg=MUTED, bg=BG, font=("Consolas", 8)).pack(side="right")
 
 root.protocol("WM_DELETE_WINDOW", close_all)
+poll_pdh_browser_status()
 root.mainloop()
