@@ -1,3 +1,4 @@
+import platforms.tiktok.cleanup as cleanup
 from platforms.tiktok.cleanup import TikTokItem, select_targets
 
 
@@ -44,3 +45,54 @@ def test_select_targets_everything_excludes_undeletable_and_failed_ids():
     ]
     selected = select_targets(items, "everything", excluded_ids={"video"})
     assert [item.item_id for item in selected] == ["photo"]
+
+
+def test_verified_pdh_result_short_circuits_local_browser_fallback(monkeypatch):
+    item = _item("741234", 1, 10)
+    logs = []
+    recorded = []
+
+    monkeypatch.setattr(
+        cleanup,
+        "_request_pdh_delete",
+        lambda page, target: {
+            "successful": True,
+            "verified": True,
+            "mutated": True,
+            "status": "DELETE_VERIFIED",
+        },
+    )
+    monkeypatch.setattr(cleanup, "_log_deleted", lambda target: recorded.append(target.item_id))
+    monkeypatch.setattr(
+        cleanup,
+        "_find_item_row",
+        lambda page, target: (_ for _ in ()).throw(AssertionError("local fallback should not run")),
+    )
+
+    assert cleanup.delete_studio_item(object(), item, logs.append) is True
+    assert recorded == ["741234"]
+    assert any("PDH DELETED" in line for line in logs)
+
+
+def test_unverified_pdh_mutation_blocks_second_delete_attempt(monkeypatch):
+    item = _item("741235", 1, 10)
+    logs = []
+
+    monkeypatch.setattr(
+        cleanup,
+        "_request_pdh_delete",
+        lambda page, target: {
+            "successful": False,
+            "verified": False,
+            "mutated": True,
+            "status": "DELETE_SENT_UNVERIFIED",
+        },
+    )
+    monkeypatch.setattr(
+        cleanup,
+        "_find_item_row",
+        lambda page, target: (_ for _ in ()).throw(AssertionError("local fallback should be blocked")),
+    )
+
+    assert cleanup.delete_studio_item(object(), item, logs.append) is False
+    assert any("PDH HOLD" in line for line in logs)
