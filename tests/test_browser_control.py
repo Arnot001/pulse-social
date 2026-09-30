@@ -63,3 +63,28 @@ def test_connect_browser_does_not_kill_everyday_browser(monkeypatch, tmp_path):
     assert "CONNECTED" in message
     assert launched
     assert any(arg.startswith("--user-data-dir=") for arg in launched[0])
+
+
+
+def test_open_browser_wins_over_saved_browser(monkeypatch):
+    monkeypatch.setattr(browser_control, "running_browser_names", lambda: ["Brave"])
+    monkeypatch.setattr(browser_control, "dedicated_browser_name", lambda: "Chrome")
+    monkeypatch.setattr(browser_control, "installed_browser_names", lambda: ["Brave", "Chrome"])
+
+    assert browser_control.choose_browser_name() == "Brave"
+
+
+def test_dedicated_browser_name_only_returns_saved_choice(monkeypatch):
+    monkeypatch.setattr(browser_control, "_load_state", lambda: {})
+    monkeypatch.setattr(browser_control, "running_browser_names", lambda: ["Brave"])
+
+    assert browser_control.dedicated_browser_name() is None
+
+
+def test_status_shows_current_open_browser_before_stale_saved_choice(monkeypatch):
+    monkeypatch.setattr(browser_control, "cdp_responding", lambda: False)
+    monkeypatch.setattr(browser_control, "running_browser_names", lambda: ["Brave"])
+    monkeypatch.setattr(browser_control, "dedicated_browser_name", lambda: "Chrome")
+    monkeypatch.setattr(browser_control, "installed_browser_names", lambda: ["Brave", "Chrome"])
+
+    assert browser_control.browser_status() == "BRAVE OPEN // READY TO ATTACH"
