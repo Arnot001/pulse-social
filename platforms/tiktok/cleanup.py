@@ -168,6 +168,56 @@ def _existing_context(browser):
     return browser.contexts[0]
 
 
+def _request_pdh_delete(page: Page, item: TikTokItem) -> dict | None:
+    request_id = f"pulse-social-tiktok-{item.item_id}-{int(time.time() * 1000)}"
+    request = {
+        "requestId": request_id,
+        "operation": "tiktok.delete_item",
+        "payload": {
+            "itemId": item.item_id,
+            "caption": item.desc,
+            "pageName": CLEANUP_PAGE_NAME,
+        },
+    }
+
+    try:
+        result = page.evaluate(
+            """async ({ request, requestId }) => {
+                return await new Promise(resolve => {
+                    let settled = false;
+                    const finish = value => {
+                        if (settled) return;
+                        settled = true;
+                        window.removeEventListener("message", onMessage);
+                        clearTimeout(timer);
+                        resolve(value);
+                    };
+                    const onMessage = event => {
+                        if (event.source !== window) return;
+                        const data = event.data;
+                        if (
+                            data?.type === "PULSE_PDH_PAGE_AUTOMATION_RESULT"
+                            && data?.requestId === requestId
+                        ) {
+                            finish(data.result || null);
+                        }
+                    };
+                    const timer = setTimeout(() => finish(null), 2500);
+                    window.addEventListener("message", onMessage);
+                    window.postMessage({
+                        type: "PULSE_PDH_PAGE_AUTOMATION_REQUEST",
+                        request,
+                    }, window.location.origin);
+                });
+            }""",
+            {"request": request, "requestId": request_id},
+        )
+    except Exception:
+        return None
+
+    return result if isinstance(result, dict) else None
+
+
 def _background_named_page(browser, context, page_name: str) -> tuple[Page, bool]:
     for page in context.pages:
         try:
@@ -439,6 +489,34 @@ def delete_studio_item(
     if not item.can_delete:
         log(f"SKIP | TikTok says item {item.item_id} cannot be deleted.")
         return False
+
+    pdh_result = _request_pdh_delete(page, item)
+    if pdh_result is not None:
+        status = str(pdh_result.get("status") or "UNRESOLVED")
+        if pdh_result.get("successful") is True and pdh_result.get("verified") is True:
+            _log_deleted(item)
+            log(
+                f"PDH DELETED | {item.kind.upper()} | {item.item_id} | "
+                f"{status} | {item.desc[:100]}"
+            )
+            return True
+
+        if pdh_result.get("mutated") is True:
+            log(
+                f"PDH HOLD | {item.item_id} | {status} | "
+                "PDH reported a mutation but could not verify it; local fallback is blocked."
+            )
+            return False
+
+        log(
+            f"PDH FALLBACK | {item.item_id} | {status} | "
+            "using Pulse Social's existing safe browser path."
+        )
+    else:
+        log(
+            f"PDH UNAVAILABLE | {item.item_id} | "
+            "using Pulse Social's existing safe browser path."
+        )
 
     row = _find_item_row(page, item)
     if row is None:
