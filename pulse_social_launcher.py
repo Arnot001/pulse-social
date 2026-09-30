@@ -6,14 +6,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
-from platforms.browser_control import (
-    browser_status,
-    cdp_responding,
-    connect_browser,
-    dedicated_browser_name,
-    installed_browser_names,
-    running_browser_names,
-)
+from platforms.browser_control import running_browser_names
+from platforms.pdh_bridge import bridge_status, ensure_bridge_server
 
 BG = "#06070b"
 SURFACE = "#0b0f17"
@@ -111,7 +105,28 @@ tk.Label(
     font=("Consolas", 9),
 ).pack(side="left")
 
-browser_status_var = tk.StringVar(value=browser_status())
+ensure_bridge_server()
+
+
+def pdh_browser_status() -> str:
+    running = running_browser_names()
+    pdh_ready = bool(bridge_status().get("pdhConnected"))
+
+    if pdh_ready:
+        if len(running) == 1:
+            return f"{running[0].upper()} OPEN // PDH CONNECTED"
+        if len(running) > 1:
+            return "PDH CONNECTED // " + " / ".join(name.upper() for name in running)
+        return "PDH CONNECTED // BROWSER ACTIVE"
+
+    if len(running) == 1:
+        return f"{running[0].upper()} OPEN // WAITING FOR PDH"
+    if len(running) > 1:
+        return "WAITING FOR PDH // " + " / ".join(name.upper() for name in running)
+    return "NO BROWSER OPEN // PDH WAITING"
+
+
+browser_status_var = tk.StringVar(value=pdh_browser_status())
 browser_glow = tk.Frame(root, bg=CYAN_SOFT, padx=2, pady=2)
 browser_glow.pack(fill="x", padx=32, pady=(18, 14))
 browser_strip = tk.Frame(
@@ -124,7 +139,7 @@ browser_strip.pack(fill="x")
 
 tk.Label(
     browser_strip,
-    text="PULSE BROWSER",
+    text="PULSE BROWSER / PDH",
     fg=MUTED,
     bg=PANEL,
     font=("Consolas", 8, "bold"),
@@ -145,98 +160,15 @@ tk.Label(
 ).pack(side="left", padx=(6, 12))
 
 
-def choose_browser(names: list[str], title: str) -> str | None:
-    if not names:
-        return None
-    if len(names) == 1:
-        return names[0]
-
-    dialog = tk.Toplevel(root)
-    dialog.title(title)
-    dialog.configure(bg=PANEL)
-    dialog.resizable(False, False)
-    dialog.transient(root)
-    dialog.grab_set()
-
-    tk.Label(
-        dialog,
-        text="CHOOSE PULSE BROWSER",
-        fg=CYAN,
-        bg=PANEL,
-        font=("Consolas", 9, "bold"),
-    ).pack(anchor="w", padx=18, pady=(16, 4))
-    tk.Label(
-        dialog,
-        text=(
-            "Pulse uses the browser you choose here. If it is already open "
-            "without Pulse control, Pulse opens a controllable window of that "
-            "same browser alongside it for X, TikTok and Instagram."
-        ),
-        fg=TEXT,
-        bg=PANEL,
-        justify="left",
-        wraplength=420,
-        font=("Segoe UI", 9),
-    ).pack(anchor="w", padx=18, pady=(0, 12))
-
-    result = {"name": None}
-
-    def pick(name: str) -> None:
-        result["name"] = name
-        dialog.destroy()
-
-    buttons = tk.Frame(dialog, bg=PANEL)
-    buttons.pack(fill="x", padx=18, pady=(0, 16))
-    for name in names:
-        button(
-            buttons,
-            name.upper(),
-            lambda selected=name: pick(selected),
-            accent=True,
-        ).pack(side="left", padx=(0, 8))
-
-    dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
-    root.wait_window(dialog)
-    return result["name"]
-
-
-def browser_to_attach() -> str | None:
-    running = running_browser_names()
-    if running:
-        return choose_browser(running, "Use open browser for Pulse")
-
-    installed = installed_browser_names()
-    saved = dedicated_browser_name()
-    if saved and saved in installed:
-        return saved
-    return choose_browser(installed, "Choose browser for Pulse")
-
-
-def connect_pulse_browser() -> None:
-    if cdp_responding():
-        browser_status_var.set(browser_status())
-        return
-
-    name = browser_to_attach()
-    if not name:
-        messagebox.showerror(
-            "Pulse Browser",
-            "No supported Brave, Chrome or Edge browser was found.",
-            parent=root,
-        )
-        browser_status_var.set(browser_status())
-        return
-
-    ok, msg = connect_browser(name, restart_existing=False)
-    browser_status_var.set(browser_status() if ok else msg.upper())
-    if not ok:
-        messagebox.showerror("Pulse Browser", msg, parent=root)
+def refresh_pdh_browser() -> None:
+    ensure_bridge_server()
+    browser_status_var.set(pdh_browser_status())
 
 
 button(
     browser_strip,
-    "ATTACH / REFRESH",
-    connect_pulse_browser,
+    "PDH / REFRESH",
+    refresh_pdh_browser,
     accent=True,
 ).pack(side="right", padx=12, pady=7)
 
