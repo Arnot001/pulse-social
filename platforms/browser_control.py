@@ -12,6 +12,7 @@ from pathlib import Path
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Pulse Social"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 STATE_FILE = APP_DIR / "browser_control.json"
+BROWSER_PROFILE_ROOT = APP_DIR / "BrowserProfiles"
 
 CDP_PORT = 9222
 CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
@@ -106,12 +107,33 @@ def _load_state() -> dict:
         return {}
 
 
+def _profile_dir(spec: BrowserSpec) -> Path:
+    return BROWSER_PROFILE_ROOT / spec.name.casefold()
+
+
+def _launch_args(spec: BrowserSpec, exe: Path, start_url: str | None = None) -> list[str]:
+    profile_dir = _profile_dir(spec)
+    args = [
+        str(exe),
+        f"--remote-debugging-port={CDP_PORT}",
+        f"--user-data-dir={profile_dir}",
+        "--restore-last-session",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    if start_url:
+        args.append(start_url)
+    return args
+
+
 def _save_state(name: str) -> None:
+    spec = browser_spec(name)
     STATE_FILE.write_text(
         json.dumps(
             {
                 "browser": name,
                 "port": CDP_PORT,
+                "profile": str(_profile_dir(spec)) if spec is not None else None,
             },
             indent=2,
         ),
@@ -182,8 +204,8 @@ def browser_status() -> str:
         return f"{name.upper()} // CONNECTED // CDP :{CDP_PORT}"
 
     running = running_browser_names()
-    if dedicated and dedicated in running:
-        return f"{dedicated.upper()} OPEN // NEEDS PULSE ATTACH"
+    if dedicated:
+        return f"{dedicated.upper()} // PULSE PROFILE READY TO ATTACH"
 
     if len(running) == 1:
         return f"{running[0].upper()} OPEN // READY TO ATTACH"
@@ -224,9 +246,13 @@ def connect_browser(
 ) -> tuple[bool, str]:
     """Make one supported Chromium browser the persistent Pulse browser.
 
+    Pulse launches a dedicated persistent user-data directory. Modern Chrome
+    ignores remote-debugging flags against the normal default profile, and the
+    separate Pulse profile lets the user's everyday browser remain open.
+
     If a working CDP endpoint already exists on :9222, Pulse simply adopts it.
-    If the chosen browser is open normally, a restart is required because CDP
-    cannot be added to an already-running Chromium process.
+    restart_existing is retained for caller compatibility and no longer means
+    the user's normal browser process must be killed.
     """
     chosen = choose_browser_name(browser_name)
 
@@ -247,27 +273,13 @@ def connect_browser(
     if exe is None:
         return False, f"{spec.name} is not installed in a supported location."
 
-    if _running(spec.image):
-        if not restart_existing:
-            return (
-                False,
-                f"{spec.name} is already open without Pulse control. "
-                "Pulse needs to restart this browser once to enable its dedicated CDP session.",
-            )
-        ok, detail = _kill_browser(spec)
-        if not ok:
-            return False, f"Could not restart {spec.name}: {detail}"
-        time.sleep(1.5)
+    # Use a separate Pulse profile so CDP works on modern Chromium builds and
+    # the user's everyday browser profile can remain open at the same time.
+    profile_dir = _profile_dir(spec)
+    profile_dir.mkdir(parents=True, exist_ok=True)
 
     _save_state(spec.name)
-
-    args = [
-        str(exe),
-        f"--remote-debugging-port={CDP_PORT}",
-        "--restore-last-session",
-    ]
-    if start_url:
-        args.append(start_url)
+    args = _launch_args(spec, exe, start_url)
 
     try:
         subprocess.Popen(
@@ -285,6 +297,6 @@ def connect_browser(
 
     return (
         False,
-        f"{spec.name} opened, but Pulse browser control on CDP :{CDP_PORT} "
+        f"{spec.name} Pulse profile opened, but browser control on CDP :{CDP_PORT} "
         "did not become ready.",
     )
