@@ -360,7 +360,7 @@ def open_emoji_picker(
         window.destroy()
 
     canvas.bind("<Configure>", resize_grid)
-    canvas.bind_all("<MouseWheel>", wheel)
+    window.bind("<MouseWheel>", wheel)
     search_var.trace_add("write", render)
     window.bind("<Escape>", lambda _event: close())
     window.protocol("WM_DELETE_WINDOW", close)
