@@ -7,11 +7,6 @@ import unicodedata
 from pathlib import Path
 from typing import Callable, Iterable
 
-try:
-    from PIL import Image, ImageDraw, ImageFont, ImageTk
-except ImportError:  # Release build bundles Pillow; text fallback keeps dev installs usable.
-    Image = ImageDraw = ImageFont = ImageTk = None
-
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Pulse Social"
 RECENTS_PATH = APP_DIR / "emoji_recents.json"
 MAX_RECENTS = 36
@@ -26,8 +21,6 @@ ACCENT = "#ff0a8a"
 CYAN = "#25f4ee"
 GLOW_SOFT = "#2a1230"
 CYAN_SOFT = "#102c35"
-EMOJI_FONT_PATH = Path(os.environ.get("WINDIR", r"C:\\Windows")) / "Fonts" / "seguiemj.ttf"
-
 TONE_SWATCHES = {
     "DEFAULT": TEXT,
     "LIGHT": "#f6d6bd",
@@ -286,39 +279,6 @@ def open_emoji_picker(
     canvas.pack(side="left", fill="both", expand=True)
     scroll.pack(side="right", fill="y")
 
-    emoji_images: dict[tuple[str, int], object | None] = {}
-    category_image_refs: dict[str, object] = {}
-
-    def colour_emoji_image(emoji: str, size: int):
-        key = (emoji, size)
-        if key in emoji_images:
-            return emoji_images[key]
-        if Image is None or ImageDraw is None or ImageFont is None or ImageTk is None:
-            emoji_images[key] = None
-            return None
-        if not EMOJI_FONT_PATH.exists():
-            emoji_images[key] = None
-            return None
-
-        try:
-            canvas_size = max(38, size + 16)
-            image = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(image)
-            font = ImageFont.truetype(str(EMOJI_FONT_PATH), size=size)
-            draw.text(
-                (canvas_size // 2, canvas_size // 2),
-                emoji,
-                font=font,
-                anchor="mm",
-                embedded_color=True,
-            )
-            photo = ImageTk.PhotoImage(image)
-        except Exception:
-            photo = None
-
-        emoji_images[key] = photo
-        return photo
-
     def render(*_):
         for child in grid.winfo_children():
             child.destroy()
@@ -334,46 +294,25 @@ def open_emoji_picker(
         else:
             columns = 10
             for index, emoji in enumerate(values):
-                photo = colour_emoji_image(emoji, 30)
                 tile_glow = accent if index % 2 == 0 else CYAN
-
-                if photo is not None:
-                    btn = tk.Button(
-                        grid,
-                        image=photo,
-                        command=lambda value=emoji: choose(value),
-                        bg=PANEL,
-                        activebackground=PANEL_2,
-                        relief="flat",
-                        bd=0,
-                        width=46,
-                        height=44,
-                        padx=0,
-                        pady=0,
-                        highlightthickness=1,
-                        highlightbackground=PANEL,
-                        highlightcolor=tile_glow,
-                        cursor="hand2",
-                    )
-                else:
-                    btn = tk.Button(
-                        grid,
-                        text=emoji,
-                        command=lambda value=emoji: choose(value),
-                        bg=PANEL,
-                        fg=TEXT,
-                        activebackground=PANEL_2,
-                        activeforeground=TEXT,
-                        relief="flat",
-                        bd=0,
-                        width=3,
-                        height=1,
-                        font=("Segoe UI Emoji", 18),
-                        highlightthickness=1,
-                        highlightbackground=PANEL,
-                        highlightcolor=tile_glow,
-                        cursor="hand2",
-                    )
+                btn = tk.Button(
+                    grid,
+                    text=emoji,
+                    command=lambda value=emoji: choose(value),
+                    bg=PANEL,
+                    fg=TEXT,
+                    activebackground=PANEL_2,
+                    activeforeground=TEXT,
+                    relief="flat",
+                    bd=0,
+                    width=3,
+                    height=1,
+                    font=("Segoe UI Emoji", 18),
+                    highlightthickness=1,
+                    highlightbackground=PANEL,
+                    highlightcolor=tile_glow,
+                    cursor="hand2",
+                )
 
                 btn.bind(
                     "<Enter>",
@@ -419,39 +358,21 @@ def open_emoji_picker(
         render()
 
     for name, glyph in CATEGORY_LABELS.items():
-        photo = colour_emoji_image(glyph, 18) if name != "RECENT" else None
-        if photo is not None:
-            category_image_refs[name] = photo
-            btn = tk.Button(
-                category_bar,
-                image=photo,
-                command=lambda value=name: set_category(value),
-                bg=PANEL_2,
-                activebackground=accent,
-                relief="flat",
-                bd=0,
-                width=38,
-                height=32,
-                padx=0,
-                pady=0,
-                cursor="hand2",
-            )
-        else:
-            btn = tk.Button(
-                category_bar,
-                text=glyph,
-                command=lambda value=name: set_category(value),
-                bg=PANEL_2,
-                fg=TEXT,
-                activebackground=accent,
-                activeforeground=TEXT,
-                relief="flat",
-                bd=0,
-                padx=7,
-                pady=5,
-                font=("Segoe UI Emoji", 11),
-                cursor="hand2",
-            )
+        btn = tk.Button(
+            category_bar,
+            text=glyph,
+            command=lambda value=name: set_category(value),
+            bg=PANEL_2,
+            fg=TEXT,
+            activebackground=accent,
+            activeforeground=TEXT,
+            relief="flat",
+            bd=0,
+            padx=7,
+            pady=5,
+            font=("Segoe UI Emoji", 11),
+            cursor="hand2",
+        )
         btn.pack(side="left", padx=(0, 4))
         category_buttons[name] = btn
 
