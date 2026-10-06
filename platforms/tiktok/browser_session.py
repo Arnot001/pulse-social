@@ -6,7 +6,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-from platforms.browser_control import CDP_PORT, CDP_URL, port_open
+from platforms.browser_control import CDP_PORT, CDP_URL, connect_browser, port_open
 
 TIKTOK_URL = "https://www.tiktok.com/"
 
@@ -41,10 +41,9 @@ def tiktok_browser_status() -> str:
 def open_tiktok_browser() -> tuple[bool, str]:
     """Open or focus TikTok inside the dedicated Pulse Chromium browser."""
     if not _port_open():
-        return (
-            False,
-            "Pulse browser control is not connected. Attach the dedicated Pulse browser first.",
-        )
+        ok, message = connect_browser(start_url=TIKTOK_URL)
+        if not ok:
+            return False, message
 
     last_error: Exception | None = None
     for attempt in range(1, 4):
