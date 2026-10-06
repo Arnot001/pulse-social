@@ -664,13 +664,25 @@ class TikTokAutoPostView(tk.Frame):
             font=("Segoe UI", 8),
         ).pack(side="right", padx=12, pady=8)
 
-        queue_card = tk.Frame(
+        lower = tk.PanedWindow(
             self,
+            orient="vertical",
+            bg=BG,
+            bd=0,
+            sashwidth=5,
+            sashrelief="flat",
+            showhandle=False,
+            opaqueresize=True,
+            highlightthickness=0,
+        )
+        lower.pack(fill="both", expand=True, padx=28, pady=(0, 14))
+
+        queue_card = tk.Frame(
+            lower,
             bg=TABLE_BG,
             highlightthickness=1,
             highlightbackground=BORDER,
         )
-        queue_card.pack(fill="both", expand=True, padx=28, pady=(0, 5))
 
         queue_head = tk.Frame(queue_card, bg=PANEL)
         queue_head.grid(row=0, column=0, columnspan=2, sticky="ew")
@@ -704,7 +716,7 @@ class TikTokAutoPostView(tk.Frame):
             columns=cols,
             show="headings",
             style="TikTok.Treeview",
-            height=6,
+            height=4,
         )
         widths = {
             "due": 130,
@@ -734,14 +746,29 @@ class TikTokAutoPostView(tk.Frame):
             highlightthickness=0,
             width=11,
         )
-        self.tree.configure(yscrollcommand=queue_scroll.set)
+        queue_xscroll = tk.Scrollbar(
+            queue_card,
+            orient="horizontal",
+            command=self.tree.xview,
+            bg=BORDER,
+            troughcolor=TABLE_BG,
+            activebackground=ACCENT_2,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            width=9,
+        )
+        self.tree.configure(
+            yscrollcommand=queue_scroll.set,
+            xscrollcommand=queue_xscroll.set,
+        )
         queue_card.rowconfigure(1, weight=1)
         queue_card.columnconfigure(0, weight=1)
         self.tree.grid(row=1, column=0, sticky="nsew")
         queue_scroll.grid(row=1, column=1, sticky="ns")
+        queue_xscroll.grid(row=2, column=0, columnspan=2, sticky="ew")
 
-        activity = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        activity.pack(fill="x", padx=28, pady=(5, 14))
+        activity = tk.Frame(lower, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         activity_head = tk.Frame(activity, bg=PANEL)
         activity_head.pack(fill="x", padx=12, pady=(8, 5))
         tk.Label(
@@ -766,9 +793,12 @@ class TikTokAutoPostView(tk.Frame):
             font=("Segoe UI", 8, "bold"),
         ).pack(side="right")
 
+        log_body = tk.Frame(activity, bg=PANEL)
+        log_body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+
         self.log = tk.Text(
-            activity,
-            height=4,
+            log_body,
+            height=3,
             bg=SURFACE,
             fg="#cbd3df",
             insertbackground=TEXT,
@@ -781,7 +811,24 @@ class TikTokAutoPostView(tk.Frame):
             highlightthickness=1,
             highlightbackground="#1b2738",
         )
-        self.log.pack(fill="x", padx=12, pady=(0, 10))
+        activity_scroll = tk.Scrollbar(
+            log_body,
+            orient="vertical",
+            command=self.log.yview,
+            bg=BORDER,
+            troughcolor=SURFACE,
+            activebackground=ACCENT,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            width=11,
+        )
+        self.log.configure(yscrollcommand=activity_scroll.set)
+        self.log.pack(side="left", fill="both", expand=True)
+        activity_scroll.pack(side="right", fill="y")
+
+        lower.add(queue_card, minsize=115, stretch="always")
+        lower.add(activity, minsize=92, stretch="always")
 
     def _update_chars(self, *_):
         value = self.caption.get("1.0", "end-1c")
