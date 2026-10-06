@@ -228,6 +228,8 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
 
     actions=tk.Frame(card,bg="#121827")
     actions.pack(fill="x",padx=16,pady=(11,0))
+    primary_controls=tk.Frame(actions,bg="#121827")
+    primary_controls.pack(side="left")
 
     def button(parent,text,command,accent=False):
         bg=ACCENT if accent else "#182235"
@@ -287,9 +289,13 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
     scroll=tk.Scrollbar(results_frame,orient="vertical",command=tree.yview,
                         bg=BORDER,troughcolor=TABLE_BG,activebackground=ACCENT,
                         relief="flat",bd=0,highlightthickness=0,width=11)
-    tree.configure(yscrollcommand=scroll.set)
+    xscroll=tk.Scrollbar(results_frame,orient="horizontal",command=tree.xview,
+                         bg=BORDER,troughcolor=TABLE_BG,activebackground=ACCENT,
+                         relief="flat",bd=0,highlightthickness=0,width=9)
+    tree.configure(yscrollcommand=scroll.set,xscrollcommand=xscroll.set)
     results_frame.rowconfigure(1,weight=1); results_frame.columnconfigure(0,weight=1)
     tree.grid(row=1,column=0,sticky="nsew"); scroll.grid(row=1,column=1,sticky="ns")
+    xscroll.grid(row=2,column=0,columnspan=2,sticky="ew")
 
     empty_state=tk.Frame(results_frame,bg=TABLE_BG)
     empty_state.place(relx=.5,rely=.60,anchor="center")
@@ -321,7 +327,7 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
             threading.Thread(target=read_pdh,daemon=True).start()
         pdh_timer=window.after(2000,poll_pdh)
     activity_panel=tk.Frame(window,bg=PANEL,highlightthickness=1,highlightbackground=BORDER)
-    activity_panel.pack(side="bottom",fill="x",padx=28,pady=(5,18))
+    activity_panel.pack(side="bottom",fill="x",padx=28,pady=(5,12))
 
     log_head=tk.Frame(activity_panel,bg=PANEL)
     log_head.pack(fill="x",padx=12,pady=(8,5))
@@ -330,7 +336,7 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
     tk.Label(log_head,text="Live collection and watch events",fg=SUBTLE,bg=PANEL,
              font=("Segoe UI",8)).pack(side="left",padx=(10,0))
 
-    log=tk.Text(activity_panel,height=5,bg=SURFACE,fg="#cbd3df",insertbackground=TEXT,
+    log=tk.Text(activity_panel,height=4,bg=SURFACE,fg="#cbd3df",insertbackground=TEXT,
                 relief="flat",bd=0,font=("Consolas",9),padx=11,pady=8,wrap="word",
                 highlightthickness=1,highlightbackground="#1b2738")
     log.pack(fill="x",padx=12,pady=(0,11))
@@ -579,10 +585,10 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
             product_id=watch.product_id
             watch.any_drop=messagebox.askyesno("Price drops",f"Alert when this product price drops?\n\n{watch.title}",parent=dialog); watch.any_rise=messagebox.askyesno("Price rises",f"Alert when this product price rises?\n\n{watch.title}",parent=dialog); upsert_watch(watch); reload(product_id)
         wt.pack(fill="both",expand=True,padx=14,pady=14); bar=tk.Frame(dialog,bg=PANEL); bar.pack(fill="x",padx=14,pady=(0,14)); button(bar,"REMOVE",remove).pack(side="left"); button(bar,"PRICE ALERTS",price_alerts).pack(side="left",padx=8); button(bar,"SET DISCORD / TELEGRAM",channels,True).pack(side="left",padx=8); reload()
-    collect_btn=button(actions,"COLLECT CATEGORY",collect,True); collect_btn.pack(side="left",padx=(0,8)); collect_btn.config(state="disabled")
-    refresh_btn=button(actions,"REFRESH CATEGORIES",refresh); refresh_btn.pack(side="left",padx=(0,8))
-    button(actions,"WATCHLIST",manage_watchlist).pack(side="left",padx=(0,8))
-    button(actions,"ALERT SETTINGS",notification_settings).pack(side="left")
+    collect_btn=button(primary_controls,"COLLECT CATEGORY",collect,True); collect_btn.pack(side="left",padx=(0,8)); collect_btn.config(state="disabled")
+    refresh_btn=button(primary_controls,"REFRESH CATEGORIES",refresh); refresh_btn.pack(side="left",padx=(0,8))
+    button(primary_controls,"WATCHLIST",manage_watchlist).pack(side="left",padx=(0,8))
+    button(primary_controls,"ALERT SETTINGS",notification_settings).pack(side="left")
     main_box.bind("<<ComboboxSelected>>",update_subs); sub_box.bind("<<ComboboxSelected>>",update_leafs); leaf_box.bind("<<ComboboxSelected>>",lambda _e:None if list_state.busy or taxonomy_loading else status_var.set(f"READY // {selected_category().name}" if selected_category() else "SELECT A CATEGORY"))
     def close():
         stop_watch.set()
