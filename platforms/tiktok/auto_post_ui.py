@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from platforms.common.emoji_picker import open_emoji_picker
+
 from .auto_post import (
     MAX_CAPTION_UTF16,
     add_post,
@@ -209,6 +211,16 @@ class TikTokAutoPostView(tk.Frame):
         head.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
         tk.Label(head, text="CAPTION", fg=TEXT, bg=PANEL, font=("Segoe UI", 11, "bold")).pack(side="left")
         tk.Label(head, textvariable=self.char_var, fg=MUTED, bg=PANEL, font=("Consolas", 8)).pack(side="right")
+        self._button(
+            head,
+            "😀 EMOJI",
+            lambda: open_emoji_picker(
+                self.caption,
+                on_insert=self._update_chars,
+                accent=ACCENT_2,
+            ),
+            compact=True,
+        ).pack(side="right", padx=(0, 10))
 
         self.caption = tk.Text(
             compose,
