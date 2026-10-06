@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import tkinter as tk
 from datetime import datetime, timedelta
@@ -49,6 +50,60 @@ ACCENT = "#25f4ee"
 ACCENT_2 = "#fe2c55"
 SUCCESS = "#35d07f"
 DANGER = "#ff4d67"
+SOFT_BORDER = "#3b2944"
+SUBTLE = "#65758b"
+TABLE_BG = "#0b111b"
+
+_WAVE_TILE_WIDTH = 900
+_WAVE_TILE_HEIGHT = 820
+_WAVE_PPM_CACHE = None
+
+
+def _wave_ppm():
+    """Smooth local raster ambience matching the TikTok Shop visual language."""
+    global _WAVE_PPM_CACHE
+    if _WAVE_PPM_CACHE is not None:
+        return _WAVE_PPM_CACHE
+
+    width = _WAVE_TILE_WIDTH
+    height = _WAVE_TILE_HEIGHT
+    base = (6, 7, 11)
+    centers = []
+    for x in range(width):
+        t = (x / width) * math.tau
+        centers.append(
+            (
+                140 + 34 * math.sin(t + 0.25) + 12 * math.sin(t * 0.48 + 1.1),
+                420 + 46 * math.sin(t * 0.84 + 1.95) + 18 * math.sin(t * 0.36 - 0.5),
+                700 + 36 * math.sin(t * 1.06 + 3.1) + 14 * math.sin(t * 0.50 + 0.8),
+            )
+        )
+
+    def gaussian_lookup(sigma):
+        return [math.exp(-((distance / sigma) ** 2)) for distance in range(height + 1)]
+
+    g1 = gaussian_lookup(86.0)
+    g2 = gaussian_lookup(106.0)
+    g3 = gaussian_lookup(92.0)
+    pixels = bytearray(width * height * 3)
+    index = 0
+    for y in range(height):
+        vertical = (1.0 - y / height) * 1.6
+        for x in range(width):
+            c1, c2, c3 = centers[x]
+            a = g1[min(height, int(abs(y - c1)))]
+            b = g2[min(height, int(abs(y - c2)))]
+            d = g3[min(height, int(abs(y - c3)))]
+            pixels[index] = min(255, int(base[0] + vertical + 46 * a + 18 * b + 40 * d))
+            pixels[index + 1] = min(255, int(base[1] + vertical + 4 * a + 12 * b + 3 * d))
+            pixels[index + 2] = min(255, int(base[2] + vertical + 32 * a + 50 * b + 30 * d))
+            index += 3
+
+    _WAVE_PPM_CACHE = (
+        f"P6\n{width} {height}\n255\n".encode("ascii") + bytes(pixels)
+    )
+    return _WAVE_PPM_CACHE
+
 
 AUTO_DELETE_PRESETS = {
     "OFF": 0,
@@ -113,8 +168,8 @@ class TikTokAutoPostView(tk.Frame):
             pass
         style.configure(
             "TikTok.Treeview",
-            background=PANEL,
-            fieldbackground=PANEL,
+            background=TABLE_BG,
+            fieldbackground=TABLE_BG,
             foreground=TEXT,
             rowheight=31,
             borderwidth=0,
@@ -122,22 +177,50 @@ class TikTokAutoPostView(tk.Frame):
         )
         style.map(
             "TikTok.Treeview",
-            background=[("selected", "#12363a")],
+            background=[("selected", "#34203b")],
             foreground=[("selected", TEXT)],
         )
         style.configure(
             "TikTok.Treeview.Heading",
-            background=PANEL_2,
+            background="#141c2a",
             foreground=MUTED,
             relief="flat",
+            borderwidth=0,
             font=("Segoe UI", 8, "bold"),
-            padding=(8, 8),
+            padding=(8, 9),
+        )
+        style.map(
+            "TikTok.Treeview.Heading",
+            background=[("active", "#1c2638")],
+        )
+        style.configure(
+            "TikTok.TCombobox",
+            fieldbackground=PANEL_2,
+            background=PANEL_2,
+            foreground=TEXT,
+            arrowcolor=ACCENT,
+            bordercolor=BORDER,
+            lightcolor=BORDER,
+            darkcolor=BORDER,
+            padding=6,
+        )
+        style.map(
+            "TikTok.TCombobox",
+            fieldbackground=[("readonly", PANEL_2)],
+            foreground=[("readonly", TEXT)],
+            selectbackground=[("readonly", PANEL_2)],
+            selectforeground=[("readonly", TEXT)],
         )
 
     def _button(self, parent, text, command, accent=False, danger=False, compact=False):
-        bg = ACCENT_2 if accent else "#5b1623" if danger else PANEL_2
-        active = "#ff5878" if accent else "#7e2637" if danger else "#202b3d"
-        return tk.Button(
+        if accent:
+            bg, active, border = ACCENT_2, "#ff5475", "#ff5a79"
+        elif danger:
+            bg, active, border = "#5b1623", "#7e2637", "#7e2637"
+        else:
+            bg, active, border = "#182235", "#223049", BORDER
+
+        btn = tk.Button(
             parent,
             text=text,
             command=command,
@@ -151,68 +234,157 @@ class TikTokAutoPostView(tk.Frame):
             pady=6 if compact else 9,
             font=("Segoe UI", 8 if compact else 9, "bold"),
             cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=border,
+            highlightcolor=border,
         )
+
+        def enter(_event):
+            btn.configure(bg=active)
+
+        def leave(_event):
+            btn.configure(bg=bg)
+
+        btn.bind("<Enter>", enter)
+        btn.bind("<Leave>", leave)
+        return btn
 
     def _build(self):
-        hero = tk.Frame(self, bg=BG)
-        hero.pack(fill="x", padx=26, pady=(18, 10))
-        brand = tk.Frame(hero, bg=BG)
+        # Same smooth raster ambience as the polished Shop screen. It stays
+        # behind the controls and never changes posting behaviour.
+        self.backdrop = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0)
+        self.backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+        self.wave_photo = tk.PhotoImage(data=_wave_ppm(), format="PPM")
+        self.backdrop.wave_photo = self.wave_photo
+        self.wave_items = [
+            self.backdrop.create_image(0, 0, image=self.wave_photo, anchor="nw"),
+            self.backdrop.create_image(_WAVE_TILE_WIDTH, 0, image=self.wave_photo, anchor="nw"),
+            self.backdrop.create_image(_WAVE_TILE_WIDTH * 2, 0, image=self.wave_photo, anchor="nw"),
+        ]
+        self.wave_offset = 0
+
+        def animate_backdrop():
+            if self._destroyed or not self.backdrop.winfo_exists():
+                return
+            self.wave_offset = (self.wave_offset + 1) % _WAVE_TILE_WIDTH
+            x = -self.wave_offset
+            for index, item in enumerate(self.wave_items):
+                self.backdrop.coords(item, x + index * _WAVE_TILE_WIDTH, 0)
+            self._ambient_after_id = self.after(135, animate_backdrop)
+
+        self._ambient_after_id = self.after(135, animate_backdrop)
+
+        header = tk.Frame(self, bg=BG)
+        header.pack(fill="x", padx=28, pady=(18, 6))
+
+        badge = tk.Canvas(header, width=38, height=38, bg=BG, highlightthickness=0, bd=0)
+        badge.pack(side="left", padx=(0, 12))
+        badge.create_rectangle(3, 3, 35, 35, outline="#35243e", fill="#0b1018", width=1)
+        badge.create_text(20, 20, text="♪", fill=ACCENT_2, font=("Segoe UI Symbol", 20, "bold"))
+        badge.create_text(17, 17, text="♪", fill=ACCENT, font=("Segoe UI Symbol", 20, "bold"))
+        badge.create_text(18.5, 18.5, text="♪", fill=TEXT, font=("Segoe UI Symbol", 18, "bold"))
+
+        brand = tk.Frame(header, bg=BG)
         brand.pack(side="left")
-        tk.Label(brand, text="PULSE", fg=TEXT, bg=BG, font=("Segoe UI", 25, "bold")).pack(side="left")
-        tk.Label(brand, text=" SOCIAL", fg=ACCENT_2, bg=BG, font=("Segoe UI", 25, "bold")).pack(side="left")
+        brand_row = tk.Frame(brand, bg=BG)
+        brand_row.pack(anchor="w")
+        tk.Label(
+            brand_row,
+            text="PULSE",
+            fg=TEXT,
+            bg=BG,
+            font=("Segoe UI", 24, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            brand_row,
+            text=" TIKTOK",
+            fg=ACCENT_2,
+            bg=BG,
+            font=("Segoe UI", 24, "bold"),
+        ).pack(side="left")
         tk.Label(
             brand,
-            text="  /  TIKTOK AUTO POST",
+            text="Create, schedule and manage TikTok posts from one workspace.",
+            fg=MUTED,
+            bg=BG,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(1, 0))
+        tk.Label(
+            header,
+            text="AUTO POST",
             fg=ACCENT,
             bg=BG,
-            font=("Consolas", 9, "bold"),
-        ).pack(side="left", padx=(8, 0), pady=(9, 0))
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", pady=12)
 
-        connection = tk.Frame(hero, bg=PANEL_2)
-        connection.pack(side="right")
-        tk.Label(connection, text="●", fg=ACCENT, bg=PANEL_2, font=("Segoe UI", 9, "bold")).pack(
-            side="left", padx=(8, 4), pady=6
-        )
+        tk.Frame(self, bg="#2a1834", height=1).pack(fill="x", padx=28, pady=(0, 7))
+
+        connection_shell = tk.Frame(self, bg="#11303a", padx=1, pady=1)
+        connection_shell.pack(fill="x", padx=28, pady=(0, 9))
+        connection = tk.Frame(connection_shell, bg=PANEL)
+        connection.pack(fill="x")
+        tk.Frame(connection, bg=ACCENT_2, width=3).pack(side="left", fill="y")
+        tk.Label(
+            connection,
+            text="●",
+            fg=SUCCESS,
+            bg=PANEL,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(13, 7), pady=9)
+        tk.Label(
+            connection,
+            text="PULSE BROWSER / TIKTOK",
+            fg=MUTED,
+            bg=PANEL,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", pady=9)
+        tk.Frame(connection, bg=BORDER, width=1, height=16).pack(side="left", padx=14)
         tk.Label(
             connection,
             textvariable=self.connection_var,
             fg=TEXT,
-            bg=PANEL_2,
-            font=("Consolas", 8, "bold"),
-        ).pack(side="left", padx=(0, 9), pady=6)
-
-        connect_row = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        connect_row.pack(fill="x", padx=26, pady=(0, 10))
-        tk.Label(
-            connect_row,
-            text="DEDICATED PULSE BROWSER  /  EXISTING TIKTOK LOGIN",
-            fg=MUTED,
             bg=PANEL,
-            font=("Consolas", 8, "bold"),
-        ).pack(side="left", padx=14, pady=10)
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", pady=9)
         self._button(
-            connect_row,
+            connection,
             "CONNECT / REFRESH",
             self._connect_tiktok_browser,
             accent=True,
             compact=True,
-        ).pack(side="right", padx=(4, 10), pady=6)
+        ).pack(side="right", padx=10, pady=6)
 
         top = tk.Frame(self, bg=BG)
-        top.pack(fill="x", padx=26, pady=(0, 10))
-        top.grid_columnconfigure(0, weight=3)
-        top.grid_columnconfigure(1, weight=2)
+        top.pack(fill="x", padx=28, pady=(0, 9))
+        top.grid_columnconfigure(0, weight=3, uniform="post")
+        top.grid_columnconfigure(1, weight=2, uniform="post")
 
-        compose = tk.Frame(top, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        compose.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        compose.grid_columnconfigure(0, weight=1)
+        compose_shell = tk.Frame(top, bg=SOFT_BORDER, padx=1, pady=1)
+        compose_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        compose = tk.Frame(compose_shell, bg="#121827")
+        compose.pack(fill="both", expand=True)
+        tk.Frame(compose, bg=ACCENT_2, height=2).pack(fill="x")
 
-        head = tk.Frame(compose, bg=PANEL)
-        head.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
-        tk.Label(head, text="CAPTION", fg=TEXT, bg=PANEL, font=("Segoe UI", 11, "bold")).pack(side="left")
-        tk.Label(head, textvariable=self.char_var, fg=MUTED, bg=PANEL, font=("Consolas", 8)).pack(side="right")
+        compose_head = tk.Frame(compose, bg="#121827")
+        compose_head.pack(fill="x", padx=16, pady=(11, 7))
+        compose_copy = tk.Frame(compose_head, bg="#121827")
+        compose_copy.pack(side="left")
+        tk.Label(
+            compose_copy,
+            text="POST COMPOSER",
+            fg=ACCENT_2,
+            bg="#121827",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            compose_copy,
+            text="Build your post",
+            fg=TEXT,
+            bg="#121827",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w", pady=(1, 0))
         self._button(
-            head,
+            compose_head,
             "😀 EMOJI",
             lambda: open_emoji_picker(
                 self.caption,
@@ -220,12 +392,29 @@ class TikTokAutoPostView(tk.Frame):
                 accent=ACCENT_2,
             ),
             compact=True,
-        ).pack(side="right", padx=(0, 10))
+        ).pack(side="right", pady=3)
+
+        caption_meta = tk.Frame(compose, bg="#121827")
+        caption_meta.pack(fill="x", padx=16)
+        tk.Label(
+            caption_meta,
+            text="CAPTION",
+            fg=MUTED,
+            bg="#121827",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            caption_meta,
+            textvariable=self.char_var,
+            fg=SUBTLE,
+            bg="#121827",
+            font=("Consolas", 8),
+        ).pack(side="right")
 
         self.caption = tk.Text(
             compose,
             height=5,
-            bg=PANEL_3,
+            bg=SURFACE,
             fg=TEXT,
             insertbackground=TEXT,
             relief="flat",
@@ -234,83 +423,117 @@ class TikTokAutoPostView(tk.Frame):
             padx=12,
             pady=10,
             font=("Segoe UI", 10),
+            highlightthickness=1,
+            highlightbackground="#1b2738",
         )
-        self.caption.grid(row=1, column=0, sticky="ew", padx=16)
+        self.caption.pack(fill="x", padx=16, pady=(5, 8))
         self.caption.bind("<KeyRelease>", self._update_chars)
 
-        media_row = tk.Frame(compose, bg=PANEL)
-        media_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 12))
+        media_row = tk.Frame(compose, bg="#121827")
+        media_row.pack(fill="x", padx=16, pady=(0, 8))
         self._button(media_row, "ADD VIDEO", self._choose_video, compact=True).pack(side="left")
         self._button(media_row, "ADD IMAGES", self._choose_images, compact=True).pack(side="left", padx=(6, 0))
         self._button(media_row, "ADD MUSIC", self._choose_music, compact=True).pack(side="left", padx=(6, 0))
-        self._button(media_row, "CLEAR", self._clear_media, compact=True).pack(side="left", padx=6)
-        tk.Label(
-            media_row,
-            textvariable=self.media_var,
-            fg=MUTED,
-            bg=PANEL,
-            font=("Consolas", 8),
-        ).pack(side="left", padx=8)
+        self._button(media_row, "CLEAR", self._clear_media, compact=True).pack(side="left", padx=(6, 0))
 
-        music_row = tk.Frame(compose, bg=PANEL)
-        music_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 12))
+        media_state = tk.Frame(compose, bg=SURFACE, highlightthickness=1, highlightbackground="#1b2738")
+        media_state.pack(fill="x", padx=16, pady=(0, 10))
         tk.Label(
-            music_row,
+            media_state,
+            text="MEDIA",
+            fg=MUTED,
+            bg=SURFACE,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(10, 8), pady=7)
+        tk.Label(
+            media_state,
+            textvariable=self.media_var,
+            fg=TEXT,
+            bg=SURFACE,
+            font=("Segoe UI", 8),
+        ).pack(side="left", pady=7)
+        tk.Frame(media_state, bg=BORDER, width=1, height=14).pack(side="left", padx=10)
+        tk.Label(
+            media_state,
             text="SOUND",
             fg=MUTED,
-            bg=PANEL,
-            font=("Consolas", 8, "bold"),
-        ).pack(side="left")
+            bg=SURFACE,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", pady=7)
         tk.Label(
-            music_row,
+            media_state,
             textvariable=self.music_var,
             fg=ACCENT,
-            bg=PANEL,
-            font=("Consolas", 8),
-        ).pack(side="left", padx=8)
-        self._button(music_row, "REMOVE MUSIC", self._clear_music, compact=True).pack(side="right")
-
-        options = tk.Frame(top, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        options.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-
-        tk.Label(options, text="POST SETTINGS", fg=TEXT, bg=PANEL, font=("Segoe UI", 11, "bold")).pack(
-            anchor="w", padx=16, pady=(12, 8)
+            bg=SURFACE,
+            font=("Segoe UI", 8),
+        ).pack(side="left", padx=8, pady=7)
+        self._button(media_state, "REMOVE MUSIC", self._clear_music, compact=True).pack(
+            side="right", padx=7, pady=4
         )
 
-        privacy_row = tk.Frame(options, bg=PANEL)
-        privacy_row.pack(fill="x", padx=16, pady=(0, 6))
-        tk.Label(privacy_row, text="PRIVACY", fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).pack(
-            side="left"
-        )
+        settings_shell = tk.Frame(top, bg="#17343d", padx=1, pady=1)
+        settings_shell.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        options = tk.Frame(settings_shell, bg="#0f1a24")
+        options.pack(fill="both", expand=True)
+        tk.Frame(options, bg=ACCENT, height=2).pack(fill="x")
+
+        settings_head = tk.Frame(options, bg="#0f1a24")
+        settings_head.pack(fill="x", padx=16, pady=(11, 8))
+        tk.Label(
+            settings_head,
+            text="POST SETTINGS",
+            fg=ACCENT,
+            bg="#0f1a24",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            settings_head,
+            text="Audience, safety and timing",
+            fg=TEXT,
+            bg="#0f1a24",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w", pady=(1, 0))
+
+        privacy_row = tk.Frame(options, bg="#0f1a24")
+        privacy_row.pack(fill="x", padx=16, pady=(0, 7))
+        tk.Label(
+            privacy_row,
+            text="PRIVACY",
+            fg=MUTED,
+            bg="#0f1a24",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left")
         self.privacy_menu = ttk.Combobox(
             privacy_row,
             textvariable=self.privacy_var,
             values=self.privacy_options,
             state="readonly",
-            width=24,
+            width=21,
+            style="TikTok.TCombobox",
         )
         self.privacy_menu.pack(side="right")
 
-        delete_row = tk.Frame(options, bg=PANEL)
-        delete_row.pack(fill="x", padx=16, pady=(0, 6))
+        delete_row = tk.Frame(options, bg="#0f1a24")
+        delete_row.pack(fill="x", padx=16, pady=(0, 7))
         tk.Label(
             delete_row,
             text="AUTO DELETE",
             fg=MUTED,
-            bg=PANEL,
-            font=("Consolas", 8, "bold"),
+            bg="#0f1a24",
+            font=("Segoe UI", 8, "bold"),
         ).pack(side="left")
         self.auto_delete_menu = ttk.Combobox(
             delete_row,
             textvariable=self.auto_delete_var,
             values=list(AUTO_DELETE_PRESETS),
             state="readonly",
-            width=24,
+            width=21,
+            style="TikTok.TCombobox",
         )
         self.auto_delete_menu.pack(side="right")
 
-        checks = tk.Frame(options, bg=PANEL)
-        checks.pack(fill="x", padx=12, pady=(2, 8))
+        checks = tk.Frame(options, bg="#0f1a24")
+        checks.pack(fill="x", padx=12, pady=(1, 6))
         for label, variable in (
             ("Comments", self.comments_var),
             ("Duet", self.duet_var),
@@ -323,28 +546,28 @@ class TikTokAutoPostView(tk.Frame):
                 checks,
                 text=label,
                 variable=variable,
-                bg=PANEL,
+                bg="#0f1a24",
                 fg=TEXT,
-                activebackground=PANEL,
+                activebackground="#0f1a24",
                 activeforeground=TEXT,
                 selectcolor=PANEL_2,
                 font=("Segoe UI", 8),
             ).pack(anchor="w", pady=1)
 
-        schedule = tk.Frame(options, bg=PANEL)
-        schedule.pack(fill="x", padx=16, pady=(2, 12))
+        schedule = tk.Frame(options, bg=SURFACE, highlightthickness=1, highlightbackground="#1b2738")
+        schedule.pack(fill="x", padx=16, pady=(1, 12))
         tk.Radiobutton(
             schedule,
             text="POST IN",
             variable=self.schedule_mode,
             value="delay",
-            bg=PANEL,
+            bg=SURFACE,
             fg=MUTED,
             selectcolor=PANEL_2,
-            activebackground=PANEL,
+            activebackground=SURFACE,
             activeforeground=TEXT,
-            font=("Consolas", 8, "bold"),
-        ).grid(row=0, column=0, sticky="w")
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=(8, 2), pady=(7, 3))
         tk.Entry(
             schedule,
             textvariable=self.delay_var,
@@ -354,23 +577,27 @@ class TikTokAutoPostView(tk.Frame):
             insertbackground=TEXT,
             relief="flat",
             justify="center",
-        ).grid(row=0, column=1, padx=4, ipady=4)
-        tk.Label(schedule, text="minutes", fg=MUTED, bg=PANEL, font=("Segoe UI", 8)).grid(
-            row=0, column=2, sticky="w"
-        )
+        ).grid(row=0, column=1, padx=4, pady=(7, 3), ipady=4)
+        tk.Label(
+            schedule,
+            text="minutes",
+            fg=MUTED,
+            bg=SURFACE,
+            font=("Segoe UI", 8),
+        ).grid(row=0, column=2, sticky="w", pady=(7, 3))
 
         tk.Radiobutton(
             schedule,
             text="AT",
             variable=self.schedule_mode,
             value="clock",
-            bg=PANEL,
+            bg=SURFACE,
             fg=MUTED,
             selectcolor=PANEL_2,
-            activebackground=PANEL,
+            activebackground=SURFACE,
             activeforeground=TEXT,
-            font=("Consolas", 8, "bold"),
-        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=1, column=0, sticky="w", padx=(8, 2), pady=(3, 7))
         tk.Entry(
             schedule,
             textvariable=self.clock_var,
@@ -380,28 +607,96 @@ class TikTokAutoPostView(tk.Frame):
             insertbackground=TEXT,
             relief="flat",
             justify="center",
-        ).grid(row=1, column=1, padx=4, pady=(6, 0), ipady=4)
-        tk.Label(schedule, text="HH:MM", fg=MUTED, bg=PANEL, font=("Segoe UI", 8)).grid(
-            row=1, column=2, sticky="w", pady=(6, 0)
-        )
-        self._button(schedule, "QUEUE POST", self._queue_post, accent=True, compact=True).grid(
-            row=0, column=3, rowspan=2, padx=(14, 0)
-        )
+        ).grid(row=1, column=1, padx=4, pady=(3, 7), ipady=4)
+        tk.Label(
+            schedule,
+            text="HH:MM",
+            fg=MUTED,
+            bg=SURFACE,
+            font=("Segoe UI", 8),
+        ).grid(row=1, column=2, sticky="w", pady=(3, 7))
+        self._button(
+            schedule,
+            "QUEUE POST",
+            self._queue_post,
+            accent=True,
+            compact=True,
+        ).grid(row=0, column=3, rowspan=2, padx=(12, 8), pady=7)
 
-        queue_card = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        queue_card.pack(fill="both", expand=True, padx=26, pady=(0, 10))
+        stats_shell = tk.Frame(self, bg="#23152b", padx=1, pady=1)
+        stats_shell.pack(fill="x", padx=28, pady=(0, 9))
+        stats_row = tk.Frame(stats_shell, bg=PANEL)
+        stats_row.pack(fill="x")
+        tk.Label(
+            stats_row,
+            text="QUEUE STATUS",
+            fg=MUTED,
+            bg=PANEL,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(12, 14), pady=8)
+        for key, label, colour in (
+            ("queued", "QUEUED", ACCENT),
+            ("processing", "PROCESSING", "#f0bd70"),
+            ("posted", "POSTED", SUCCESS),
+            ("error", "ERROR", DANGER),
+        ):
+            chip = tk.Frame(stats_row, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
+            chip.pack(side="left", padx=(0, 7), pady=5)
+            tk.Label(
+                chip,
+                textvariable=self.stats[key],
+                fg=colour,
+                bg=SURFACE,
+                font=("Segoe UI", 9, "bold"),
+            ).pack(side="left", padx=(8, 5), pady=3)
+            tk.Label(
+                chip,
+                text=label,
+                fg=MUTED,
+                bg=SURFACE,
+                font=("Segoe UI", 7, "bold"),
+            ).pack(side="left", padx=(0, 8), pady=3)
+        tk.Label(
+            stats_row,
+            textvariable=self.next_var,
+            fg=SUBTLE,
+            bg=PANEL,
+            font=("Segoe UI", 8),
+        ).pack(side="right", padx=12, pady=8)
+
+        queue_card = tk.Frame(
+            self,
+            bg=TABLE_BG,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+        )
+        queue_card.pack(fill="both", expand=True, padx=28, pady=(0, 5))
 
         queue_head = tk.Frame(queue_card, bg=PANEL)
-        queue_head.pack(fill="x", padx=14, pady=(10, 6))
-        tk.Label(queue_head, text="POST QUEUE", fg=TEXT, bg=PANEL, font=("Segoe UI", 11, "bold")).pack(
-            side="left"
+        queue_head.grid(row=0, column=0, columnspan=2, sticky="ew")
+        tk.Label(
+            queue_head,
+            text="POST QUEUE",
+            fg=TEXT,
+            bg=PANEL,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left", padx=12, pady=9)
+        tk.Label(
+            queue_head,
+            text="Scheduled posts and delivery state",
+            fg=SUBTLE,
+            bg=PANEL,
+            font=("Segoe UI", 8),
+        ).pack(side="left")
+        self._button(queue_head, "START", self.start, accent=True, compact=True).pack(
+            side="right", padx=(6, 10), pady=5
         )
-        tk.Label(queue_head, textvariable=self.next_var, fg=MUTED, bg=PANEL, font=("Consolas", 8)).pack(
-            side="left", padx=12
+        self._button(queue_head, "STOP", self.stop, danger=True, compact=True).pack(
+            side="right", padx=(6, 0), pady=5
         )
-        self._button(queue_head, "START", self.start, accent=True, compact=True).pack(side="right")
-        self._button(queue_head, "STOP", self.stop, danger=True, compact=True).pack(side="right", padx=6)
-        self._button(queue_head, "REMOVE", self._remove_selected, compact=True).pack(side="right")
+        self._button(queue_head, "REMOVE", self._remove_selected, compact=True).pack(
+            side="right", pady=5
+        )
 
         cols = ("due", "status", "privacy", "delete", "media", "music", "caption")
         self.tree = ttk.Treeview(
@@ -427,35 +722,64 @@ class TikTokAutoPostView(tk.Frame):
         self.tree.tag_configure("deleted", foreground=MUTED)
         self.tree.tag_configure("error", foreground=DANGER)
         self.tree.tag_configure("processing", foreground=ACCENT)
-        self.tree.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        queue_scroll = tk.Scrollbar(
+            queue_card,
+            orient="vertical",
+            command=self.tree.yview,
+            bg=BORDER,
+            troughcolor=TABLE_BG,
+            activebackground=ACCENT_2,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            width=11,
+        )
+        self.tree.configure(yscrollcommand=queue_scroll.set)
+        queue_card.rowconfigure(1, weight=1)
+        queue_card.columnconfigure(0, weight=1)
+        self.tree.grid(row=1, column=0, sticky="nsew")
+        queue_scroll.grid(row=1, column=1, sticky="ns")
 
         activity = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        activity.pack(fill="x", padx=26, pady=(0, 18))
+        activity.pack(fill="x", padx=28, pady=(5, 14))
         activity_head = tk.Frame(activity, bg=PANEL)
         activity_head.pack(fill="x", padx=12, pady=(8, 5))
-        tk.Label(activity_head, text="ACTIVITY", fg=TEXT, bg=PANEL, font=("Segoe UI", 9, "bold")).pack(
-            side="left"
-        )
+        tk.Label(
+            activity_head,
+            text="ACTIVITY",
+            fg=TEXT,
+            bg=PANEL,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            activity_head,
+            text="Browser, queue and posting events",
+            fg=SUBTLE,
+            bg=PANEL,
+            font=("Segoe UI", 8),
+        ).pack(side="left", padx=(10, 0))
         tk.Label(
             activity_head,
             textvariable=self.status_var,
             fg=ACCENT,
             bg=PANEL,
-            font=("Consolas", 8, "bold"),
+            font=("Segoe UI", 8, "bold"),
         ).pack(side="right")
 
         self.log = tk.Text(
             activity,
             height=4,
-            bg=PANEL_3,
+            bg=SURFACE,
             fg="#cbd3df",
             insertbackground=TEXT,
             relief="flat",
             bd=0,
             wrap="word",
-            padx=9,
-            pady=7,
+            padx=11,
+            pady=8,
             font=("Consolas", 8),
+            highlightthickness=1,
+            highlightbackground="#1b2738",
         )
         self.log.pack(fill="x", padx=12, pady=(0, 10))
 
@@ -1232,6 +1556,12 @@ class TikTokAutoPostView(tk.Frame):
         if event.widget is self:
             self._destroyed = True
             self.stop_event.set()
+            if getattr(self, "_ambient_after_id", None) is not None:
+                try:
+                    self.after_cancel(self._ambient_after_id)
+                except tk.TclError:
+                    pass
+                self._ambient_after_id = None
 
 
 def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
