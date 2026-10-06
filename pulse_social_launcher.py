@@ -185,16 +185,16 @@ def pdh_browser_status() -> str:
 
     if pdh_ready:
         if len(running) == 1:
-            return f"{running[0].upper()} OPEN  //  PDH CONNECTED"
+            return f"{running[0].upper()} OPEN // PDH CONNECTED"
         if len(running) > 1:
-            return "PDH CONNECTED  //  " + " / ".join(name.upper() for name in running)
-        return "PDH CONNECTED  //  BROWSER ACTIVE"
+            return "PDH CONNECTED // " + " / ".join(name.upper() for name in running)
+        return "PDH CONNECTED // BROWSER ACTIVE"
 
     if len(running) == 1:
-        return f"{running[0].upper()} OPEN  //  WAITING FOR PDH"
+        return f"{running[0].upper()} OPEN // WAITING FOR PDH"
     if len(running) > 1:
-        return "WAITING FOR PDH  //  " + " / ".join(name.upper() for name in running)
-    return "NO BROWSER OPEN  //  PDH WAITING"
+        return "WAITING FOR PDH // " + " / ".join(name.upper() for name in running)
+    return "NO BROWSER OPEN // PDH WAITING"
 
 
 browser_status_var = tk.StringVar(value=pdh_browser_status())
