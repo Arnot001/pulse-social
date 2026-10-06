@@ -130,8 +130,9 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
 
     tk.Label(header,text="SHOP INTELLIGENCE",fg=CYAN,bg=BG,font=("Segoe UI",9,"bold")).pack(side="right",pady=12)
 
-    wave_band=tk.Canvas(window,bg=BG,height=16,highlightthickness=0,bd=0)
-    wave_band.pack(fill="x",padx=28,pady=(0,5))
+    # Soft moving ribbon under the header: atmospheric rather than a literal waveform.
+    wave_band=tk.Canvas(window,bg=BG,height=14,highlightthickness=0,bd=0)
+    wave_band.pack(fill="x",padx=28,pady=(0,6))
     band_phase=[0.0]
     def paint_wave_band():
         if stop_watch.is_set() or not wave_band.winfo_exists():
@@ -139,14 +140,20 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
         w=max(1,wave_band.winfo_width())
         wave_band.delete("band-wave")
         phase=band_phase[0]
-        for y,amp,color,offset in ((8,4,"#4a184b",0.0),(9,3,"#7a174d",1.4),(7,3,"#34245c",2.7)):
+        for y,amp,glow,line,offset in (
+            (7.0,2.4,"#251329","#4a1a45",0.0),
+            (7.5,1.8,"#1d1630","#35214f",2.2),
+        ):
             pts=[]
-            for x in range(-20,w+41,16):
-                pts.extend((x,y+math.sin((x/max(w,1))*math.tau*1.7+phase+offset)*amp))
-            wave_band.create_line(*pts,fill=color,width=2,smooth=True,splinesteps=20,tags="band-wave")
-        band_phase[0]=(phase+0.035) % math.tau
-        window.after(120,paint_wave_band)
-    window.after(120,paint_wave_band)
+            for x in range(-40,w+61,24):
+                t=(x/max(w,1))*math.tau
+                py=y + math.sin(t*1.08+phase+offset)*amp + math.sin(t*0.42-phase*0.28+offset)*0.7
+                pts.extend((x,py))
+            wave_band.create_line(*pts,fill=glow,width=6,smooth=True,splinesteps=28,tags="band-wave")
+            wave_band.create_line(*pts,fill=line,width=1,smooth=True,splinesteps=28,tags="band-wave")
+        band_phase[0]=(phase+0.018) % math.tau
+        window.after(145,paint_wave_band)
+    window.after(145,paint_wave_band)
 
     # Compact live-state strip.
     strip_shell=tk.Frame(window,bg="#11303a",padx=1,pady=1)
