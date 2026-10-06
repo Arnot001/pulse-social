@@ -8,6 +8,8 @@ import unicodedata
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .emoji_assets import asset_base64
+
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageTk
 except ImportError:
@@ -293,6 +295,17 @@ def open_emoji_picker(
         key = (emoji, size)
         if key in emoji_images:
             return emoji_images[key]
+
+        bundled = asset_base64(emoji)
+        if bundled:
+            try:
+                photo = tk.PhotoImage(data=bundled)
+                divisor = 2 if size >= 24 else 3
+                photo = photo.subsample(divisor, divisor)
+                emoji_images[key] = photo
+                return photo
+            except tk.TclError:
+                pass
         if Image is None or ImageDraw is None or ImageFont is None or ImageTk is None:
             emoji_images[key] = None
             return None
