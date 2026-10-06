@@ -385,6 +385,10 @@ def open_emoji_picker(
                 return photo
             except tk.TclError:
                 pass
+
+        if not sprite_allowed:
+            return None
+
         if Image is None or ImageDraw is None or ImageFont is None or ImageTk is None:
             emoji_images[key] = None
             return None
