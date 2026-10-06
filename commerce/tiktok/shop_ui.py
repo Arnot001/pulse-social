@@ -37,6 +37,55 @@ SUCCESS="#35d07f"
 TAXONOMY_ATTEMPTS = 3
 TAXONOMY_RETRY_SECONDS = 7
 
+_WAVE_TILE_WIDTH = 900
+_WAVE_TILE_HEIGHT = 820
+_WAVE_PPM_CACHE = None
+
+
+def _wave_ppm():
+    """Build one smooth raster tile for the ambient background using only Tk/Python."""
+    global _WAVE_PPM_CACHE
+    if _WAVE_PPM_CACHE is not None:
+        return _WAVE_PPM_CACHE
+
+    width=_WAVE_TILE_WIDTH; height=_WAVE_TILE_HEIGHT
+    base=(7,9,16)
+
+    centers=[]
+    for x in range(width):
+        t=(x/width)*math.tau
+        centers.append((
+            135 + 34*math.sin(t+0.25) + 13*math.sin(t*0.46+1.2),
+            405 + 48*math.sin(t*0.86+1.9) + 17*math.sin(t*0.38-0.4),
+            690 + 38*math.sin(t*1.08+3.15) + 14*math.sin(t*0.52+0.9),
+        ))
+
+    def gaussian_lookup(sigma):
+        return [math.exp(-((d/sigma)**2)) for d in range(height+1)]
+
+    g1=gaussian_lookup(82.0)
+    g2=gaussian_lookup(104.0)
+    g3=gaussian_lookup(88.0)
+    pixels=bytearray(width*height*3)
+    p=0
+    for y in range(height):
+        vertical=(1.0-y/height)*1.8
+        for x in range(width):
+            c1,c2,c3=centers[x]
+            a=g1[min(height,int(abs(y-c1)))]
+            b=g2[min(height,int(abs(y-c2)))]
+            c=g3[min(height,int(abs(y-c3)))]
+            # Broad overlapping colour fields: no crisp vector edge to pixelate.
+            r=min(255,int(base[0]+vertical + 46*a + 18*b + 40*c))
+            g=min(255,int(base[1]+vertical + 3*a + 10*b + 2*c))
+            bch=min(255,int(base[2]+vertical + 30*a + 48*b + 29*c))
+            pixels[p]=r; pixels[p+1]=g; pixels[p+2]=bch
+            p+=3
+
+    _WAVE_PPM_CACHE=(f"P6\n{width} {height}\n255\n".encode("ascii")+bytes(pixels))
+    return _WAVE_PPM_CACHE
+
+
 
 def movement_display(item):
     """Present observed fields only; missing history is not an unchanged price."""
@@ -59,32 +108,27 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
     categories=[]; maps=[{}, {}, {}]; results_by_iid={}; stop_watch=threading.Event(); last_checked={}
     ambient_after_id=[None]
 
-    # Slow Pulse ambience. It sits behind the real controls and never owns input.
+    # Smooth raster ambience. Tk's Canvas lines alias on Windows, so render the
+    # waves into a PhotoImage once and drift the tiled image instead.
     backdrop=tk.Canvas(window,bg=BG,highlightthickness=0,bd=0)
     backdrop.place(x=0,y=0,relwidth=1,relheight=1)
-    wave_phase=[0.0]
+    wave_photo=tk.PhotoImage(data=_wave_ppm(),format="PPM")
+    backdrop.wave_photo=wave_photo
+    wave_items=[
+        backdrop.create_image(0,0,image=wave_photo,anchor="nw"),
+        backdrop.create_image(_WAVE_TILE_WIDTH,0,image=wave_photo,anchor="nw"),
+        backdrop.create_image(_WAVE_TILE_WIDTH*2,0,image=wave_photo,anchor="nw"),
+    ]
+    wave_offset=[0]
     def animate_backdrop():
         if stop_watch.is_set() or not backdrop.winfo_exists():
             return
-        w=max(1,backdrop.winfo_width()); h=max(1,backdrop.winfo_height())
-        backdrop.delete("pulse-wave")
-        phase=wave_phase[0]
-        for y_ratio,amp,glow,line,offset in (
-            (0.14,18,"#1b1025","#35143f",0.0),
-            (0.47,22,"#171126","#2a1a43",1.7),
-            (0.82,20,"#211027","#3a1438",3.1),
-        ):
-            points=[]
-            for x in range(-40,w+61,20):
-                y=(h*y_ratio
-                   + math.sin((x/max(w,1))*math.tau*1.20+phase+offset)*amp
-                   + math.sin((x/max(w,1))*math.tau*0.55-phase*0.42+offset)*amp*0.34)
-                points.extend((x,y))
-            backdrop.create_line(*points,fill=glow,width=10,smooth=True,splinesteps=24,tags="pulse-wave")
-            backdrop.create_line(*points,fill=line,width=2,smooth=True,splinesteps=24,tags="pulse-wave")
-        wave_phase[0]=(phase+0.022) % math.tau
-        ambient_after_id[0]=window.after(110,animate_backdrop)
-    ambient_after_id[0]=window.after(100,animate_backdrop)
+        wave_offset[0]=(wave_offset[0]+1) % _WAVE_TILE_WIDTH
+        x=-wave_offset[0]
+        for index,item in enumerate(wave_items):
+            backdrop.coords(item,x+index*_WAVE_TILE_WIDTH,0)
+        ambient_after_id[0]=window.after(135,animate_backdrop)
+    ambient_after_id[0]=window.after(135,animate_backdrop)
     list_state=ShopListState(); list_mode=tk.StringVar(value=MODES[0])
     taxonomy_loading=False
     main_var=tk.StringVar(); sub_var=tk.StringVar(); leaf_var=tk.StringVar(); status_var=tk.StringVar(value="CATEGORY TAXONOMY NOT LOADED")
