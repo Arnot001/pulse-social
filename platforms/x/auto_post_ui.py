@@ -6,6 +6,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
 
+from platforms.common.emoji_picker import open_emoji_picker
+
 from .auto_post import add_post, load_queue, remove_post, run_scheduler
 from .browser_session import browser_status
 
@@ -130,6 +132,12 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     compose_head.grid(row=0, column=0, sticky="ew", padx=18, pady=(12, 6))
     tk.Label(compose_head, text="COMPOSE", fg=TEXT, bg=PANEL, font=("Segoe UI", 12, "bold")).pack(side="left")
     tk.Label(compose_head, textvariable=char_var, fg=MUTED, bg=PANEL, font=("Consolas", 9)).pack(side="right")
+    button(
+        compose_head,
+        "😀 EMOJI",
+        lambda: open_emoji_picker(text, on_insert=update_char_count, accent=ACCENT),
+        compact=True,
+    ).pack(side="right", padx=(0, 10))
 
     text = tk.Text(
         compose,
