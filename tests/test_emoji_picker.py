@@ -11,3 +11,4 @@ def test_skin_tone_only_changes_supported_emoji():
     assert apply_skin_tone("👍", "MEDIUM") == "👍🏽"
     assert apply_skin_tone("❤️", "DARK") == "❤️"
     assert apply_skin_tone("👍", "DEFAULT") == "👍"
+    assert apply_skin_tone("✌️", "LIGHT") == "✌🏻"
