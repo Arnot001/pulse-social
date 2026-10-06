@@ -109,8 +109,9 @@ def button(parent, text, command, accent=False, danger=False):
 
 root = tk.Tk()
 root.title("Pulse Social")
-root.geometry("1060x680")
-root.minsize(940, 610)
+root.geometry("1180x720")
+root.minsize(1040, 650)
+root.maxsize(1280, 780)
 root.configure(bg=BG)
 
 # HEADER
@@ -127,14 +128,14 @@ tk.Label(
     text="PULSE",
     fg=TEXT,
     bg=BG,
-    font=("Segoe UI", 31, "bold"),
+    font=("Segoe UI Variable Display", 34, "bold"),
 ).pack(side="left")
 tk.Label(
     title_row,
     text=" SOCIAL",
     fg=ACCENT_2,
     bg=BG,
-    font=("Segoe UI", 31, "bold"),
+    font=("Segoe UI Variable Display", 34, "bold"),
 ).pack(side="left")
 tk.Label(
     title_row,
@@ -200,36 +201,33 @@ browser_outer = tk.Frame(
 )
 browser_outer.pack(fill="x", padx=34, pady=(16, 14))
 
-browser_accent = tk.Frame(browser_outer, bg=ACCENT, width=3)
-browser_accent.pack(side="left", fill="y")
+tk.Frame(browser_outer, bg=ACCENT, width=3).pack(side="left", fill="y")
 
-browser_identity = tk.Frame(browser_outer, bg=PANEL)
-browser_identity.pack(side="left", padx=(16, 18), pady=10)
-
+browser_icon = tk.Frame(
+    browser_outer,
+    bg=SURFACE,
+    width=38,
+    height=38,
+    highlightthickness=1,
+    highlightbackground=BORDER,
+)
+browser_icon.pack(side="left", padx=(15, 12), pady=9)
+browser_icon.pack_propagate(False)
 tk.Label(
-    browser_identity,
+    browser_icon,
     text="▣",
     fg=CYAN,
-    bg=PANEL,
-    font=("Segoe UI Symbol", 13, "bold"),
-).pack(side="left")
+    bg=SURFACE,
+    font=("Segoe UI Symbol", 14, "bold"),
+).pack(expand=True)
 
-browser_copy = tk.Frame(browser_identity, bg=PANEL)
-browser_copy.pack(side="left", padx=(10, 0))
 tk.Label(
-    browser_copy,
+    browser_outer,
     text="Pulse Browser / PDH",
     fg=TEXT,
     bg=PANEL,
-    font=("Segoe UI", 9, "bold"),
-).pack(anchor="w")
-tk.Label(
-    browser_copy,
-    textvariable=browser_status_var,
-    fg=MUTED,
-    bg=PANEL,
-    font=("Segoe UI", 8),
-).pack(anchor="w", pady=(1, 0))
+    font=("Segoe UI Variable Text", 10, "bold"),
+).pack(side="left")
 
 tk.Label(
     browser_outer,
@@ -237,7 +235,15 @@ tk.Label(
     fg=SUCCESS,
     bg=PANEL,
     font=("Segoe UI", 10, "bold"),
-).pack(side="left", padx=(2, 8))
+).pack(side="left", padx=(18, 8))
+
+tk.Label(
+    browser_outer,
+    textvariable=browser_status_var,
+    fg=MUTED,
+    bg=PANEL,
+    font=("Segoe UI Variable Text", 9),
+).pack(side="left")
 
 
 def refresh_pdh_browser() -> None:
@@ -267,10 +273,10 @@ button(
 
 # PLATFORM CARDS
 nav = tk.Frame(root, bg=BG)
-nav.pack(fill="both", expand=True, padx=34, pady=(0, 18))
+nav.pack(fill="x", expand=False, padx=34, pady=(0, 16))
 nav.grid_columnconfigure(0, weight=1, uniform="platform")
 nav.grid_columnconfigure(1, weight=1, uniform="platform")
-nav.grid_rowconfigure(0, weight=1)
+nav.grid_rowconfigure(0, weight=0)
 
 
 def platform_card(
@@ -287,129 +293,156 @@ def platform_card(
     tertiary=None,
 ):
     glow_colour = ACCENT if column == 0 else CYAN
-    soft_colour = GLOW_SOFT if column == 0 else CYAN_SOFT
+    card_bg = "#171323" if column == 0 else "#0d1b25"
+    soft_colour = "#37152a" if column == 0 else "#10303a"
 
     outer = tk.Frame(
         parent,
-        bg=PANEL,
-        highlightthickness=1,
-        highlightbackground=glow_colour,
+        bg=soft_colour,
+        padx=2,
+        pady=2,
     )
     outer.grid(
         row=0,
         column=column,
-        sticky="nsew",
-        padx=(0, 9) if column == 0 else (9, 0),
+        sticky="ew",
+        padx=(0, 10) if column == 0 else (10, 0),
     )
 
-    top_line = tk.Frame(outer, bg=glow_colour, height=2)
-    top_line.pack(fill="x")
+    card = tk.Frame(
+        outer,
+        bg=card_bg,
+        highlightthickness=1,
+        highlightbackground=glow_colour,
+    )
+    card.pack(fill="x")
 
-    body = tk.Frame(outer, bg=PANEL)
-    body.pack(fill="both", expand=True)
+    tk.Frame(card, bg=glow_colour, height=2).pack(fill="x")
 
-    top = tk.Frame(body, bg=PANEL)
-    top.pack(fill="x", padx=20, pady=(20, 10))
+    top = tk.Frame(card, bg=card_bg)
+    top.pack(fill="x", padx=22, pady=(20, 12))
 
     mark_box = tk.Frame(
         top,
         bg=SURFACE,
+        width=72,
+        height=72,
         highlightthickness=1,
         highlightbackground=glow_colour,
-        width=60,
-        height=60,
     )
     mark_box.pack(side="left", anchor="n")
     mark_box.pack_propagate(False)
-    tk.Label(
-        mark_box,
-        text=mark,
-        fg=TEXT,
-        bg=SURFACE,
-        font=("Segoe UI", 25, "bold"),
-    ).pack(expand=True)
 
-    copy = tk.Frame(top, bg=PANEL)
-    copy.pack(side="left", fill="x", expand=True, padx=(16, 0))
+    if title == "TikTok":
+        tk.Label(mark_box, text="♪", fg=ACCENT_2, bg=SURFACE,
+                 font=("Segoe UI Symbol", 31, "bold")).place(relx=.5, rely=.5, anchor="center", x=2, y=1)
+        tk.Label(mark_box, text="♪", fg=CYAN, bg=SURFACE,
+                 font=("Segoe UI Symbol", 31, "bold")).place(relx=.5, rely=.5, anchor="center", x=-2, y=-1)
+        tk.Label(mark_box, text="♪", fg=TEXT, bg=SURFACE,
+                 font=("Segoe UI Symbol", 29, "bold")).place(relx=.5, rely=.5, anchor="center")
+    else:
+        tk.Label(
+            mark_box,
+            text=mark,
+            fg=TEXT,
+            bg=SURFACE,
+            font=("Segoe UI Variable Display", 28, "bold"),
+        ).pack(expand=True)
+
+    copy = tk.Frame(top, bg=card_bg)
+    copy.pack(side="left", fill="x", expand=True, padx=(18, 0))
     tk.Label(
         copy,
         text=eyebrow,
         fg=glow_colour,
-        bg=PANEL,
-        font=("Segoe UI", 8, "bold"),
+        bg=card_bg,
+        font=("Segoe UI Variable Text", 8, "bold"),
     ).pack(anchor="w")
     tk.Label(
         copy,
         text=title,
         fg=TEXT,
-        bg=PANEL,
-        font=("Segoe UI", 24, "bold"),
-    ).pack(anchor="w", pady=(2, 3))
+        bg=card_bg,
+        font=("Segoe UI Variable Display", 27, "bold"),
+    ).pack(anchor="w", pady=(2, 4))
     tk.Label(
         copy,
         text=subtitle,
         fg=MUTED,
-        bg=PANEL,
-        font=("Segoe UI", 9),
+        bg=card_bg,
+        font=("Segoe UI Variable Text", 10),
         justify="left",
-        wraplength=330,
+        wraplength=340,
     ).pack(anchor="w")
 
-    watermark = tk.Label(
+    tk.Label(
         top,
         text=mark,
         fg=soft_colour,
-        bg=PANEL,
-        font=("Segoe UI", 58, "bold"),
-    )
-    watermark.pack(side="right", padx=(6, 0))
+        bg=card_bg,
+        font=("Segoe UI Variable Display", 66, "bold"),
+    ).pack(side="right", padx=(8, 2))
 
     feature_box = tk.Frame(
-        body,
+        card,
         bg=SURFACE,
         highlightthickness=1,
         highlightbackground=BORDER,
     )
-    feature_box.pack(fill="x", padx=20, pady=(6, 14))
+    feature_box.pack(fill="x", padx=22, pady=(4, 14))
 
+    glyphs = ("◌", "▣", "◉") if column == 0 else ("◇", "◉", "⚡")
     for index, feature in enumerate(features):
         row = tk.Frame(feature_box, bg=SURFACE)
         row.pack(fill="x", padx=13, pady=0)
 
-        icon = tk.Label(
+        icon_box = tk.Frame(
             row,
-            text="●",
-            fg=glow_colour,
-            bg=SURFACE,
-            font=("Segoe UI", 8, "bold"),
-            width=2,
+            bg=card_bg,
+            width=30,
+            height=30,
+            highlightthickness=1,
+            highlightbackground=soft_colour,
         )
-        icon.pack(side="left", pady=9)
+        icon_box.pack(side="left", pady=7)
+        icon_box.pack_propagate(False)
+        tk.Label(
+            icon_box,
+            text=glyphs[index],
+            fg=glow_colour,
+            bg=card_bg,
+            font=("Segoe UI Symbol", 11, "bold"),
+        ).pack(expand=True)
 
         tk.Label(
             row,
             text=feature,
             fg=TEXT,
             bg=SURFACE,
-            font=("Segoe UI", 9),
-        ).pack(side="left", padx=(8, 0), pady=9)
+            font=("Segoe UI Variable Text", 9),
+        ).pack(side="left", padx=(12, 0), pady=10)
 
         if index < len(features) - 1:
-            tk.Frame(feature_box, bg=BORDER, height=1).pack(fill="x", padx=44)
+            tk.Frame(feature_box, bg=BORDER, height=1).pack(fill="x", padx=(55, 14))
 
-    actions = tk.Frame(body, bg=PANEL)
-    actions.pack(fill="x", padx=20, pady=(0, 20))
+    actions = tk.Frame(card, bg=card_bg)
+    actions.pack(fill="x", padx=22, pady=(0, 20))
 
     primary = button(actions, primary_text, primary_command, accent=True)
+    primary.configure(width=15)
     primary.pack(side="left")
 
     if secondary:
         text, command = secondary
-        button(actions, text, command).pack(side="left", padx=(10, 0))
+        secondary_btn = button(actions, text, command)
+        secondary_btn.configure(width=12)
+        secondary_btn.pack(side="left", padx=(10, 0))
 
     if tertiary:
         text, command = tertiary
-        button(actions, text, command).pack(side="left", padx=(10, 0))
+        tertiary_btn = button(actions, text, command)
+        tertiary_btn.configure(width=10)
+        tertiary_btn.pack(side="left", padx=(10, 0))
 
 
 platform_card(
@@ -434,7 +467,7 @@ platform_card(
     1,
     "PLATFORM 02",
     "TikTok",
-    "♪",
+    "T",
     "Commerce intelligence plus scheduled TikTok publishing.",
     [
         "Live category collection and deal intelligence",
@@ -448,6 +481,9 @@ platform_card(
 )
 
 # FOOTER
+spacer = tk.Frame(root, bg=BG)
+spacer.pack(fill="both", expand=True)
+
 footer_line = tk.Frame(root, bg=BORDER, height=1)
 footer_line.pack(fill="x", padx=34, pady=(0, 10))
 
