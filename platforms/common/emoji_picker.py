@@ -324,22 +324,44 @@ def open_emoji_picker(
     category_image_refs: dict[str, object] = {}
     sprite_manifest = _load_sprite_manifest()
     sprite_photo = None
+    sprite_load_attempted = False
+    sprite_allowed = False
     sprite_path = _resource_path(SPRITE_RELATIVE_PATH)
-    if sprite_manifest and sprite_path.exists():
+
+    def ensure_sprite_photo():
+        nonlocal sprite_photo, sprite_load_attempted
+        if sprite_load_attempted:
+            return sprite_photo
+        sprite_load_attempted = True
+        if not sprite_manifest or not sprite_path.exists():
+            return None
         try:
             sprite_photo = tk.PhotoImage(file=str(sprite_path))
         except tk.TclError:
             sprite_photo = None
+        return sprite_photo
 
     def colour_emoji_image(emoji: str, size: int):
         key = (emoji, size)
         if key in emoji_images:
             return emoji_images[key]
 
+        bundled = asset_base64(emoji)
+        if bundled:
+            try:
+                photo = tk.PhotoImage(data=bundled)
+                divisor = 2 if size >= 24 else 3
+                photo = photo.subsample(divisor, divisor)
+                emoji_images[key] = photo
+                return photo
+            except tk.TclError:
+                pass
+
         coords = sprite_manifest.get(emoji)
         if coords is None:
             coords = sprite_manifest.get(emoji.replace("\ufe0f", ""))
-        if sprite_photo is not None and coords is not None:
+        source_sprite = ensure_sprite_photo() if sprite_allowed and coords is not None else None
+        if source_sprite is not None and coords is not None:
             try:
                 source_x = coords[0] * SPRITE_CELL + 1
                 source_y = coords[1] * SPRITE_CELL + 1
@@ -347,7 +369,7 @@ def open_emoji_picker(
                 photo.tk.call(
                     photo,
                     "copy",
-                    sprite_photo,
+                    source_sprite,
                     "-from",
                     source_x,
                     source_y,
@@ -359,17 +381,6 @@ def open_emoji_picker(
                 )
                 if size <= 18:
                     photo = photo.subsample(2, 2)
-                emoji_images[key] = photo
-                return photo
-            except tk.TclError:
-                pass
-
-        bundled = asset_base64(emoji)
-        if bundled:
-            try:
-                photo = tk.PhotoImage(data=bundled)
-                divisor = 2 if size >= 24 else 3
-                photo = photo.subsample(divisor, divisor)
                 emoji_images[key] = photo
                 return photo
             except tk.TclError:
@@ -574,5 +585,13 @@ def open_emoji_picker(
     window.bind("<Escape>", lambda _event: close())
     window.protocol("WM_DELETE_WINDOW", close)
     render()
+
+    def enable_sprite_rendering():
+        nonlocal sprite_allowed
+        sprite_allowed = True
+
+    # Let the picker paint before any large sprite sheet is decoded by Tk.
+    # Bundled small assets cover the initial smiley/category view immediately.
+    window.after_idle(enable_sprite_rendering)
     search.focus_set()
     return window
