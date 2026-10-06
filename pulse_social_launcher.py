@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from platforms.browser_control import running_browser_names
+from platforms.common.onboarding import open_get_started
 from platforms.pdh_bridge import bridge_status, ensure_bridge_server
 
 BG = "#06070b"
@@ -116,6 +117,11 @@ tk.Label(brand, text=" SOCIAL", fg=ACCENT_2, bg=BG, font=("Segoe UI", 30, "bold"
 tk.Label(brand, text="  //  CONTROL DECK", fg=CYAN, bg=BG, font=("Consolas", 10, "bold")).pack(side="left", padx=(8, 0), pady=(11, 0))
 
 button(header, "CLOSE ALL", close_all, danger=True).pack(side="right", pady=4)
+button(header, "GET STARTED", lambda: open_get_started(root)).pack(
+    side="right",
+    padx=(0, 8),
+    pady=4,
+)
 
 glow_line = tk.Frame(root, bg=GLOW, height=2)
 glow_line.pack(fill="x", padx=34, pady=(0, 8))
