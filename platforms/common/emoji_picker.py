@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tkinter as tk
 from tkinter import ttk
 import unicodedata
@@ -30,6 +31,37 @@ CYAN = "#25f4ee"
 GLOW_SOFT = "#2a1230"
 CYAN_SOFT = "#102c35"
 EMOJI_FONT_PATH = Path(os.environ.get("WINDIR", r"C:\\Windows")) / "Fonts" / "seguiemj.ttf"
+SPRITE_RELATIVE_PATH = Path("assets") / "emoji" / "twemoji_32.png"
+SPRITE_MANIFEST_RELATIVE_PATH = Path("assets") / "emoji" / "twemoji_manifest.json"
+SPRITE_SIZE = 32
+SPRITE_CELL = SPRITE_SIZE + 2
+
+
+def _resource_path(relative: Path) -> Path:
+    packaged_root = getattr(sys, "_MEIPASS", None)
+    if packaged_root:
+        candidate = Path(packaged_root) / relative
+        if candidate.exists():
+            return candidate
+    return Path(__file__).resolve().parents[2] / relative
+
+
+def _load_sprite_manifest() -> dict[str, list[int]]:
+    path = _resource_path(SPRITE_MANIFEST_RELATIVE_PATH)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        emoji: coords
+        for emoji, coords in data.items()
+        if isinstance(emoji, str)
+        and isinstance(coords, list)
+        and len(coords) == 2
+        and all(isinstance(value, int) for value in coords)
+    }
 TONE_SWATCHES = {
     "DEFAULT": TEXT,
     "LIGHT": "#f6d6bd",
@@ -141,7 +173,7 @@ def apply_skin_tone(emoji: str, tone: str) -> str:
         return emoji
     if emoji in TONE_CAPABLE:
         if emoji.endswith("\ufe0f"):
-            return emoji[:-1] + modifier + "\ufe0f"
+            return emoji[:-1] + modifier
         return emoji + modifier
     return emoji
 
@@ -290,11 +322,47 @@ def open_emoji_picker(
 
     emoji_images: dict[tuple[str, int], object | None] = {}
     category_image_refs: dict[str, object] = {}
+    sprite_manifest = _load_sprite_manifest()
+    sprite_photo = None
+    sprite_path = _resource_path(SPRITE_RELATIVE_PATH)
+    if sprite_manifest and sprite_path.exists():
+        try:
+            sprite_photo = tk.PhotoImage(file=str(sprite_path))
+        except tk.TclError:
+            sprite_photo = None
 
     def colour_emoji_image(emoji: str, size: int):
         key = (emoji, size)
         if key in emoji_images:
             return emoji_images[key]
+
+        coords = sprite_manifest.get(emoji)
+        if coords is None:
+            coords = sprite_manifest.get(emoji.replace("\ufe0f", ""))
+        if sprite_photo is not None and coords is not None:
+            try:
+                source_x = coords[0] * SPRITE_CELL + 1
+                source_y = coords[1] * SPRITE_CELL + 1
+                photo = tk.PhotoImage(width=SPRITE_SIZE, height=SPRITE_SIZE)
+                photo.tk.call(
+                    photo,
+                    "copy",
+                    sprite_photo,
+                    "-from",
+                    source_x,
+                    source_y,
+                    source_x + SPRITE_SIZE,
+                    source_y + SPRITE_SIZE,
+                    "-to",
+                    0,
+                    0,
+                )
+                if size <= 18:
+                    photo = photo.subsample(2, 2)
+                emoji_images[key] = photo
+                return photo
+            except tk.TclError:
+                pass
 
         bundled = asset_base64(emoji)
         if bundled:
