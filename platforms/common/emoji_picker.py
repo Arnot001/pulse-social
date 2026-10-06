@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tkinter as tk
+from tkinter import ttk
 import unicodedata
 from pathlib import Path
 from typing import Callable, Iterable
