@@ -30,6 +30,12 @@ _server: ThreadingHTTPServer | None = None
 _server_thread: threading.Thread | None = None
 
 
+def _command_timeout_limit(operation: str) -> float:
+    # Shop needs 45s browser work + 35s MV3 wake allowance + result delivery.
+    # Preserve the existing limits for ping, Studio inventory and deletion.
+    return 90.0 if operation == "tiktok.shop_category" else 60.0
+
+
 def _json_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
@@ -124,7 +130,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
 
             timeout_seconds = float(payload.pop("_timeoutSeconds", 20.0) or 20.0)
-            timeout_seconds = max(1.0, min(timeout_seconds, 60.0))
+            timeout_seconds = max(1.0, min(timeout_seconds, _command_timeout_limit(operation)))
 
             with _lock:
                 _commands.append(payload)
@@ -220,7 +226,8 @@ def pdh_request(
         return None
 
     request_id = f"pulse-social-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
-    wait_timeout = max(1.0, min(float(timeout) + PDH_WAKE_ALLOWANCE_SECONDS, 60.0))
+    operation = str(operation or "").strip()
+    wait_timeout = max(1.0, min(float(timeout) + PDH_WAKE_ALLOWANCE_SECONDS, _command_timeout_limit(operation)))
     command = {
         "requestId": request_id,
         "operation": str(operation or "").strip(),

@@ -11,7 +11,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from ..pc_market import fingerprint_pc, market_value
 from ..pc_market_sources import collect_market_references, market_diagnostics
 from .categories import children_of, fetch_categories, roots
-from .category_collector import collect_category
+from .category_collector import collect_category, category_summary
 from .notifications import alert_message, load_settings, save_settings, send_discord, send_telegram
 from .product_collector import collect_product
 from .watchlist import ProductWatch, load_watchlist, remove_watch, upsert_watch
@@ -128,7 +128,13 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
     tree.bind("<Double-1>",open_selected); tree.bind("<Button-3>",popup); tree.bind("<Control-c>",lambda _e:copy_link())
     def collect_worker(category):
         try:
-            write(f"Collecting {category.name} // {category.url}"); results=collect_category(category.url); recorded=[x for x in results if x.get("status")=="recorded"]; changed=[x for x in recorded if x.get("price_change") not in (None,0) or x.get("sold_change") not in (None,0)]; window.after(0,lambda:populate(recorded)); window.after(0,lambda:status_var.set(f"COMPLETE // {category.name.upper()} // {len(recorded)} RECORDED // {len(changed)} CHANGED")); write(f"Recorded {len(recorded)} products // Changed {len(changed)}")
+            write(f"Collecting {category.name} through the browser")
+            results=collect_category(category.url)
+            recorded=[x for x in results if x.get("status")=="recorded"]
+            summary=category_summary(results)
+            window.after(0,lambda:populate(recorded))
+            window.after(0,lambda:status_var.set(summary))
+            write(summary)
         except Exception as exc: window.after(0,lambda:status_var.set("COLLECTION FAILED")); write(f"Collection failed: {exc}")
         finally: window.after(0,lambda:collect_btn.config(state="normal"))
     def collect():

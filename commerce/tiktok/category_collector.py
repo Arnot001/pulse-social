@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import time
 from typing import Any
 from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+
+from platforms.pdh_bridge import pdh_request
 
 from ..batch import ingest_products
 from ..store import CommerceStore
@@ -51,24 +55,134 @@ def unique_products_from_payloads(payloads: list[Any]) -> list[dict]:
     return products
 
 
-def collect_category(url: str, store: CommerceStore | None = None, html: str | None = None) -> list[dict]:
-    store = store or CommerceStore()
-    html = html if html is not None else fetch_category_page(url)
-    products = unique_products_from_payloads(extract_json_payloads(html))
-    return ingest_products(products, store)
+class CategoryCollection(list):
+    """List-compatible ingestion results plus browser collection completeness."""
+
+    def __init__(self, results, metadata):
+        super().__init__(results)
+        self.complete = metadata.get("complete") is True
+        self.stop_reason = metadata.get("stopReason", "UNVERIFIED")
+        self.product_count = len(metadata.get("products", []))
+        self.clicks = metadata.get("clicks", 0)
+        self.duration_ms = metadata.get("durationMs", 0)
+        self.data_complete = metadata.get("dataComplete") is True
+        self.incomplete_product_count = metadata.get("incompleteProductCount", 0)
+        self.rejected_product_count = metadata.get("rejectedProductCount", 0)
+        self.ingestion_complete = metadata.get("ingestionComplete", True)
+        self.skipped_product_count = metadata.get("skippedProductCount", 0)
+
+
+def request_category(url: str | None = None) -> dict:
+    """Ask PDH once. No TikTok HTTP fallback, browser launch, or auth handling."""
+    payload = {}
+    if url:
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or parsed.netloc != "shop.tiktok.com"
+                or parsed.query or parsed.fragment
+                or not re.fullmatch(r"/gb/c/[^/]+/\d+/?", parsed.path)):
+            raise ValueError("Use a plain https://shop.tiktok.com/gb/c/<slug>/<id> category URL.")
+        payload["url"] = url.rstrip("/")
+    result = pdh_request("tiktok.shop_category", payload, timeout=50.0)
+    if not isinstance(result, dict):
+        return {"products": [], "complete": False, "stopReason": "BRIDGE_NO_RESPONSE"}
+    if not isinstance(result.get("products"), list):
+        return {"products": [], "complete": False, "stopReason": "INVALID_PDH_RESULT"}
+    # Defense in depth: persist only known commerce fields, never raw page payloads.
+    products = {}
+    rejected_count = 0
+    for raw in result["products"]:
+        if not isinstance(raw, dict):
+            rejected_count += 1
+            continue
+        product_id = str(raw.get("product_id") or "")
+        if not re.fullmatch(r"\d+", product_id):
+            rejected_count += 1
+            continue
+        previous = products.get(product_id, {})
+        price = raw.get("price")
+        if type(price) not in (int, float) or not math.isfinite(price) or price < 0:
+            price = previous.get("price")
+        products[product_id] = {
+            "product_id": product_id, "title": str(raw.get("title") or previous.get("title") or "")[:500],
+            "price": price,
+            "currency": "GBP", "url": f"https://shop.tiktok.com/gb/pdp/{product_id}",
+        }
+    reason = str(result.get("stopReason") or "UNVERIFIED")
+    reason = reason if re.fullmatch(r"[A-Z_]{1,60}", reason) else "UNVERIFIED"
+
+    local_incomplete_count = sum(
+        not product["title"] or product["price"] is None
+        for product in products.values()
+    )
+    pdh_incomplete_count = result.get("incompleteProductCount")
+    if type(pdh_incomplete_count) is int and pdh_incomplete_count >= 0:
+        incomplete_product_count = max(local_incomplete_count, pdh_incomplete_count)
+    else:
+        incomplete_product_count = local_incomplete_count
+
+    pdh_data_complete = result.get("dataComplete")
+    if type(pdh_data_complete) is bool:
+        data_complete = (
+            pdh_data_complete
+            and incomplete_product_count == 0
+            and rejected_count == 0
+        )
+    else:
+        data_complete = incomplete_product_count == 0 and rejected_count == 0
+
+    # Pagination completeness belongs to PDH. Missing/ambiguous product fields
+    # are reported separately and must never rewrite a verified END_OF_LIST.
+    complete = (
+        result.get("complete") is True
+        and reason == "END_OF_LIST"
+        and bool(products)
+    )
+
+    return {"products": list(products.values()),
+            "complete": complete,
+            "dataComplete": data_complete,
+            "incompleteProductCount": incomplete_product_count,
+            "rejectedProductCount": rejected_count,
+            "stopReason": reason,
+            "clicks": result.get("clicks") if type(result.get("clicks")) is int else 0,
+            "durationMs": result.get("durationMs") if type(result.get("durationMs")) in (int, float) else 0,
+            "browserStage": str(result.get("browserStage") or "")[:80],
+            "browserError": str(result.get("browserError") or "")[:300]}
+
+
+def collect_category(url: str, store: CommerceStore | None = None, html: str | None = None) -> CategoryCollection:
+    if html is not None:
+        # Explicit offline fixtures/imports remain supported; never claim completeness.
+        metadata = {"products": unique_products_from_payloads(extract_json_payloads(html)),
+                    "complete": False, "stopReason": "STATIC_SNAPSHOT"}
+    else:
+        metadata = request_category(url)
+    results = ingest_products(metadata["products"], store or CommerceStore()) if metadata["products"] else []
+    skipped_count = sum(item.get("status") == "skipped" for item in results)
+    metadata = {
+        **metadata,
+        "ingestionComplete": skipped_count == 0,
+        "skippedProductCount": skipped_count,
+    }
+    return CategoryCollection(results, metadata)
+
+
+def category_summary(results: CategoryCollection) -> str:
+    recorded = sum(item.get("status") == "recorded" for item in results)
+    skipped = sum(item.get("status") == "skipped" for item in results)
+    state = "COMPLETE" if results.complete else "PARTIAL"
+    return (f"{state} // {results.product_count} COLLECTED // {recorded} RECORDED // "
+            f"{skipped} SKIPPED // {results.stop_reason}")
 
 
 def diagnose_category(url: str) -> tuple[list[dict], list[dict]]:
-    html = fetch_category_page(url)
-    payloads = extract_json_payloads(html)
-    products = unique_products_from_payloads(payloads)
-    results = ingest_products(products)
+    results = collect_category(url)
     diagnostics = [
         {k: product.get(k) for k in (
             "product_id", "title", "product_price_info", "sku_info", "sold_info",
             "rate_info", "seller_info", "product_marketing_info"
         )}
-        for product in products
+        for product in results
     ]
     return results, diagnostics
 
@@ -100,7 +214,7 @@ def watch_category(url: str, interval: int = 900, store: CommerceStore | None = 
             results = collect_category(url, store)
             recorded = [r for r in results if r.get("status") == "recorded"]
             changed = [r for r in recorded if r.get("price_change") not in (None, 0) or r.get("sold_change") not in (None, 0)]
-            print(f"[{started}] recorded {len(recorded)} products | changed {len(changed)}")
+            print(f"[{started}] {category_summary(results)} | changed {len(changed)}")
             for item in sorted(changed, key=lambda r: (r.get("price_change_pct") or 0, -r["deal_score"])):
                 _print_item(item)
         except Exception as exc:
@@ -109,12 +223,26 @@ def watch_category(url: str, interval: int = 900, store: CommerceStore | None = 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Collect a public TikTok Shop category page")
-    parser.add_argument("url")
+    parser = argparse.ArgumentParser(description="Collect TikTok Shop through PDH's browser-owned View more loop")
+    parser.add_argument("url", nargs="?", help="Plain category URL; omitted uses the single open Shop category tab")
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--interval", type=int, default=900)
     parser.add_argument("--diagnose", action="store_true")
+    parser.add_argument("--read-only", action="store_true", help="One browser collection; print counts only, with no database writes")
     args = parser.parse_args()
+    if args.read_only:
+        result = request_category(args.url)
+        print(json.dumps({"complete": result["complete"], "stopReason": result["stopReason"],
+                          "dataComplete": result.get("dataComplete", False),
+                          "incompleteProductCount": result.get("incompleteProductCount", 0),
+                          "rejectedProductCount": result.get("rejectedProductCount", 0),
+                          "productCount": len(result["products"]), "clicks": result.get("clicks", 0),
+                          "durationMs": result.get("durationMs", 0),
+                          "browserStage": result.get("browserStage", ""),
+                          "browserError": result.get("browserError", "")}, indent=2))
+        return
+    if not args.url:
+        parser.error("url is required unless --read-only is used")
     if args.watch:
         watch_category(args.url, args.interval)
         return
@@ -125,7 +253,7 @@ def main() -> None:
     recorded = [r for r in results if r.get("status") == "recorded"]
     skipped = [r for r in results if r.get("status") == "skipped"]
     changed = [r for r in recorded if r.get("price_change") not in (None, 0) or r.get("sold_change") not in (None, 0)]
-    print(f"Recorded: {len(recorded)} | Skipped: {len(skipped)} | Changed: {len(changed)}")
+    print(f"{category_summary(results)} | Changed: {len(changed)}")
     for item in sorted(recorded, key=lambda r: r["deal_score"], reverse=True):
         _print_item(item)
     for item in skipped[:10]:

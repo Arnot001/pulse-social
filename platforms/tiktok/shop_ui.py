@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from commerce.store import CommerceStore
-from commerce.tiktok.category_collector import collect_category
+from commerce.tiktok.category_collector import collect_category, category_summary
 
 BG = "#07090f"
 PANEL = "#0d111b"
@@ -91,7 +91,7 @@ class TikTokShopView(tk.Frame):
         url = self.category_url.get().strip()
         if not url: self.status.set("NEEDS URL // paste a TikTok Shop category URL first"); return
         if "shop.tiktok.com" not in url.lower(): self.status.set("CHECK URL // expected a public shop.tiktok.com category URL"); return
-        self.status.set("COLLECTING // fetching public category data...")
+        self.status.set("COLLECTING // loading category products in the browser...")
         threading.Thread(target=self._collect_worker, args=(url,), daemon=True).start()
 
     def _collect_worker(self, url):
@@ -106,7 +106,7 @@ class TikTokShopView(tk.Frame):
         recorded = [r for r in results if r.get("status") == "recorded"]
         changed = [r for r in recorded if r.get("price_change") not in (None, 0) or r.get("sold_change") not in (None, 0)]
         lows = sum(bool(r.get("is_new_low")) for r in recorded)
-        self.status.set(f"SWEEP COMPLETE // {len(recorded)} recorded // {len(changed)} changed // {lows} new lows")
+        self.status.set(f"{category_summary(results)} // {len(changed)} changed // {lows} new lows")
         self.show_tab(self.active_tab)
 
     def _movement_text(self, item):
