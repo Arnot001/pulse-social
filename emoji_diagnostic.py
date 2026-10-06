@@ -46,8 +46,10 @@ def main() -> int:
 
         try:
             import PIL
+            from PIL import Image, ImageTk
             log(f"Pillow {getattr(PIL, '__version__', 'unknown')}")
         except Exception as exc:
+            Image = ImageTk = None
             log(f"Pillow unavailable/error: {exc!r}")
 
         def import_assets():
@@ -117,19 +119,20 @@ def main() -> int:
         smiley_count = timed("create all smiley Tk PhotoImages", render_all_smileys)
         log(f"Full smiley PhotoImages created: {smiley_count}")
 
-        sprite_photo = None
-        if sprite_path.exists():
-            def load_sprite():
-                nonlocal sprite_photo
-                sprite_photo = tk.PhotoImage(file=str(sprite_path))
-                root._diag_sprite = sprite_photo
-                root.update_idletasks()
-                return (sprite_photo.width(), sprite_photo.height())
+        sprite_image = None
+        if sprite_path.exists() and Image is not None and ImageTk is not None:
+            def load_sprite_with_pillow():
+                nonlocal sprite_image
+                with Image.open(sprite_path) as source:
+                    loaded = source.convert("RGBA")
+                    loaded.load()
+                sprite_image = loaded
+                return loaded.size
 
-            dimensions = timed("decode 6.38 MB sprite into Tk PhotoImage", load_sprite)
+            dimensions = timed("decode 6.38 MB sprite with Pillow", load_sprite_with_pillow)
             log(f"Sprite dimensions: {dimensions[0]}x{dimensions[1]}")
 
-            def copy_sprite_cells():
+            def crop_sprite_cells():
                 refs = []
                 sample = ["😀", "😂", "👋", "🐶", "🍕", "⚽", "✈️", "💡", "❤️", "🏁"]
                 for index, emoji in enumerate(sample, start=1):
@@ -139,28 +142,23 @@ def main() -> int:
                         continue
                     source_x = coords[0] * picker.SPRITE_CELL + 1
                     source_y = coords[1] * picker.SPRITE_CELL + 1
-                    photo = tk.PhotoImage(width=picker.SPRITE_SIZE, height=picker.SPRITE_SIZE)
-                    photo.tk.call(
-                        photo,
-                        "copy",
-                        sprite_photo,
-                        "-from",
-                        source_x,
-                        source_y,
-                        source_x + picker.SPRITE_SIZE,
-                        source_y + picker.SPRITE_SIZE,
-                        "-to",
-                        0,
-                        0,
+                    tile = sprite_image.crop(
+                        (
+                            source_x,
+                            source_y,
+                            source_x + picker.SPRITE_SIZE,
+                            source_y + picker.SPRITE_SIZE,
+                        )
                     )
+                    photo = ImageTk.PhotoImage(tile)
                     refs.append(photo)
-                    log(f"  copied sprite cell {index}/{len(sample)} · {emoji}")
+                    log(f"  cropped colour sprite cell {index}/{len(sample)} · {emoji}")
                 root._diag_cell_refs = refs
                 root.update_idletasks()
                 return len(refs)
 
-            copied = timed("copy 10 sprite cells", copy_sprite_cells)
-            log(f"Sprite cells copied: {copied}")
+            copied = timed("crop 10 colour cells and create Tk images", crop_sprite_cells)
+            log(f"Colour sprite cells created: {copied}")
 
         def build_button_grid():
             top = tk.Toplevel(root)
