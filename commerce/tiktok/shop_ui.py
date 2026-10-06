@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 import tkinter as tk
@@ -18,7 +19,21 @@ from .notifications import alert_message, load_settings, save_settings, send_dis
 from .product_collector import collect_product
 from .watchlist import ProductWatch, load_watchlist, remove_watch, upsert_watch
 
-BG="#07090f"; PANEL="#0d111b"; PANEL_2="#121827"; BORDER="#20283a"; TEXT="#f5f7fb"; MUTED="#8993a6"; ACCENT="#ff008c"; SUCCESS="#35d07f"
+BG="#070910"
+PANEL="#101725"
+PANEL_2="#151e2e"
+SURFACE="#0a1019"
+TABLE_BG="#0b111b"
+BORDER="#25344a"
+SOFT_BORDER="#3b2944"
+TEXT="#f7f8fc"
+MUTED="#929eb1"
+SUBTLE="#65758b"
+ACCENT="#ff0a8a"
+ACCENT_2="#ff48ad"
+CYAN="#29def4"
+PURPLE="#7b4dff"
+SUCCESS="#35d07f"
 TAXONOMY_ATTEMPTS = 3
 TAXONOMY_RETRY_SECONDS = 7
 
@@ -40,8 +55,36 @@ def movement_display(item):
 
 
 def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
-    window=tk.Toplevel(parent); window.title("Pulse Social — TikTok Shop"); window.geometry("1080x780"); window.minsize(900,700); window.configure(bg=BG)
+    window=tk.Toplevel(parent); window.title("Pulse Social — TikTok Shop"); window.geometry("1120x800"); window.minsize(900,700); window.configure(bg=BG)
     categories=[]; maps=[{}, {}, {}]; results_by_iid={}; stop_watch=threading.Event(); last_checked={}
+    ambient_after_id=[None]
+
+    # Slow Pulse ambience. It sits behind the real controls and never owns input.
+    backdrop=tk.Canvas(window,bg=BG,highlightthickness=0,bd=0)
+    backdrop.place(x=0,y=0,relwidth=1,relheight=1)
+    wave_phase=[0.0]
+    def animate_backdrop():
+        if stop_watch.is_set() or not backdrop.winfo_exists():
+            return
+        w=max(1,backdrop.winfo_width()); h=max(1,backdrop.winfo_height())
+        backdrop.delete("pulse-wave")
+        phase=wave_phase[0]
+        for y_ratio,amp,glow,line,offset in (
+            (0.14,18,"#1b1025","#35143f",0.0),
+            (0.47,22,"#171126","#2a1a43",1.7),
+            (0.82,20,"#211027","#3a1438",3.1),
+        ):
+            points=[]
+            for x in range(-40,w+61,20):
+                y=(h*y_ratio
+                   + math.sin((x/max(w,1))*math.tau*1.20+phase+offset)*amp
+                   + math.sin((x/max(w,1))*math.tau*0.55-phase*0.42+offset)*amp*0.34)
+                points.extend((x,y))
+            backdrop.create_line(*points,fill=glow,width=10,smooth=True,splinesteps=24,tags="pulse-wave")
+            backdrop.create_line(*points,fill=line,width=2,smooth=True,splinesteps=24,tags="pulse-wave")
+        wave_phase[0]=(phase+0.022) % math.tau
+        ambient_after_id[0]=window.after(110,animate_backdrop)
+    ambient_after_id[0]=window.after(100,animate_backdrop)
     list_state=ShopListState(); list_mode=tk.StringVar(value=MODES[0])
     taxonomy_loading=False
     main_var=tk.StringVar(); sub_var=tk.StringVar(); leaf_var=tk.StringVar(); status_var=tk.StringVar(value="CATEGORY TAXONOMY NOT LOADED")
@@ -52,52 +95,98 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
     style.configure("Pulse.Treeview",background=PANEL_2,fieldbackground=PANEL_2,foreground=TEXT,rowheight=27,font=("Segoe UI",9))
     style.map("Pulse.Treeview",background=[("selected",ACCENT)],foreground=[("selected","white")])
     style.configure("Pulse.Treeview.Heading",background="#171e2e",foreground=TEXT,font=("Segoe UI",9,"bold"))
-    style.configure("Shop.Treeview", background=PANEL_2, fieldbackground=PANEL_2,
+    style.configure("Shop.Treeview", background=TABLE_BG, fieldbackground=TABLE_BG,
                     foreground=TEXT, bordercolor=BORDER, lightcolor=BORDER,
-                    darkcolor=BORDER, borderwidth=0, rowheight=32, font=("Segoe UI",9))
-    style.map("Shop.Treeview", background=[("selected","#42243d")],
+                    darkcolor=BORDER, borderwidth=0, rowheight=30, font=("Segoe UI",9))
+    style.map("Shop.Treeview", background=[("selected","#34203b")],
               foreground=[("selected",TEXT)])
-    style.configure("Shop.Treeview.Heading", background="#171e2e", foreground=MUTED,
-                    relief="flat", borderwidth=0, padding=(8,8), font=("Segoe UI",9,"bold"))
-    style.map("Shop.Treeview.Heading", background=[("active",BORDER)])
-    style.configure("Shop.TCombobox", fieldbackground=PANEL_2, background=PANEL_2,
-                    foreground=TEXT, arrowcolor=MUTED, bordercolor=BORDER, lightcolor=BORDER,
-                    darkcolor=BORDER, padding=5)
+    style.configure("Shop.Treeview.Heading", background="#141c2a", foreground=MUTED,
+                    relief="flat", borderwidth=0, padding=(9,9), font=("Segoe UI",9,"bold"))
+    style.map("Shop.Treeview.Heading", background=[("active","#1c2638")])
+    style.configure("Shop.TCombobox", fieldbackground="#111a28", background="#111a28",
+                    foreground=TEXT, arrowcolor=CYAN, bordercolor=BORDER, lightcolor=BORDER,
+                    darkcolor=BORDER, padding=7)
     style.map("Shop.TCombobox", fieldbackground=[("readonly",PANEL_2)],
               foreground=[("disabled",MUTED),("readonly",TEXT)],
               selectbackground=[("readonly",PANEL_2)], selectforeground=[("readonly",TEXT)])
     style.configure("Shop.Vertical.TScrollbar", background=BORDER, troughcolor=PANEL,
                     bordercolor=PANEL, arrowcolor=MUTED, lightcolor=PANEL, darkcolor=PANEL)
-    header=tk.Frame(window,bg=BG); header.pack(fill="x",padx=26,pady=(16,7))
-    tk.Label(header,text="PULSE",fg=TEXT,bg=BG,font=("Segoe UI",23,"bold")).pack(side="left")
-    tk.Label(header,text=" TIKTOK",fg=ACCENT,bg=BG,font=("Segoe UI",23,"bold")).pack(side="left")
-    tk.Label(header,text="SHOP  //  COMMERCE INTELLIGENCE",fg=MUTED,bg=BG,font=("Consolas",9)).pack(side="right",pady=9)
+    header=tk.Frame(window,bg=BG); header.pack(fill="x",padx=28,pady=(18,6))
 
-    # Compact system strip: useful live state, not a second dashboard.
-    strip=tk.Frame(window,bg=PANEL,highlightthickness=1,highlightbackground=BORDER)
-    strip.pack(fill="x",padx=26,pady=(0,8))
-    pdh_label=tk.Label(strip,text="PDH CHECKING",fg=MUTED,bg=PANEL,font=("Consolas",9,"bold"))
-    pdh_label.pack(side="left",padx=(12,14),pady=7)
-    tk.Frame(strip,bg=BORDER,width=1,height=14).pack(side="left",padx=(0,14))
+    badge=tk.Canvas(header,width=38,height=38,bg=BG,highlightthickness=0,bd=0)
+    badge.pack(side="left",padx=(0,12))
+    badge.create_rectangle(3,3,35,35,outline="#35243e",fill="#0b1018",width=1)
+    badge.create_text(20,20,text="♪",fill=ACCENT_2,font=("Segoe UI Symbol",20,"bold"))
+    badge.create_text(17,17,text="♪",fill=CYAN,font=("Segoe UI Symbol",20,"bold"))
+    badge.create_text(18.5,18.5,text="♪",fill=TEXT,font=("Segoe UI Symbol",18,"bold"))
+
+    brand=tk.Frame(header,bg=BG)
+    brand.pack(side="left")
+    brand_row=tk.Frame(brand,bg=BG); brand_row.pack(anchor="w")
+    tk.Label(brand_row,text="PULSE",fg=TEXT,bg=BG,font=("Segoe UI",24,"bold")).pack(side="left")
+    tk.Label(brand_row,text=" TIKTOK",fg=ACCENT_2,bg=BG,font=("Segoe UI",24,"bold")).pack(side="left")
+    tk.Label(brand,text="Shop intelligence, deal tracking and watch alerts.",fg=MUTED,bg=BG,
+             font=("Segoe UI",9)).pack(anchor="w",pady=(1,0))
+
+    tk.Label(header,text="SHOP INTELLIGENCE",fg=CYAN,bg=BG,font=("Segoe UI",9,"bold")).pack(side="right",pady=12)
+
+    wave_band=tk.Canvas(window,bg=BG,height=16,highlightthickness=0,bd=0)
+    wave_band.pack(fill="x",padx=28,pady=(0,5))
+    band_phase=[0.0]
+    def paint_wave_band():
+        if stop_watch.is_set() or not wave_band.winfo_exists():
+            return
+        w=max(1,wave_band.winfo_width())
+        wave_band.delete("band-wave")
+        phase=band_phase[0]
+        for y,amp,color,offset in ((8,4,"#4a184b",0.0),(9,3,"#7a174d",1.4),(7,3,"#34245c",2.7)):
+            pts=[]
+            for x in range(-20,w+41,16):
+                pts.extend((x,y+math.sin((x/max(w,1))*math.tau*1.7+phase+offset)*amp))
+            wave_band.create_line(*pts,fill=color,width=2,smooth=True,splinesteps=20,tags="band-wave")
+        band_phase[0]=(phase+0.035) % math.tau
+        window.after(120,paint_wave_band)
+    window.after(120,paint_wave_band)
+
+    # Compact live-state strip.
+    strip_shell=tk.Frame(window,bg="#11303a",padx=1,pady=1)
+    strip_shell.pack(fill="x",padx=28,pady=(0,9))
+    strip=tk.Frame(strip_shell,bg=PANEL)
+    strip.pack(fill="x")
+    tk.Frame(strip,bg=ACCENT,width=3).pack(side="left",fill="y")
+    pdh_dot=tk.Label(strip,text="●",fg=MUTED,bg=PANEL,font=("Segoe UI",9,"bold"))
+    pdh_dot.pack(side="left",padx=(13,7),pady=9)
+    pdh_label=tk.Label(strip,text="PDH CHECKING",fg=MUTED,bg=PANEL,font=("Segoe UI",9,"bold"))
+    pdh_label.pack(side="left",padx=(0,14),pady=9)
+    tk.Frame(strip,bg=BORDER,width=1,height=16).pack(side="left",padx=(0,14))
     counts_label=tk.Label(strip,text="0 CATEGORIES  //  PER CATEGORY  //  0 PRODUCTS",
-                          fg=MUTED,bg=PANEL,font=("Consolas",9))
-    counts_label.pack(side="left",pady=7)
+                          fg=MUTED,bg=PANEL,font=("Segoe UI",9))
+    counts_label.pack(side="left",pady=9)
 
-    # Category deck: selectors sit side-by-side so the controls stay compact.
-    card=tk.Frame(window,bg=PANEL,highlightthickness=1,highlightbackground=BORDER)
-    card.pack(fill="x",padx=26,pady=(0,8))
-    tk.Label(card,text="TIKTOK SHOP CATEGORY",fg=TEXT,bg=PANEL,
-             font=("Segoe UI",11,"bold")).pack(anchor="w",padx=14,pady=(10,7))
+    # Category deck: same controls, softer product-style hierarchy.
+    card=tk.Frame(window,bg="#121827",highlightthickness=1,highlightbackground=SOFT_BORDER)
+    card.pack(fill="x",padx=28,pady=(0,9))
+    tk.Frame(card,bg=ACCENT,height=2).pack(fill="x")
 
-    selectors=tk.Frame(card,bg=PANEL)
-    selectors.pack(fill="x",padx=14)
+    title_row=tk.Frame(card,bg="#121827")
+    title_row.pack(fill="x",padx=16,pady=(11,8))
+    title_copy=tk.Frame(title_row,bg="#121827"); title_copy.pack(side="left")
+    tk.Label(title_copy,text="CATEGORY DISCOVERY",fg=ACCENT_2,bg="#121827",
+             font=("Segoe UI",8,"bold")).pack(anchor="w")
+    tk.Label(title_copy,text="Choose a TikTok Shop category",fg=TEXT,bg="#121827",
+             font=("Segoe UI",12,"bold")).pack(anchor="w",pady=(1,0))
+    tk.Label(title_row,text="Live taxonomy",fg=SUBTLE,bg="#121827",
+             font=("Segoe UI",8)).pack(side="right",pady=8)
+
+    selectors=tk.Frame(card,bg="#121827")
+    selectors.pack(fill="x",padx=16)
     for col in range(3): selectors.columnconfigure(col,weight=1,uniform="shop-category")
 
     def combo(column,label,var):
-        slot=tk.Frame(selectors,bg=PANEL)
+        slot=tk.Frame(selectors,bg="#121827")
         slot.grid(row=0,column=column,sticky="ew",padx=(0,10) if column<2 else 0)
-        lab=tk.Label(slot,text=label,fg=MUTED,bg=PANEL,font=("Consolas",8,"bold"))
-        lab.pack(anchor="w",pady=(0,4))
+        lab=tk.Label(slot,text=label,fg=MUTED,bg="#121827",font=("Segoe UI",8,"bold"))
+        lab.pack(anchor="w",pady=(0,5))
         box=ttk.Combobox(slot,textvariable=var,state="readonly",style="Shop.TCombobox")
         box.pack(fill="x")
         return slot,lab,box
@@ -106,49 +195,79 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
     _,_,sub_box=combo(1,"SUBCATEGORY",sub_var)
     leaf_slot,leaf_label,leaf_box=combo(2,"CATEGORY",leaf_var)
 
-    actions=tk.Frame(card,bg=PANEL)
-    actions.pack(fill="x",padx=14,pady=(10,0))
+    actions=tk.Frame(card,bg="#121827")
+    actions.pack(fill="x",padx=16,pady=(11,0))
 
     def button(parent,text,command,accent=False):
-        return tk.Button(parent,text=text,command=command,bg=ACCENT if accent else PANEL_2,
-                         fg=TEXT,activebackground="#cc0876" if accent else BORDER,activeforeground=TEXT,
-                         disabledforeground=MUTED,relief="flat",bd=0,padx=11,pady=7,
-                         font=("Segoe UI",9,"bold"),cursor="hand2")
+        bg=ACCENT if accent else "#182235"
+        active=ACCENT_2 if accent else "#223049"
+        border=ACCENT_2 if accent else BORDER
+        btn=tk.Button(parent,text=text,command=command,bg=bg,fg=TEXT,
+                      activebackground=active,activeforeground=TEXT,
+                      disabledforeground=MUTED,relief="flat",bd=0,padx=12,pady=7,
+                      font=("Segoe UI",9,"bold"),cursor="hand2",
+                      highlightthickness=1,highlightbackground=border,highlightcolor=border)
+        def enter(_event): btn.configure(bg=active)
+        def leave(_event): btn.configure(bg=bg)
+        btn.bind("<Enter>",enter); btn.bind("<Leave>",leave)
+        return btn
 
-    mode_controls=tk.Frame(actions,bg=PANEL)
+    mode_controls=tk.Frame(actions,bg="#121827")
     mode_controls.pack(side="right")
-    tk.Label(mode_controls,text="ITEM LIST",bg=PANEL,fg=MUTED,
-             font=("Consolas",8,"bold")).pack(side="left",padx=(0,7))
+    tk.Label(mode_controls,text="LIST VIEW",bg="#121827",fg=MUTED,
+             font=("Segoe UI",8,"bold")).pack(side="left",padx=(0,7))
     ttk.Combobox(mode_controls,textvariable=list_mode,values=MODES,state="readonly",
                  width=15,style="Shop.TCombobox").pack(side="left")
 
-    status_label=tk.Label(card,textvariable=status_var,fg=SUCCESS,bg=PANEL,
-                          font=("Consolas",8,"bold"),anchor="w",justify="left")
-    status_label.pack(fill="x",padx=14,pady=(8,10))
-    card.bind("<Configure>",lambda event:status_label.configure(wraplength=max(200,event.width-30)))
-    results_frame=tk.Frame(window,bg=PANEL,highlightthickness=1,highlightbackground=BORDER)
-    results_frame.pack(fill="both",expand=True,padx=26,pady=(0,4))
+    status_shell=tk.Frame(card,bg="#0b121d",highlightthickness=1,highlightbackground="#1c2a3d")
+    status_shell.pack(fill="x",padx=16,pady=(9,12))
+    tk.Label(status_shell,text="●",fg=SUCCESS,bg="#0b121d",
+             font=("Segoe UI",8,"bold")).pack(side="left",padx=(10,7),pady=7)
+    status_label=tk.Label(status_shell,textvariable=status_var,fg="#a7d9c1",bg="#0b121d",
+                          font=("Segoe UI",8,"bold"),anchor="w",justify="left")
+    status_label.pack(side="left",fill="x",expand=True,pady=7)
+    card.bind("<Configure>",lambda event:status_label.configure(wraplength=max(200,event.width-70)))
+    results_frame=tk.Frame(window,bg=TABLE_BG,highlightthickness=1,highlightbackground=BORDER)
+    results_frame.pack(fill="both",expand=True,padx=28,pady=(0,4))
+
+    table_head=tk.Frame(results_frame,bg="#101725")
+    table_head.grid(row=0,column=0,columnspan=2,sticky="ew")
+    tk.Label(table_head,text="LIVE PRODUCTS",fg=TEXT,bg="#101725",
+             font=("Segoe UI",10,"bold")).pack(side="left",padx=12,pady=9)
+    tk.Label(table_head,text="Sorted by deal score",fg=SUBTLE,bg="#101725",
+             font=("Segoe UI",8)).pack(side="left")
+    tk.Label(table_head,text="Double-click to open  •  Right-click for actions",fg=SUBTLE,bg="#101725",
+             font=("Segoe UI",8)).pack(side="right",padx=12)
+
     cols=("score","price","market","move","sold","product")
     tree=ttk.Treeview(results_frame,columns=cols,show="headings",height=10,style="Shop.Treeview")
     for col,title,width,anchor in (("score","Score",58,"center"),("price","TikTok",100,"e"),
-                                  ("market","Market Value",125,"e"),("move","Movement",230,"w"),
-                                  ("sold","Sold",65,"e"),("product","Product",340,"w")):
+                                  ("market","Market Value",125,"e"),("move","Movement",210,"w"),
+                                  ("sold","Sold",65,"e"),("product","Product",360,"w")):
         tree.heading(col,text=title,anchor=anchor)
         tree.column(col,width=width,minwidth=width if col!="product" else 160,anchor=anchor,stretch=(col=="product"))
-    tree.tag_configure("even",background=PANEL_2)
-    tree.tag_configure("odd",background="#161d2d")
+    tree.tag_configure("even",background=TABLE_BG)
+    tree.tag_configure("odd",background="#111927")
     tree.tag_configure("new_low",foreground="#7edbb0")
     tree.tag_configure("drop",foreground="#a0d7c4")
     tree.tag_configure("rise",foreground="#e7bd89")
     tree.tag_configure("pending",foreground=MUTED)
-    # The table already fits the window; avoid a bright native horizontal scrollbar.
-    # A classic Tk scrollbar is more consistently themeable on Windows than ttk here.
+
     scroll=tk.Scrollbar(results_frame,orient="vertical",command=tree.yview,
-                        bg=BORDER,troughcolor=PANEL,activebackground=ACCENT,
-                        relief="flat",bd=0,highlightthickness=0,width=12)
+                        bg=BORDER,troughcolor=TABLE_BG,activebackground=ACCENT,
+                        relief="flat",bd=0,highlightthickness=0,width=11)
     tree.configure(yscrollcommand=scroll.set)
-    results_frame.rowconfigure(0,weight=1); results_frame.columnconfigure(0,weight=1)
-    tree.grid(row=0,column=0,sticky="nsew"); scroll.grid(row=0,column=1,sticky="ns")
+    results_frame.rowconfigure(1,weight=1); results_frame.columnconfigure(0,weight=1)
+    tree.grid(row=1,column=0,sticky="nsew"); scroll.grid(row=1,column=1,sticky="ns")
+
+    empty_state=tk.Frame(results_frame,bg=TABLE_BG)
+    empty_state.place(relx=.5,rely=.60,anchor="center")
+    tk.Label(empty_state,text="◎",fg=ACCENT_2,bg=TABLE_BG,
+             font=("Segoe UI Symbol",25,"bold")).pack()
+    tk.Label(empty_state,text="No products collected yet",fg=TEXT,bg=TABLE_BG,
+             font=("Segoe UI",11,"bold")).pack(pady=(4,2))
+    tk.Label(empty_state,text="Choose a category above, then collect when you’re ready.",
+             fg=MUTED,bg=TABLE_BG,font=("Segoe UI",9)).pack()
     def update_counts(*_):
         counts_label.configure(text=f"{len(categories)} CATEGORIES  //  {list_mode.get()}  //  {len(results_by_iid)} PRODUCTS")
     list_mode.trace_add("write",update_counts)
@@ -164,18 +283,30 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
         if stop_watch.is_set(): return
         connected=pdh_state["connected"]
         pdh_label.configure(text="PDH CONNECTED" if connected else "PDH CHECKING" if connected is None else "PDH DISCONNECTED",
-                            fg="#27d9ed" if connected else MUTED)
+                            fg=CYAN if connected else MUTED)
+        pdh_dot.configure(fg=SUCCESS if connected else MUTED)
         if not pdh_state["pending"]:
             pdh_state["pending"]=True
             threading.Thread(target=read_pdh,daemon=True).start()
         pdh_timer=window.after(2000,poll_pdh)
-    log_head=tk.Frame(window,bg=BG); log_head.pack(fill="x",padx=26,pady=(4,2)); tk.Label(log_head,text="ACTIVITY / WATCH ALERTS",fg=TEXT,bg=BG,font=("Segoe UI",10,"bold")).pack(side="left"); log=tk.Text(window,height=7,bg="#080c13",fg="#cbd3df",insertbackground=TEXT,relief="flat",bd=0,font=("Consolas",9),padx=10,pady=8,wrap="word"); log.pack(fill="x",padx=26,pady=(0,18))
-    # Reserve the activity controls before letting the table consume remaining height.
-    results_frame.pack_forget(); log_head.pack_forget(); log.pack_forget()
-    log.configure(height=5)
-    log.pack(side="bottom",fill="x",padx=26,pady=(0,18))
-    log_head.pack(side="bottom",fill="x",padx=26,pady=(4,2))
-    results_frame.pack(fill="both",expand=True,padx=26,pady=(0,4))
+    activity_panel=tk.Frame(window,bg=PANEL,highlightthickness=1,highlightbackground=BORDER)
+    activity_panel.pack(side="bottom",fill="x",padx=28,pady=(5,18))
+
+    log_head=tk.Frame(activity_panel,bg=PANEL)
+    log_head.pack(fill="x",padx=12,pady=(8,5))
+    tk.Label(log_head,text="ACTIVITY / WATCH ALERTS",fg=TEXT,bg=PANEL,
+             font=("Segoe UI",10,"bold")).pack(side="left")
+    tk.Label(log_head,text="Live collection and watch events",fg=SUBTLE,bg=PANEL,
+             font=("Segoe UI",8)).pack(side="left",padx=(10,0))
+
+    log=tk.Text(activity_panel,height=5,bg=SURFACE,fg="#cbd3df",insertbackground=TEXT,
+                relief="flat",bd=0,font=("Consolas",9),padx=11,pady=8,wrap="word",
+                highlightthickness=1,highlightbackground="#1b2738")
+    log.pack(fill="x",padx=12,pady=(0,11))
+
+    # Keep activity visible while the results table takes the flexible centre space.
+    results_frame.pack_forget()
+    results_frame.pack(fill="both",expand=True,padx=28,pady=(0,4))
     log_generation=[0]
     def write(msg):
         generation=log_generation[0]
@@ -261,6 +392,10 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
                             values=(score_text,price_text,market_text,move,sold_text,item.get("title","")),
                             tags=("odd" if index%2 else "even",tone))
             results_by_iid[iid]=item
+        if results_by_iid:
+            empty_state.place_forget()
+        else:
+            empty_state.place(relx=.5,rely=.60,anchor="center")
         retained=[iid for iid in selected if iid in results_by_iid]
         if retained: tree.selection_set(retained)
         if focused in results_by_iid: tree.focus(focused)
@@ -421,5 +556,8 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
     def close():
         stop_watch.set()
         if pdh_timer is not None: window.after_cancel(pdh_timer)
+        if ambient_after_id[0] is not None:
+            try: window.after_cancel(ambient_after_id[0])
+            except tk.TclError: pass
         window.destroy()
     window.protocol("WM_DELETE_WINDOW",close); refresh(); poll_pdh(); return window
