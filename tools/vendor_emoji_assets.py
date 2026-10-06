@@ -3,8 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 import urllib.request
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from platforms.common.emoji_picker import (
     CATEGORY_LABELS,
@@ -14,7 +19,6 @@ from platforms.common.emoji_picker import (
     apply_skin_tone,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
 ASSET_DIR = ROOT / "assets" / "emoji"
 SPRITE_PATH = ASSET_DIR / "twemoji_32.png"
 MANIFEST_PATH = ASSET_DIR / "twemoji_manifest.json"
