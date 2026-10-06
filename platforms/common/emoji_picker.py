@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import tkinter as tk
 from tkinter import ttk
 import unicodedata
@@ -323,23 +324,54 @@ def open_emoji_picker(
     emoji_images: dict[tuple[str, int], object | None] = {}
     category_image_refs: dict[str, object] = {}
     sprite_manifest = _load_sprite_manifest()
-    sprite_photo = None
-    sprite_load_attempted = False
-    sprite_allowed = False
+    sprite_image = None
+    sprite_state = "idle"
+    sprite_error = None
     sprite_path = _resource_path(SPRITE_RELATIVE_PATH)
 
-    def ensure_sprite_photo():
-        nonlocal sprite_photo, sprite_load_attempted
-        if sprite_load_attempted:
-            return sprite_photo
-        sprite_load_attempted = True
-        if not sprite_manifest or not sprite_path.exists():
-            return None
-        try:
-            sprite_photo = tk.PhotoImage(file=str(sprite_path))
-        except tk.TclError:
-            sprite_photo = None
-        return sprite_photo
+    def poll_sprite_loader():
+        if sprite_state == "loading":
+            try:
+                if window.winfo_exists():
+                    window.after(50, poll_sprite_loader)
+            except tk.TclError:
+                pass
+            return
+        if sprite_state == "ready":
+            try:
+                if window.winfo_exists():
+                    render()
+            except tk.TclError:
+                pass
+
+    def start_sprite_loader():
+        nonlocal sprite_state
+        if sprite_state != "idle":
+            return
+        if Image is None or ImageTk is None or not sprite_manifest or not sprite_path.exists():
+            sprite_state = "failed"
+            return
+
+        sprite_state = "loading"
+
+        def worker():
+            nonlocal sprite_image, sprite_state, sprite_error
+            try:
+                with Image.open(sprite_path) as source:
+                    loaded = source.convert("RGBA")
+                    loaded.load()
+                sprite_image = loaded
+                sprite_state = "ready"
+            except Exception as exc:
+                sprite_error = exc
+                sprite_state = "failed"
+
+        threading.Thread(
+            target=worker,
+            name="PulseEmojiSpriteLoader",
+            daemon=True,
+        ).start()
+        window.after(50, poll_sprite_loader)
 
     def colour_emoji_image(emoji: str, size: int):
         key = (emoji, size)
@@ -360,33 +392,28 @@ def open_emoji_picker(
         coords = sprite_manifest.get(emoji)
         if coords is None:
             coords = sprite_manifest.get(emoji.replace("\ufe0f", ""))
-        source_sprite = ensure_sprite_photo() if sprite_allowed and coords is not None else None
-        if source_sprite is not None and coords is not None:
+        if sprite_image is not None and coords is not None and ImageTk is not None:
             try:
                 source_x = coords[0] * SPRITE_CELL + 1
                 source_y = coords[1] * SPRITE_CELL + 1
-                photo = tk.PhotoImage(width=SPRITE_SIZE, height=SPRITE_SIZE)
-                photo.tk.call(
-                    photo,
-                    "copy",
-                    source_sprite,
-                    "-from",
-                    source_x,
-                    source_y,
-                    source_x + SPRITE_SIZE,
-                    source_y + SPRITE_SIZE,
-                    "-to",
-                    0,
-                    0,
+                tile = sprite_image.crop(
+                    (
+                        source_x,
+                        source_y,
+                        source_x + SPRITE_SIZE,
+                        source_y + SPRITE_SIZE,
+                    )
                 )
-                if size <= 18:
-                    photo = photo.subsample(2, 2)
+                if size != SPRITE_SIZE:
+                    resampling = getattr(Image, "Resampling", Image)
+                    tile = tile.resize((size, size), resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(tile)
                 emoji_images[key] = photo
                 return photo
-            except tk.TclError:
+            except Exception:
                 pass
 
-        if not sprite_allowed:
+        if coords is not None and sprite_state in {"idle", "loading"}:
             return None
 
         if Image is None or ImageDraw is None or ImageFont is None or ImageTk is None:
@@ -419,6 +446,16 @@ def open_emoji_picker(
         for child in grid.winfo_children():
             child.destroy()
         values = filter_emojis(category_var.get(), search_var.get(), tone_var.get())
+        needs_sprite = any(
+            asset_base64(emoji) is None
+            and (
+                emoji in sprite_manifest
+                or emoji.replace("\ufe0f", "") in sprite_manifest
+            )
+            for emoji in values
+        )
+        if needs_sprite and sprite_state == "idle":
+            start_sprite_loader()
         if not values:
             tk.Label(
                 grid,
@@ -589,13 +626,5 @@ def open_emoji_picker(
     window.bind("<Escape>", lambda _event: close())
     window.protocol("WM_DELETE_WINDOW", close)
     render()
-
-    def enable_sprite_rendering():
-        nonlocal sprite_allowed
-        sprite_allowed = True
-
-    # Let the picker paint before any large sprite sheet is decoded by Tk.
-    # Bundled small assets cover the initial smiley/category view immediately.
-    window.after_idle(enable_sprite_rendering)
     search.focus_set()
     return window
