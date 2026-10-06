@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from commerce.store import CommerceStore
-from commerce.tiktok.category_collector import collect_category, category_summary
+from commerce.tiktok.category_session import MODES, ShopListState, clear_log_widget, collect_category_session, session_summary
 
 BG = "#07090f"
 PANEL = "#0d111b"
@@ -27,8 +27,11 @@ class TikTokShopView(tk.Frame):
         super().__init__(master, bg=PANEL, **kwargs)
         self.store = CommerceStore()
         self.last_results: list[dict] = []
+        self.list_state = ShopListState()
+        self.list_mode = tk.StringVar(value=MODES[0])
+        self.log_generation = 0
         self.category_url = tk.StringVar()
-        self.status = tk.StringVar(value="READY // enter a public TikTok Shop category URL")
+        self.status = tk.StringVar(value="IDLE // enter a public TikTok Shop category URL")
         self.active_tab = "discovery"
         self.tab_buttons: dict[str, tk.Button] = {}
         self.body = None
@@ -62,6 +65,12 @@ class TikTokShopView(tk.Frame):
                                padx=14, pady=8, font=("Segoe UI", 9, "bold"), cursor="hand2")
             button.pack(side="left", padx=(0, 7)); self.tab_buttons[key] = button
         self.body = tk.Frame(self, bg=PANEL); self.body.pack(fill="both", expand=True, padx=22)
+        log_head = tk.Frame(self, bg=PANEL); log_head.pack(fill="x", padx=22, pady=(8, 2))
+        tk.Label(log_head, text="ACTIVITY", bg=PANEL, fg=MUTED, font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Button(log_head, text="CLEAR LOG", command=self.clear_log, bg=PANEL_2, fg=TEXT,
+                  relief="flat", bd=0, padx=12, pady=5).pack(side="right")
+        self.log = tk.Text(self, height=5, bg=BG, fg=TEXT, relief="flat", font=("Consolas", 9), wrap="word")
+        self.log.pack(fill="x", padx=22)
         tk.Label(self, textvariable=self.status, bg=PANEL_2, fg=SUCCESS, anchor="w", padx=12, pady=9,
                  font=("Consolas", 9, "bold")).pack(fill="x", padx=22, pady=(10, 20))
 
@@ -82,32 +91,76 @@ class TikTokShopView(tk.Frame):
         row = tk.Frame(self.body, bg=PANEL); row.pack(fill="x")
         tk.Entry(row, textvariable=self.category_url, bg=PANEL_2, fg=TEXT, insertbackground=TEXT,
                  relief="flat", font=("Segoe UI", 10)).pack(side="left", fill="x", expand=True, ipady=9)
-        tk.Button(row, text="COLLECT NOW", command=self.collect_now, bg=ACCENT, fg="white", activebackground=ACCENT,
+        self.collect_button = tk.Button(row, text="COLLECT CATEGORY", command=self.collect_now, bg=ACCENT, fg="white", activebackground=ACCENT,
                   activeforeground="white", relief="flat", bd=0, padx=18, pady=9,
-                  font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="left", padx=(8, 0))
+                  font=("Segoe UI", 9, "bold"), cursor="hand2", state="disabled" if self.list_state.busy else "normal")
+        self.collect_button.pack(side="left", padx=(8, 0))
+        controls = tk.Frame(self.body, bg=PANEL); controls.pack(fill="x", pady=(8, 0))
+        tk.Label(controls, text="ITEM LIST", bg=PANEL, fg=MUTED, font=("Consolas", 9)).pack(side="left", padx=(0, 8))
+        ttk.Combobox(controls, textvariable=self.list_mode, values=MODES, state="readonly", width=16).pack(side="left")
+        tk.Button(controls, text="CLEAR ITEMS", command=self.clear_items, bg=PANEL_2, fg=TEXT,
+                  relief="flat", bd=0, padx=12, pady=6).pack(side="left", padx=8)
         self._results_table(self.body, self.last_results)
 
     def collect_now(self):
+        if self.list_state.busy:
+            return
         url = self.category_url.get().strip()
         if not url: self.status.set("NEEDS URL // paste a TikTok Shop category URL first"); return
         if "shop.tiktok.com" not in url.lower(): self.status.set("CHECK URL // expected a public shop.tiktok.com category URL"); return
-        self.status.set("COLLECTING // loading category products in the browser...")
-        threading.Thread(target=self._collect_worker, args=(url,), daemon=True).start()
+        generation = self.list_state.begin(url, self.list_mode.get())
+        self._refresh_items()
+        self.status.set("COLLECTING // PASS 1")
+        threading.Thread(target=self._collect_worker, args=(url, generation), daemon=True).start()
 
-    def _collect_worker(self, url):
+    def _collect_worker(self, url, generation):
+        def progress(event):
+            log_generation = self.log_generation
+            self.after(0, lambda: self._progress(event, generation, log_generation))
         try:
-            results = collect_category(url, self.store)
-            self.after(0, lambda: self._collection_done(results))
-        except Exception as exc:
-            self.after(0, lambda: self.status.set(f"COLLECT FAILED // {exc}"))
+            results = collect_category_session(url, self.store, on_progress=progress)
+            log_generation = self.log_generation
+            self.after(0, lambda: self._collection_done(results, generation, log_generation))
+        except Exception:
+            self.after(0, self._collection_failed)
 
-    def _collection_done(self, results):
-        self.last_results = results
-        recorded = [r for r in results if r.get("status") == "recorded"]
-        changed = [r for r in recorded if r.get("price_change") not in (None, 0) or r.get("sold_change") not in (None, 0)]
-        lows = sum(bool(r.get("is_new_low")) for r in recorded)
-        self.status.set(f"{category_summary(results)} // {len(changed)} changed // {lows} new lows")
-        self.show_tab(self.active_tab)
+    def _refresh_items(self):
+        self.last_results = list(self.list_state.items.values())
+        if self.active_tab in ("discovery", "deals"):
+            self.show_tab(self.active_tab)
+
+    def _write(self, message, generation):
+        if generation == self.log_generation:
+            self.log.insert(tk.END, message + "\n"); self.log.see(tk.END)
+
+    def _progress(self, event, generation, log_generation):
+        self.list_state.merge(event["products"], generation)
+        self._refresh_items()
+        self.status.set(event["message"])
+        self._write(event["message"], log_generation)
+
+    def _collection_done(self, results, generation, log_generation):
+        self.list_state.merge(results, generation)
+        self.list_state.busy = False
+        summary = session_summary(results)
+        self.status.set(summary)
+        self._write(summary, log_generation)
+        self._refresh_items()
+
+    def _collection_failed(self):
+        self.list_state.busy = False
+        self.status.set("STOPPED // RECORDING ERROR // PARTIAL ITEMS RETAINED")
+        self._write(self.status.get(), self.log_generation)
+        self._refresh_items()
+
+    def clear_items(self):
+        self.list_state.clear_items()
+        self._refresh_items()
+        self.status.set("ITEMS CLEARED // saved data unchanged")
+
+    def clear_log(self):
+        self.log_generation += 1
+        clear_log_widget(self.log)
 
     def _movement_text(self, item):
         bits = []
@@ -125,14 +178,16 @@ class TikTokShopView(tk.Frame):
         widths = {"score":52, "price":78, "movement":155, "median":75, "range":125, "sold":60, "title":300}
         for col in columns:
             tree.heading(col, text=headings[col]); tree.column(col, width=widths[col], anchor="w", stretch=(col == "title"))
-        for item in sorted((r for r in results if r.get("status") == "recorded"), key=lambda r: r.get("deal_score", 0), reverse=True):
+        for item in sorted(results, key=lambda r: r.get("deal_score", 0), reverse=True):
             currency = item.get("currency", "GBP")
             med = item.get("historical_median")
             low, high = item.get("historical_low"), item.get("historical_high")
             median_text = f"{currency} {med:.2f}" if med is not None else "—"
             range_text = f"{low:.2f}–{high:.2f}" if low is not None and high is not None else "—"
-            tree.insert("", "end", values=(item.get("deal_score", ""), f"{currency} {item.get('price', 0):.2f}",
-                        self._movement_text(item), median_text, range_text, item.get("sold_count", ""), item.get("title", "")))
+            price_text = f"{currency} {item['price']:.2f}" if item.get("price") is not None else "—"
+            movement = self._movement_text(item) if item.get("status") == "recorded" else item.get("status", "pending").upper()
+            tree.insert("", "end", values=(item.get("deal_score", ""), price_text,
+                        movement, median_text, range_text, item.get("sold_count", ""), item.get("title", "")))
         scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview); tree.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y"); tree.pack(side="left", fill="both", expand=True)
 
