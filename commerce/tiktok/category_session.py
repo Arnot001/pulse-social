@@ -32,7 +32,8 @@ def collect_category_session(url, store=None, on_progress=None):
             on_progress({"message": message, "products": [dict(p) for p in products.values()]})
 
     for pass_number in range(1, MAX_PASSES + 1):
-        emit(f"COLLECTING // PASS {pass_number} // {len(products)} COLLECTED")
+        count_text = "COLLECTING..." if not products else f"{len(products)} COLLECTED"
+        emit(f"COLLECTING // PASS {pass_number} // {count_text}")
         try:
             metadata = request_category(url)
         except ValueError:
