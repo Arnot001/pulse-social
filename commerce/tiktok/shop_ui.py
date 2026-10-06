@@ -130,30 +130,10 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
 
     tk.Label(header,text="SHOP INTELLIGENCE",fg=CYAN,bg=BG,font=("Segoe UI",9,"bold")).pack(side="right",pady=12)
 
-    # Soft moving ribbon under the header: atmospheric rather than a literal waveform.
-    wave_band=tk.Canvas(window,bg=BG,height=14,highlightthickness=0,bd=0)
-    wave_band.pack(fill="x",padx=28,pady=(0,6))
-    band_phase=[0.0]
-    def paint_wave_band():
-        if stop_watch.is_set() or not wave_band.winfo_exists():
-            return
-        w=max(1,wave_band.winfo_width())
-        wave_band.delete("band-wave")
-        phase=band_phase[0]
-        for y,amp,glow,line,offset in (
-            (7.0,2.4,"#251329","#4a1a45",0.0),
-            (7.5,1.8,"#1d1630","#35214f",2.2),
-        ):
-            pts=[]
-            for x in range(-40,w+61,24):
-                t=(x/max(w,1))*math.tau
-                py=y + math.sin(t*1.08+phase+offset)*amp + math.sin(t*0.42-phase*0.28+offset)*0.7
-                pts.extend((x,py))
-            wave_band.create_line(*pts,fill=glow,width=6,smooth=True,splinesteps=28,tags="band-wave")
-            wave_band.create_line(*pts,fill=line,width=1,smooth=True,splinesteps=28,tags="band-wave")
-        band_phase[0]=(phase+0.018) % math.tau
-        window.after(145,paint_wave_band)
-    window.after(145,paint_wave_band)
+    # Keep the header edge clean; the animated ambience now lives only in the
+    # background, where Tk's canvas rendering looks much smoother.
+    header_rule=tk.Frame(window,bg="#2a1834",height=1)
+    header_rule.pack(fill="x",padx=28,pady=(0,7))
 
     # Compact live-state strip.
     strip_shell=tk.Frame(window,bg="#11303a",padx=1,pady=1)
