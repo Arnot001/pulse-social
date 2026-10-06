@@ -469,6 +469,15 @@ def open_emoji_picker(
             for index, emoji in enumerate(values):
                 tile_glow = accent if index % 2 == 0 else CYAN
                 photo = colour_emoji_image(emoji, 28)
+                has_sprite_asset = (
+                    emoji in sprite_manifest
+                    or emoji.replace("\ufe0f", "") in sprite_manifest
+                )
+                waiting_for_colour = (
+                    photo is None
+                    and has_sprite_asset
+                    and sprite_state in {"idle", "loading"}
+                )
                 if photo is not None:
                     btn = tk.Button(
                         grid,
@@ -486,6 +495,21 @@ def open_emoji_picker(
                         highlightbackground=PANEL,
                         highlightcolor=tile_glow,
                         cursor="hand2",
+                    )
+                elif waiting_for_colour:
+                    btn = tk.Button(
+                        grid,
+                        text="·",
+                        state="disabled",
+                        disabledforeground=MUTED,
+                        bg=PANEL,
+                        relief="flat",
+                        bd=0,
+                        width=3,
+                        height=1,
+                        font=("Segoe UI", 18, "bold"),
+                        highlightthickness=1,
+                        highlightbackground=PANEL,
                     )
                 else:
                     btn = tk.Button(
@@ -549,6 +573,11 @@ def open_emoji_picker(
     def set_tone(name: str):
         tone_var.set(name)
         render()
+
+    # Start the full-colour sheet immediately in the background so non-smiley
+    # categories are ready before the user opens them. The Tk UI never decodes
+    # the large PNG itself.
+    start_sprite_loader()
 
     for name, glyph in CATEGORY_LABELS.items():
         photo = colour_emoji_image(glyph, 18) if name != "RECENT" else None
