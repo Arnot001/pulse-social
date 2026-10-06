@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
+import time
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -31,6 +33,166 @@ children: list[subprocess.Popen] = []
 status_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdh-status")
 status_future = None
 status_after_id = None
+
+
+def blend_colour(base, tint, amount):
+    return "#" + "".join(
+        f"{round(int(base[i:i + 2], 16) * (1 - amount) + int(tint[i:i + 2], 16) * amount):02x}"
+        for i in (1, 3, 5)
+    )
+
+
+def rounded_shape(canvas, x1, y1, x2, y2, radius, **options):
+    return canvas.create_polygon(
+        x1 + radius, y1, x2 - radius, y1, x2, y1, x2, y1 + radius,
+        x2, y2 - radius, x2, y2, x2 - radius, y2,
+        x1 + radius, y2, x1, y2, x1, y2 - radius,
+        x1, y1 + radius, x1, y1,
+        smooth=True, splinesteps=24, **options,
+    )
+
+
+class AmbientWaves:
+    """One UI-only clock; every canvas paints the same continuous backdrop."""
+
+    def __init__(self, window, background):
+        self.window = window
+        self.background = background
+        self.surfaces = []
+        self.details = []
+        self.after_id = None
+        self.started = time.monotonic()
+        self.stopped = False
+        window.bind("<Destroy>", self._destroy, add="+")
+
+    def add_surface(self, canvas):
+        bands = []
+        for colour in ("#9c50ef", "#e44ea5", "#7652d8"):
+            # Broad, dim outer strokes blend into a gently brighter core.
+            bands.append([
+                canvas.create_line(
+                    0, 0, 1, 1, fill=blend_colour(BG, colour, .014 + layer * .021),
+                    width=96 - layer * 17, smooth=True, splinesteps=3, tags="waves",
+                )
+                for layer in range(6)
+            ])
+        canvas.tag_lower("waves")
+        self.surfaces.append((canvas, bands))
+
+    def start(self):
+        if self.after_id is None and not self.stopped:
+            self.after_id = self.window.after(125, self._tick)
+
+    def _tick(self):
+        self.after_id = None
+        if self.stopped:
+            return
+        if self.window.state() != "iconic":
+            phase = (time.monotonic() - self.started) * .13
+            width = max(1, self.background.winfo_width())
+            height = max(1, self.background.winfo_height())
+            origin_x = self.background.winfo_rootx()
+            origin_y = self.background.winfo_rooty()
+            for canvas, bands in self.surfaces:
+                if not canvas.winfo_ismapped():
+                    continue
+                offset_x = canvas.winfo_rootx() - origin_x
+                offset_y = canvas.winfo_rooty() - origin_y
+                for band, items in enumerate(bands):
+                    points = []
+                    for step in range(25):
+                        x = -100 + (width + 200) * step / 24
+                        y = height * (.40 + band * .22)
+                        y += math.sin(x / width * 5.0 + phase + band * 1.8) * 53
+                        y += math.sin(x / width * 2.8 - phase * .7 + band) * 25
+                        points.extend((x - offset_x, y - offset_y))
+                    for item in items:
+                        canvas.coords(item, *points)
+            for detail in self.details:
+                detail(phase)
+        # Minimized windows keep a cheap wake-up only; no canvas redraws.
+        self.after_id = self.window.after(250 if self.window.state() == "iconic" else 125, self._tick)
+
+    def _destroy(self, event):
+        if event.widget == self.window:
+            self.stopped = True
+            if self.after_id is not None:
+                self.window.after_cancel(self.after_id)
+                self.after_id = None
+
+
+class SoftCard:
+    def __init__(self, parent, colour, accent):
+        self.canvas = tk.Canvas(parent, bg=BG, bd=0, highlightthickness=0, height=340)
+        ambient.add_surface(self.canvas)
+        self.colour = colour
+        self.accent = accent
+        self.content = tk.Frame(self.canvas, bg=colour)
+        self.window_item = self.canvas.create_window(24, 24, anchor="nw", window=self.content)
+        self.edge = None
+        self.canvas.bind("<Configure>", self._layout)
+        self.content.bind("<Configure>", self._content_size)
+        ambient.details.append(self._breathe)
+
+    def _content_size(self, _event):
+        height = self.content.winfo_reqheight() + 48
+        if int(self.canvas.cget("height")) != height:
+            self.canvas.configure(height=height)
+
+    def _layout(self, event):
+        self.canvas.itemconfigure(self.window_item, width=max(1, event.width - 48))
+        self.canvas.delete("shell")
+        for inset, amount in ((3, .035), (5, .06), (7, .10)):
+            rounded_shape(
+                self.canvas, inset, inset + 3, event.width - inset, event.height - inset,
+                30, fill=blend_colour(BG, self.accent, amount), outline="", tags="shell",
+            )
+        self.edge = rounded_shape(
+            self.canvas, 9, 9, event.width - 9, event.height - 11, 26,
+            fill=self.colour, outline=blend_colour(self.colour, self.accent, .20),
+            width=1, tags="shell",
+        )
+        self.canvas.tag_raise("shell", "waves")
+        self.canvas.tag_raise(self.window_item)
+
+    def _breathe(self, phase):
+        if self.edge is not None:
+            strength = .18 + .035 * math.sin(phase * 1.4)
+            self.canvas.itemconfigure(self.edge, outline=blend_colour(self.colour, self.accent, strength))
+
+
+def platform_badge(parent, title, card_bg, accent):
+    canvas = tk.Canvas(parent, width=76, height=80, bg=card_bg, bd=0, highlightthickness=0)
+    rounded_shape(canvas, 1, 4, 75, 78, 20, fill=blend_colour(card_bg, accent, .08), outline="")
+    rounded_shape(canvas, 4, 3, 72, 71, 18, fill=SURFACE,
+                  outline=blend_colour(SURFACE, accent, .28), tags="badge")
+    canvas.create_line(19, 8, 55, 8, fill=blend_colour(SURFACE, TEXT, .10), tags="badge")
+    if title == "TikTok":
+        # Draw one silhouette per colour, without opaque overlapping text labels.
+        # The bent shoulder, upright stem and open bowl read as a branded badge.
+        for dx, dy, colour in ((-3, -2, CYAN), (3, 2, ACCENT_2), (0, 0, TEXT)):
+            canvas.create_line(
+                42 + dx, 21 + dy, 47 + dx, 29 + dy, 57 + dx, 32 + dy,
+                smooth=True, width=7, fill=colour, tags="badge",
+            )
+            canvas.create_line(42 + dx, 20 + dy, 42 + dx, 48 + dy,
+                               width=8, fill=colour, tags="badge")
+            canvas.create_arc(22 + dx, 37 + dy, 43 + dx, 58 + dy,
+                              start=85, extent=280, style="arc", width=7,
+                              outline=colour, tags="badge")
+    else:
+        canvas.create_text(38, 36, text="X", fill=TEXT,
+                           font=("Segoe UI Variable Display", 28, "bold"), tags="badge")
+    previous = 0.0
+
+    def float_badge(phase):
+        nonlocal previous
+        offset = math.sin(phase * 1.6 + (1.2 if title == "TikTok" else 0)) * 1.5
+        canvas.move("badge", 0, offset - previous)
+        previous = offset
+
+    ambient.details.append(float_badge)
+    return canvas
 
 
 def launch(script: str) -> None:
@@ -114,8 +276,13 @@ root.minsize(1040, 650)
 root.maxsize(1280, 780)
 root.configure(bg=BG)
 
+backdrop = tk.Canvas(root, bg=BG, bd=0, highlightthickness=0)
+backdrop.pack(fill="both", expand=True)
+ambient = AmbientWaves(root, backdrop)
+ambient.add_surface(backdrop)
+
 # HEADER
-header = tk.Frame(root, bg=BG)
+header = tk.Frame(backdrop, bg=BG)
 header.pack(fill="x", padx=34, pady=(24, 10))
 
 brand = tk.Frame(header, bg=BG)
@@ -154,7 +321,7 @@ tk.Label(
 
 button(header, "✕  CLOSE ALL", close_all, danger=True).pack(side="right", pady=5)
 
-subtitle = tk.Frame(root, bg=BG)
+subtitle = tk.Frame(backdrop, bg=BG)
 subtitle.pack(fill="x", padx=36)
 for index, label in enumerate(("SOCIAL AUTOMATION", "COMMERCE INTELLIGENCE", "LIVE BROWSER CONTROL")):
     if index:
@@ -167,7 +334,7 @@ for index, label in enumerate(("SOCIAL AUTOMATION", "COMMERCE INTELLIGENCE", "LI
         font=("Segoe UI", 8),
     ).pack(side="left")
 
-glow_line = tk.Frame(root, bg=ACCENT, height=2)
+glow_line = tk.Frame(backdrop, bg=ACCENT, height=2)
 glow_line.pack(fill="x", padx=34, pady=(10, 0))
 
 ensure_bridge_server()
@@ -194,7 +361,7 @@ def pdh_browser_status() -> str:
 browser_status_var = tk.StringVar(value=pdh_browser_status())
 
 browser_outer = tk.Frame(
-    root,
+    backdrop,
     bg=PANEL,
     highlightthickness=1,
     highlightbackground=CYAN,
@@ -272,7 +439,8 @@ button(
 ).pack(side="right", padx=12, pady=8)
 
 # PLATFORM CARDS
-nav = tk.Frame(root, bg=BG)
+nav = tk.Canvas(backdrop, bg=BG, bd=0, highlightthickness=0)
+ambient.add_surface(nav)
 nav.pack(fill="x", expand=False, padx=34, pady=(0, 16))
 nav.grid_columnconfigure(0, weight=1, uniform="platform")
 nav.grid_columnconfigure(1, weight=1, uniform="platform")
@@ -296,58 +464,20 @@ def platform_card(
     card_bg = "#171323" if column == 0 else "#0d1b25"
     soft_colour = "#37152a" if column == 0 else "#10303a"
 
-    outer = tk.Frame(
-        parent,
-        bg=soft_colour,
-        padx=2,
-        pady=2,
-    )
-    outer.grid(
+    shell = SoftCard(parent, card_bg, glow_colour)
+    shell.canvas.grid(
         row=0,
         column=column,
         sticky="ew",
-        padx=(0, 10) if column == 0 else (10, 0),
+        padx=(0, 3) if column == 0 else (3, 0),
     )
-
-    card = tk.Frame(
-        outer,
-        bg=card_bg,
-        highlightthickness=1,
-        highlightbackground=glow_colour,
-    )
-    card.pack(fill="x")
-
-    tk.Frame(card, bg=glow_colour, height=2).pack(fill="x")
+    card = shell.content
 
     top = tk.Frame(card, bg=card_bg)
-    top.pack(fill="x", padx=22, pady=(20, 12))
+    top.pack(fill="x", padx=6, pady=(0, 10))
 
-    mark_box = tk.Frame(
-        top,
-        bg=SURFACE,
-        width=72,
-        height=72,
-        highlightthickness=1,
-        highlightbackground=glow_colour,
-    )
+    mark_box = platform_badge(top, title, card_bg, glow_colour)
     mark_box.pack(side="left", anchor="n")
-    mark_box.pack_propagate(False)
-
-    if title == "TikTok":
-        tk.Label(mark_box, text="♪", fg=ACCENT_2, bg=SURFACE,
-                 font=("Segoe UI Symbol", 31, "bold")).place(relx=.5, rely=.5, anchor="center", x=2, y=1)
-        tk.Label(mark_box, text="♪", fg=CYAN, bg=SURFACE,
-                 font=("Segoe UI Symbol", 31, "bold")).place(relx=.5, rely=.5, anchor="center", x=-2, y=-1)
-        tk.Label(mark_box, text="♪", fg=TEXT, bg=SURFACE,
-                 font=("Segoe UI Symbol", 29, "bold")).place(relx=.5, rely=.5, anchor="center")
-    else:
-        tk.Label(
-            mark_box,
-            text=mark,
-            fg=TEXT,
-            bg=SURFACE,
-            font=("Segoe UI Variable Display", 28, "bold"),
-        ).pack(expand=True)
 
     copy = tk.Frame(top, bg=card_bg)
     copy.pack(side="left", fill="x", expand=True, padx=(18, 0))
@@ -365,36 +495,35 @@ def platform_card(
         bg=card_bg,
         font=("Segoe UI Variable Display", 27, "bold"),
     ).pack(anchor="w", pady=(2, 4))
-    tk.Label(
+    description = tk.Label(
         copy,
         text=subtitle,
         fg=MUTED,
         bg=card_bg,
         font=("Segoe UI Variable Text", 10),
         justify="left",
-        wraplength=340,
-    ).pack(anchor="w")
+        wraplength=270,
+        height=2,
+        anchor="nw",
+    )
+    description.pack(anchor="w", fill="x")
+    def wrap_description(event):
+        width = max(1, event.width)
+        if int(description.cget("wraplength")) != width:
+            description.configure(wraplength=width)
 
-    tk.Label(
-        top,
-        text=mark,
-        fg=soft_colour,
-        bg=card_bg,
-        font=("Segoe UI Variable Display", 66, "bold"),
-    ).pack(side="right", padx=(8, 2))
+    copy.bind("<Configure>", wrap_description)
 
     feature_box = tk.Frame(
         card,
-        bg=SURFACE,
-        highlightthickness=1,
-        highlightbackground=BORDER,
+        bg=card_bg,
     )
-    feature_box.pack(fill="x", padx=22, pady=(4, 14))
+    feature_box.pack(fill="x", padx=6, pady=(0, 10))
 
     glyphs = ("◌", "▣", "◉") if column == 0 else ("◇", "◉", "⚡")
     for index, feature in enumerate(features):
-        row = tk.Frame(feature_box, bg=SURFACE)
-        row.pack(fill="x", padx=13, pady=0)
+        row = tk.Frame(feature_box, bg=card_bg)
+        row.pack(fill="x", pady=0)
 
         icon_box = tk.Frame(
             row,
@@ -418,31 +547,31 @@ def platform_card(
             row,
             text=feature,
             fg=TEXT,
-            bg=SURFACE,
+            bg=card_bg,
             font=("Segoe UI Variable Text", 9),
         ).pack(side="left", padx=(12, 0), pady=10)
 
         if index < len(features) - 1:
-            tk.Frame(feature_box, bg=BORDER, height=1).pack(fill="x", padx=(55, 14))
+            tk.Frame(feature_box, bg=blend_colour(card_bg, glow_colour, .09), height=1).pack(fill="x", padx=(42, 0))
 
     actions = tk.Frame(card, bg=card_bg)
-    actions.pack(fill="x", padx=22, pady=(0, 20))
+    actions.pack(fill="x", padx=6, pady=(0, 2))
 
     primary = button(actions, primary_text, primary_command, accent=True)
-    primary.configure(width=15)
+    primary.configure(padx=12)
     primary.pack(side="left")
 
     if secondary:
         text, command = secondary
         secondary_btn = button(actions, text, command)
-        secondary_btn.configure(width=12)
-        secondary_btn.pack(side="left", padx=(10, 0))
+        secondary_btn.configure(padx=11)
+        secondary_btn.pack(side="left", padx=(8, 0))
 
     if tertiary:
         text, command = tertiary
         tertiary_btn = button(actions, text, command)
-        tertiary_btn.configure(width=10)
-        tertiary_btn.pack(side="left", padx=(10, 0))
+        tertiary_btn.configure(padx=11)
+        tertiary_btn.pack(side="left", padx=(8, 0))
 
 
 platform_card(
@@ -481,13 +610,14 @@ platform_card(
 )
 
 # FOOTER
-spacer = tk.Frame(root, bg=BG)
+spacer = tk.Canvas(backdrop, bg=BG, bd=0, highlightthickness=0, height=0)
+ambient.add_surface(spacer)
 spacer.pack(fill="both", expand=True)
 
-footer_line = tk.Frame(root, bg=BORDER, height=1)
+footer_line = tk.Frame(backdrop, bg=BORDER, height=1)
 footer_line.pack(fill="x", padx=34, pady=(0, 10))
 
-footer = tk.Frame(root, bg=BG)
+footer = tk.Frame(backdrop, bg=BG)
 footer.pack(fill="x", padx=36, pady=(0, 16))
 
 tk.Label(
@@ -521,5 +651,6 @@ tk.Label(
 ).pack(side="right")
 
 root.protocol("WM_DELETE_WINDOW", close_all)
+ambient.start()
 poll_pdh_browser_status()
 root.mainloop()
