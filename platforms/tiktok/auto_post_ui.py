@@ -472,7 +472,7 @@ class TikTokAutoPostView(tk.Frame):
         )
 
         settings_shell = tk.Frame(top, bg="#17343d", padx=1, pady=1)
-        settings_shell.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        settings_shell.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(7, 0))
         options = tk.Frame(settings_shell, bg="#0f1a24")
         options.pack(fill="both", expand=True)
         tk.Frame(options, bg=ACCENT, height=2).pack(fill="x")
@@ -664,24 +664,13 @@ class TikTokAutoPostView(tk.Frame):
             font=("Segoe UI", 8),
         ).pack(side="right", padx=12, pady=8)
 
-        lower = tk.PanedWindow(
-            self,
-            orient="vertical",
-            bg=BG,
-            bd=0,
-            sashwidth=5,
-            sashrelief="flat",
-            showhandle=False,
-            opaqueresize=True,
-        )
-        lower.pack(fill="both", expand=True, padx=28, pady=(0, 14))
-
         queue_card = tk.Frame(
-            lower,
+            top,
             bg=TABLE_BG,
             highlightthickness=1,
             highlightbackground=BORDER,
         )
+        queue_card.grid(row=1, column=0, sticky="nsew", padx=(0, 7), pady=(7, 0))
 
         queue_head = tk.Frame(queue_card, bg=PANEL)
         queue_head.grid(row=0, column=0, columnspan=2, sticky="ew")
@@ -715,7 +704,7 @@ class TikTokAutoPostView(tk.Frame):
             columns=cols,
             show="headings",
             style="TikTok.Treeview",
-            height=4,
+            height=3,
         )
         widths = {
             "due": 130,
@@ -767,7 +756,8 @@ class TikTokAutoPostView(tk.Frame):
         queue_scroll.grid(row=1, column=1, sticky="ns")
         queue_xscroll.grid(row=2, column=0, columnspan=2, sticky="ew")
 
-        activity = tk.Frame(lower, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        activity = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        activity.pack(fill="x", padx=28, pady=(0, 14))
         activity_head = tk.Frame(activity, bg=PANEL)
         activity_head.pack(fill="x", padx=12, pady=(8, 5))
         tk.Label(
@@ -825,9 +815,6 @@ class TikTokAutoPostView(tk.Frame):
         self.log.configure(yscrollcommand=activity_scroll.set)
         self.log.pack(side="left", fill="both", expand=True)
         activity_scroll.pack(side="right", fill="y")
-
-        lower.add(queue_card, minsize=115, stretch="always")
-        lower.add(activity, minsize=92, stretch="always")
 
     def _update_chars(self, *_):
         value = self.caption.get("1.0", "end-1c")
