@@ -673,7 +673,6 @@ class TikTokAutoPostView(tk.Frame):
             sashrelief="flat",
             showhandle=False,
             opaqueresize=True,
-            highlightthickness=0,
         )
         lower.pack(fill="both", expand=True, padx=28, pady=(0, 14))
 
