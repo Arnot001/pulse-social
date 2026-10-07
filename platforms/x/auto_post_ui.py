@@ -454,9 +454,16 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     stat_card(1, "POSTED", stats_var["posted"], SUCCESS)
     stat_card(2, "ERRORS", stats_var["error"], DANGER)
 
+    # LOWER WORKSPACE
+    lower = tk.Frame(window, bg=BG)
+    lower.pack(fill="both", expand=True, padx=28, pady=(0, 14))
+    lower.grid_columnconfigure(0, weight=1)
+    lower.grid_rowconfigure(0, weight=3, uniform="lower")
+    lower.grid_rowconfigure(1, weight=2, uniform="lower")
+
     # QUEUE
-    queue_card = tk.Frame(window, bg=TABLE_BG, highlightthickness=1, highlightbackground=BORDER)
-    queue_card.pack(fill="both", expand=True, padx=28, pady=(0, 8))
+    queue_card = tk.Frame(lower, bg=TABLE_BG, highlightthickness=1, highlightbackground=BORDER)
+    queue_card.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
 
     queue_head = tk.Frame(queue_card, bg=PANEL)
     queue_head.pack(fill="x", padx=16, pady=(12, 8))
@@ -501,8 +508,8 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     mapping = {}
 
     # ACTIVITY
-    activity = tk.Frame(window, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-    activity.pack(fill="both", expand=True, padx=28, pady=(0, 14))
+    activity = tk.Frame(lower, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+    activity.grid(row=1, column=0, sticky="nsew")
     activity_head = tk.Frame(activity, bg=PANEL)
     activity_head.pack(fill="x", padx=14, pady=(10, 6))
     tk.Label(activity_head, text="ACTIVITY", fg=TEXT, bg=PANEL, font=("Segoe UI", 10, "bold")).pack(side="left")
