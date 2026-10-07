@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 import tkinter as tk
 from tkinter import messagebox
 from playwright.sync_api import sync_playwright, TimeoutError
+from platforms.browser_control import CDP_PORT, CDP_URL, cdp_responding
+from platforms.x.browser_session import open_x_browser
 
 APP_DIR = os.path.join(os.environ["LOCALAPPDATA"], "Pulse Social")
 os.makedirs(APP_DIR, exist_ok=True)
@@ -17,8 +19,6 @@ POST_LOG_FILE = os.path.join(APP_DIR, "post_log.txt")
 REPLY_LOG_FILE = os.path.join(APP_DIR, "reply_log.txt")
 REPOST_LOG_FILE = os.path.join(APP_DIR, "repost_log.txt")
 LIKE_LOG_FILE = os.path.join(APP_DIR, "like_log.txt")
-CDP_PORT = 9222
-CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
 
 BG = "#07090f"; PANEL = "#0d111b"; PANEL_2 = "#121827"; BORDER = "#20283a"; TEXT = "#f5f7fb"; MUTED = "#8993a6"; ACCENT = "#ff008c"; SUCCESS = "#35d07f"; DANGER = "#ff4057"
 DEFAULTS = {"handle":"", "mode":"posts", "dry_run":True, "run_until_empty":False, "max_actions":10, "delay":3, "refresh_every":25}
@@ -94,11 +94,15 @@ def close_menu(page):
     try: page.keyboard.press("Escape")
     except Exception: pass
 def connect_cdp(playwright,timeout_seconds=10):
+    if not cdp_responding():
+        ui_log("Starting the dedicated Pulse Browser...")
+        ok,message=open_x_browser()
+        if not ok: raise RuntimeError(f"Could not start/connect Pulse Browser: {message}")
     deadline=time.time()+timeout_seconds; last_error=None
     while time.time()<deadline:
         try: return playwright.chromium.connect_over_cdp(CDP_URL,timeout=3000)
         except Exception as e: last_error=e; time.sleep(.5)
-    raise RuntimeError(f"Could not attach to Brave on port {CDP_PORT}. Start Brave with --remote-debugging-port={CDP_PORT} first. Last error: {last_error}")
+    raise RuntimeError(f"Could not attach to Pulse Browser on port {CDP_PORT}. Try ATTACH BRAVE again. Last error: {last_error}")
 def find_x_page(context,target_url):
     for page in context.pages:
         try:
@@ -146,7 +150,7 @@ def cleaner_worker(settings):
     if not handle: ui_log("Enter your X handle first."); set_run_state("idle"); return
     set_run_state("attaching",dry_run,mode,limit_label)
     url="https://x.com/i/history/likes" if mode=="likes" else f"https://x.com/{handle}/with_replies" if mode=="replies" else f"https://x.com/{handle}/reposts" if mode=="reposts" else f"https://x.com/{handle}"
-    ui_log(f"Attaching to your existing Brave session on port {CDP_PORT}...")
+    ui_log(f"Connecting to Pulse Browser on port {CDP_PORT}...")
     try:
         with sync_playwright() as p:
             try: browser=connect_cdp(p)
@@ -155,7 +159,7 @@ def cleaner_worker(settings):
             context=browser.contexts[0]
             try: page=find_x_page(context,url)
             except Exception as e: ui_log(f"Could not find/open X in Brave: {e}"); return
-            ui_log("Attached to Brave. Your existing browser login/session is being used."); ui_log(f"RUN LOCKED: {'PREVIEW ONLY' if dry_run else 'LIVE ACTIONS'} | {mode} | {limit_label}"); ui_log("Click ARM / CONTINUE once to begin.")
+            ui_log("Attached to Pulse Browser. Sign in to X there if needed before continuing."); ui_log(f"RUN LOCKED: {'PREVIEW ONLY' if dry_run else 'LIVE ACTIONS'} | {mode} | {limit_label}"); ui_log("Click ARM / CONTINUE once to begin.")
             set_run_state("armed",dry_run,mode,limit_label); continue_event.wait()
             if stop_event.is_set(): ui_log("Stopped before cleanup."); return
             try:
