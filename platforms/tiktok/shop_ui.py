@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from commerce.store import CommerceStore
+from commerce.tiktok.categories import children_of, fetch_categories, roots
 from commerce.tiktok.category_session import MODES, ShopListState, clear_log_widget, collect_category_session, session_summary
 
 BG = "#07090f"
@@ -18,6 +19,11 @@ MUTED = "#8993a6"
 ACCENT = "#ff008c"
 SUCCESS = "#35d07f"
 DANGER = "#ff4057"
+CYAN = "#29def4"
+SUBTLE = "#65758b"
+TABLE_BG = "#0b111b"
+TAXONOMY_ATTEMPTS = 3
+TAXONOMY_RETRY_SECONDS = 7
 
 
 class TikTokShopView(tk.Frame):
@@ -30,11 +36,22 @@ class TikTokShopView(tk.Frame):
         self.list_state = ShopListState()
         self.list_mode = tk.StringVar(value=MODES[0])
         self.log_generation = 0
-        self.category_url = tk.StringVar()
-        self.status = tk.StringVar(value="IDLE // enter a public TikTok Shop category URL")
+        self.status = tk.StringVar(value="CATEGORY TAXONOMY NOT LOADED")
         self.active_tab = "discovery"
         self.tab_buttons: dict[str, tk.Button] = {}
         self.body = None
+        self.categories = []
+        self.category_maps = [{}, {}, {}]
+        self.main_var = tk.StringVar()
+        self.sub_var = tk.StringVar()
+        self.leaf_var = tk.StringVar()
+        self.taxonomy_loading = False
+        self.main_box = None
+        self.sub_box = None
+        self.leaf_box = None
+        self.leaf_slot = None
+        self.collect_button = None
+        self.refresh_categories_button = None
         self._configure_tree_style()
         self._build()
         self.show_tab("discovery")
@@ -52,6 +69,33 @@ class TikTokShopView(tk.Frame):
         style.configure("Pulse.Treeview.Heading", background="#171e2e", foreground=TEXT,
                         relief="flat", font=("Segoe UI", 9, "bold"), padding=(7, 7))
         style.map("Pulse.Treeview.Heading", background=[("active", "#20283a")])
+        style.configure(
+            "Shop.TCombobox",
+            fieldbackground="#111a28",
+            background="#111a28",
+            foreground=TEXT,
+            arrowcolor=CYAN,
+            bordercolor=BORDER,
+            lightcolor=BORDER,
+            darkcolor=BORDER,
+            padding=7,
+        )
+        style.map(
+            "Shop.TCombobox",
+            fieldbackground=[("readonly", PANEL_2)],
+            foreground=[("disabled", MUTED), ("readonly", TEXT)],
+            selectbackground=[("readonly", PANEL_2)],
+            selectforeground=[("readonly", TEXT)],
+        )
+        style.configure(
+            "Shop.Vertical.TScrollbar",
+            background=BORDER,
+            troughcolor=PANEL,
+            bordercolor=PANEL,
+            arrowcolor=MUTED,
+            lightcolor=PANEL,
+            darkcolor=PANEL,
+        )
 
     def _build(self):
         tk.Label(self, text="TIKTOK SHOP INTELLIGENCE", bg=PANEL, fg=TEXT,
@@ -85,38 +129,251 @@ class TikTokShopView(tk.Frame):
          "history": self._show_history, "watchlist": self._show_watchlist}[tab]()
 
     def _show_discovery(self):
-        tk.Label(self.body, text="CATEGORY COLLECTOR", bg=PANEL, fg=TEXT, font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(6, 7))
-        tk.Label(self.body, text="Paste a public TikTok Shop category URL. One sweep records each product once.",
-                 bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 9))
-        row = tk.Frame(self.body, bg=PANEL); row.pack(fill="x")
-        tk.Entry(row, textvariable=self.category_url, bg=PANEL_2, fg=TEXT, insertbackground=TEXT,
-                 relief="flat", font=("Segoe UI", 10)).pack(side="left", fill="x", expand=True, ipady=9)
-        self.collect_button = tk.Button(row, text="COLLECT CATEGORY", command=self.collect_now, bg=ACCENT, fg="white", activebackground=ACCENT,
-                  activeforeground="white", relief="flat", bd=0, padx=18, pady=9,
-                  font=("Segoe UI", 9, "bold"), cursor="hand2", state="disabled" if self.list_state.busy else "normal")
-        self.collect_button.pack(side="left", padx=(8, 0))
-        controls = tk.Frame(self.body, bg=PANEL); controls.pack(fill="x", pady=(8, 0))
-        tk.Label(controls, text="ITEM LIST", bg=PANEL, fg=MUTED, font=("Consolas", 9)).pack(side="left", padx=(0, 8))
-        ttk.Combobox(controls, textvariable=self.list_mode, values=MODES, state="readonly", width=16).pack(side="left")
-        tk.Button(controls, text="CLEAR ITEMS", command=self.clear_items, bg=PANEL_2, fg=TEXT,
-                  relief="flat", bd=0, padx=12, pady=6).pack(side="left", padx=8)
+        tk.Label(
+            self.body,
+            text="CATEGORY COLLECTOR",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w", pady=(6, 7))
+        tk.Label(
+            self.body,
+            text="Choose a TikTok Shop category. Pulse loads the live taxonomy instead of making you paste URLs.",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 9))
+
+        selectors = tk.Frame(self.body, bg=PANEL)
+        selectors.pack(fill="x")
+        for col in range(3):
+            selectors.columnconfigure(col, weight=1, uniform="shop-category")
+
+        def combo(column, label, variable):
+            slot = tk.Frame(selectors, bg=PANEL)
+            slot.grid(row=0, column=column, sticky="ew", padx=(0, 10) if column < 2 else 0)
+            tk.Label(
+                slot,
+                text=label,
+                bg=PANEL,
+                fg=MUTED,
+                font=("Segoe UI", 8, "bold"),
+            ).pack(anchor="w", pady=(0, 5))
+            box = ttk.Combobox(
+                slot,
+                textvariable=variable,
+                state="readonly",
+                style="Shop.TCombobox",
+            )
+            box.pack(fill="x")
+            return slot, box
+
+        _, self.main_box = combo(0, "MAIN CATEGORY", self.main_var)
+        _, self.sub_box = combo(1, "SUBCATEGORY", self.sub_var)
+        self.leaf_slot, self.leaf_box = combo(2, "CATEGORY", self.leaf_var)
+
+        self.main_box.bind("<<ComboboxSelected>>", self._update_subcategories)
+        self.sub_box.bind("<<ComboboxSelected>>", self._update_leaf_categories)
+        self.leaf_box.bind("<<ComboboxSelected>>", self._category_selected)
+
+        controls = tk.Frame(self.body, bg=PANEL)
+        controls.pack(fill="x", pady=(10, 0))
+        self.collect_button = tk.Button(
+            controls,
+            text="COLLECT CATEGORY",
+            command=self.collect_now,
+            bg=ACCENT,
+            fg="white",
+            activebackground=ACCENT,
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+            padx=16,
+            pady=8,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+        )
+        self.collect_button.pack(side="left")
+
+        self.refresh_categories_button = tk.Button(
+            controls,
+            text="REFRESH CATEGORIES",
+            command=self._refresh_taxonomy,
+            bg=PANEL_2,
+            fg=TEXT,
+            activebackground="#20283a",
+            activeforeground=TEXT,
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=8,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+        )
+        self.refresh_categories_button.pack(side="left", padx=(8, 0))
+
+        tk.Label(
+            controls,
+            text="ITEM LIST",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Consolas", 9),
+        ).pack(side="left", padx=(18, 8))
+        ttk.Combobox(
+            controls,
+            textvariable=self.list_mode,
+            values=MODES,
+            state="readonly",
+            width=16,
+            style="Shop.TCombobox",
+        ).pack(side="left")
+        tk.Button(
+            controls,
+            text="CLEAR ITEMS",
+            command=self.clear_items,
+            bg=PANEL_2,
+            fg=TEXT,
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=6,
+        ).pack(side="left", padx=8)
+
+        self._populate_taxonomy_controls()
         self._results_table(self.body, self.last_results)
 
-    def collect_now(self):
-        if self.list_state.busy:
-            return
-        url = self.category_url.get().strip()
-        if not url: self.status.set("NEEDS URL // paste a TikTok Shop category URL first"); return
-        if "shop.tiktok.com" not in url.lower(): self.status.set("CHECK URL // expected a public shop.tiktok.com category URL"); return
-        generation = self.list_state.begin(url, self.list_mode.get())
-        self._refresh_items()
-        self.status.set("COLLECTING // PASS 1")
-        threading.Thread(target=self._collect_worker, args=(url, generation), daemon=True).start()
+        if not self.categories and not self.taxonomy_loading:
+            self._refresh_taxonomy()
 
-    def _collect_worker(self, url, generation):
+    def _set_category_values(self, box, variable, items, index):
+        self.category_maps[index] = {item.name: item for item in items}
+        box["values"] = [item.name for item in items]
+        variable.set(items[0].name if items else "")
+        box.configure(state="readonly" if items else "disabled")
+
+    def _selected_category(self):
+        for index, variable in ((2, self.leaf_var), (1, self.sub_var), (0, self.main_var)):
+            selected = self.category_maps[index].get(variable.get())
+            if selected is not None:
+                return selected
+        return None
+
+    def _populate_taxonomy_controls(self):
+        if not (self.main_box and self.main_box.winfo_exists()):
+            return
+        if not self.categories:
+            for box, variable, index in (
+                (self.main_box, self.main_var, 0),
+                (self.sub_box, self.sub_var, 1),
+                (self.leaf_box, self.leaf_var, 2),
+            ):
+                self._set_category_values(box, variable, [], index)
+            if self.leaf_slot and self.leaf_slot.winfo_exists():
+                self.leaf_slot.grid_remove()
+            if self.collect_button and self.collect_button.winfo_exists():
+                self.collect_button.configure(state="disabled")
+            return
+        self._set_category_values(self.main_box, self.main_var, roots(self.categories), 0)
+        self._update_subcategories()
+
+    def _update_subcategories(self, *_):
+        if not (self.sub_box and self.sub_box.winfo_exists()):
+            return
+        selected = self.category_maps[0].get(self.main_var.get())
+        children = children_of(self.categories, selected.category_id) if selected else []
+        self._set_category_values(self.sub_box, self.sub_var, children, 1)
+        self._update_leaf_categories()
+
+    def _update_leaf_categories(self, *_):
+        if not (self.leaf_box and self.leaf_box.winfo_exists()):
+            return
+        selected = self.category_maps[1].get(self.sub_var.get())
+        children = children_of(self.categories, selected.category_id) if selected else []
+        self._set_category_values(self.leaf_box, self.leaf_var, children, 2)
+        if self.leaf_slot and self.leaf_slot.winfo_exists():
+            if children:
+                self.leaf_slot.grid()
+            else:
+                self.leaf_slot.grid_remove()
+        self._category_selected()
+
+    def _category_selected(self, *_):
+        selected = self._selected_category()
+        if self.collect_button and self.collect_button.winfo_exists():
+            self.collect_button.configure(
+                state="disabled" if self.taxonomy_loading or self.list_state.busy or selected is None else "normal"
+            )
+        if selected is not None and not self.taxonomy_loading and not self.list_state.busy:
+            self.status.set(f"READY // {selected.name} // {selected.category_id}")
+
+    def _refresh_taxonomy(self):
+        if self.taxonomy_loading or self.list_state.busy:
+            return
+        self.taxonomy_loading = True
+        self.status.set("COLLECTING CATEGORIES...")
+        if self.collect_button and self.collect_button.winfo_exists():
+            self.collect_button.configure(state="disabled")
+        if self.refresh_categories_button and self.refresh_categories_button.winfo_exists():
+            self.refresh_categories_button.configure(state="disabled")
+        threading.Thread(target=self._taxonomy_worker, daemon=True).start()
+
+    def _taxonomy_worker(self):
+        for attempt in range(TAXONOMY_ATTEMPTS):
+            try:
+                items = fetch_categories()
+                usable = bool(items and roots(items))
+            except Exception:
+                items = []
+                usable = False
+            if usable:
+                self.after(0, lambda data=items: self._taxonomy_loaded(data))
+                return
+            if attempt < TAXONOMY_ATTEMPTS - 1:
+                threading.Event().wait(TAXONOMY_RETRY_SECONDS)
+        self.after(0, self._taxonomy_failed)
+
+    def _taxonomy_loaded(self, items):
+        self.categories = items
+        self.taxonomy_loading = False
+        self.status.set(f"CATEGORIES READY // {len(items)} LOADED")
+        self._write(self.status.get(), self.log_generation)
+        if self.active_tab == "discovery":
+            self.show_tab("discovery")
+
+    def _taxonomy_failed(self):
+        self.taxonomy_loading = False
+        self.status.set("CATEGORY LOAD FAILED // try REFRESH CATEGORIES")
+        self._write(self.status.get(), self.log_generation)
+        if self.active_tab == "discovery":
+            self.show_tab("discovery")
+
+    def collect_now(self):
+        if self.list_state.busy or self.taxonomy_loading:
+            return
+        category = self._selected_category()
+        if category is None:
+            self.status.set("SELECT A CATEGORY")
+            return
+        generation = self.list_state.begin(category.url, self.list_mode.get())
+        self._refresh_items()
+        self.status.set(f"COLLECTING // {category.name.upper()} // PASS 1")
+        threading.Thread(
+            target=self._collect_worker,
+            args=(category.url, generation, category.name),
+            daemon=True,
+        ).start()
+
+    def _collect_worker(self, url, generation, category_name):
         def progress(event):
             log_generation = self.log_generation
-            self.after(0, lambda: self._progress(event, generation, log_generation))
+            self.after(
+                0,
+                lambda: self._progress(
+                    {**event, "message": f"{category_name.upper()} // {event['message']}"},
+                    generation,
+                    log_generation,
+                ),
+            )
         try:
             results = collect_category_session(url, self.store, on_progress=progress)
             log_generation = self.log_generation
@@ -188,7 +445,7 @@ class TikTokShopView(tk.Frame):
             movement = self._movement_text(item) if item.get("status") == "recorded" else item.get("status", "pending").upper()
             tree.insert("", "end", values=(item.get("deal_score", ""), price_text,
                         movement, median_text, range_text, item.get("sold_count", ""), item.get("title", "")))
-        scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview); tree.configure(yscrollcommand=scroll.set)
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview, style="Shop.Vertical.TScrollbar"); tree.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y"); tree.pack(side="left", fill="both", expand=True)
 
     def _show_deals(self):
