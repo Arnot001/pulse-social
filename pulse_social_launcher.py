@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tkinter import messagebox
 
-from platforms.browser_control import running_browser_names
+from platforms.browser_control import connect_browser, running_browser_names
 from platforms.common.onboarding import open_get_started
 from platforms.pdh_bridge import bridge_status, ensure_bridge_server
 
@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent
 children: list[subprocess.Popen] = []
 status_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdh-status")
 status_future = None
+browser_future = None
 status_after_id = None
 
 
@@ -410,29 +411,44 @@ tk.Label(
     font=("Segoe UI", 10, "bold"),
 ).pack(side="left", padx=(18, 8))
 
-tk.Label(
-    browser_outer,
-    textvariable=browser_status_var,
-    fg=MUTED,
-    bg=PANEL,
-    font=("Segoe UI Variable Text", 9),
-).pack(side="left")
-
-
 def refresh_pdh_browser() -> None:
     global status_future
-    if status_future is None:
+    if status_future is None and browser_future is None:
         status_future = status_executor.submit(pdh_browser_status)
 
 
+def open_pulse_browser() -> None:
+    global browser_future
+    if browser_future is not None:
+        return
+    open_browser_button.configure(state="disabled")
+    browser_status_var.set("OPENING PULSE BROWSER...")
+    # Share the worker with status checks; never block Tk or launch twice.
+    browser_future = status_executor.submit(connect_browser)
+
+
 def poll_pdh_browser_status() -> None:
-    global status_future, status_after_id
+    global status_future, browser_future, status_after_id
     if status_future is not None and status_future.done():
         try:
-            browser_status_var.set(status_future.result())
+            status = status_future.result()
         except Exception:
-            browser_status_var.set("PDH STATUS UNAVAILABLE")
+            status = "PDH STATUS UNAVAILABLE"
+        if browser_future is None:
+            browser_status_var.set(status)
         status_future = None
+    if browser_future is not None and browser_future.done():
+        try:
+            ok, detail = browser_future.result()
+        except Exception as exc:
+            ok, detail = False, str(exc)
+        browser_future = None
+        open_browser_button.configure(state="normal")
+        browser_status_var.set(
+            "PULSE BROWSER OPEN // CHECKING PDH" if ok else "PULSE BROWSER COULD NOT OPEN"
+        )
+        if not ok:
+            messagebox.showerror("Pulse Browser", detail, parent=root)
     refresh_pdh_browser()
     status_after_id = root.after(2000, poll_pdh_browser_status)
 
@@ -443,6 +459,19 @@ button(
     refresh_pdh_browser,
     accent=True,
 ).pack(side="right", padx=12, pady=8)
+
+open_browser_button = button(browser_outer, "OPEN PULSE BROWSER", open_pulse_browser)
+open_browser_button.pack(side="right", padx=(8, 0), pady=8)
+
+# Reserve room for both actions even when the status text is long.
+tk.Label(
+    browser_outer,
+    textvariable=browser_status_var,
+    fg=MUTED,
+    bg=PANEL,
+    font=("Segoe UI Variable Text", 9),
+    anchor="w",
+).pack(side="left", fill="x", expand=True)
 
 # PLATFORM CARDS
 nav = tk.Canvas(backdrop, bg=BG, bd=0, highlightthickness=0)
