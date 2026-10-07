@@ -174,6 +174,10 @@ class TikTokAutoPostView(tk.Frame):
             foreground=TEXT,
             rowheight=31,
             borderwidth=0,
+            relief="flat",
+            bordercolor=BORDER,
+            lightcolor=BORDER,
+            darkcolor=BORDER,
             font=("Segoe UI", 9),
         )
         style.map(
