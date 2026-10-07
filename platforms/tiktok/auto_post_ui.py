@@ -118,8 +118,9 @@ AUTO_DELETE_PRESETS = {
 
 
 class TikTokAutoPostView(tk.Frame):
-    def __init__(self, master, **kwargs):
+    def __init__(self, master, *, embedded=False, **kwargs):
         super().__init__(master, bg=BG, **kwargs)
+        self.embedded = embedded
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
         self.oauth_worker: threading.Thread | None = None
@@ -295,53 +296,57 @@ class TikTokAutoPostView(tk.Frame):
 
         self._ambient_after_id = self.after(135, animate_backdrop)
 
-        header = tk.Frame(self, bg=BG)
-        header.pack(fill="x", padx=28, pady=(18, 6))
+        outer_pad = 14 if self.embedded else 28
+        section_gap = 7 if self.embedded else 9
 
-        badge = tk.Canvas(header, width=38, height=38, bg=BG, highlightthickness=0, bd=0)
-        badge.pack(side="left", padx=(0, 12))
-        badge.create_rectangle(3, 3, 35, 35, outline="#35243e", fill="#0b1018", width=1)
-        badge.create_text(20, 20, text="♪", fill=ACCENT_2, font=("Segoe UI Symbol", 20, "bold"))
-        badge.create_text(17, 17, text="♪", fill=ACCENT, font=("Segoe UI Symbol", 20, "bold"))
-        badge.create_text(18.5, 18.5, text="♪", fill=TEXT, font=("Segoe UI Symbol", 18, "bold"))
+        if not self.embedded:
+            header = tk.Frame(self, bg=BG)
+            header.pack(fill="x", padx=28, pady=(18, 6))
 
-        brand = tk.Frame(header, bg=BG)
-        brand.pack(side="left")
-        brand_row = tk.Frame(brand, bg=BG)
-        brand_row.pack(anchor="w")
-        tk.Label(
-            brand_row,
-            text="PULSE",
-            fg=TEXT,
-            bg=BG,
-            font=("Segoe UI", 24, "bold"),
-        ).pack(side="left")
-        tk.Label(
-            brand_row,
-            text=" TIKTOK",
-            fg=ACCENT_2,
-            bg=BG,
-            font=("Segoe UI", 24, "bold"),
-        ).pack(side="left")
-        tk.Label(
-            brand,
-            text="Create, schedule and manage TikTok posts from one workspace.",
-            fg=MUTED,
-            bg=BG,
-            font=("Segoe UI", 9),
-        ).pack(anchor="w", pady=(1, 0))
-        tk.Label(
-            header,
-            text="AUTO POST",
-            fg=ACCENT,
-            bg=BG,
-            font=("Segoe UI", 9, "bold"),
-        ).pack(side="right", pady=12)
+            badge = tk.Canvas(header, width=38, height=38, bg=BG, highlightthickness=0, bd=0)
+            badge.pack(side="left", padx=(0, 12))
+            badge.create_rectangle(3, 3, 35, 35, outline="#35243e", fill="#0b1018", width=1)
+            badge.create_text(20, 20, text="♪", fill=ACCENT_2, font=("Segoe UI Symbol", 20, "bold"))
+            badge.create_text(17, 17, text="♪", fill=ACCENT, font=("Segoe UI Symbol", 20, "bold"))
+            badge.create_text(18.5, 18.5, text="♪", fill=TEXT, font=("Segoe UI Symbol", 18, "bold"))
 
-        tk.Frame(self, bg="#2a1834", height=1).pack(fill="x", padx=28, pady=(0, 7))
+            brand = tk.Frame(header, bg=BG)
+            brand.pack(side="left")
+            brand_row = tk.Frame(brand, bg=BG)
+            brand_row.pack(anchor="w")
+            tk.Label(
+                brand_row,
+                text="PULSE",
+                fg=TEXT,
+                bg=BG,
+                font=("Segoe UI", 24, "bold"),
+            ).pack(side="left")
+            tk.Label(
+                brand_row,
+                text=" TIKTOK",
+                fg=ACCENT_2,
+                bg=BG,
+                font=("Segoe UI", 24, "bold"),
+            ).pack(side="left")
+            tk.Label(
+                brand,
+                text="Create, schedule and manage TikTok posts from one workspace.",
+                fg=MUTED,
+                bg=BG,
+                font=("Segoe UI", 9),
+            ).pack(anchor="w", pady=(1, 0))
+            tk.Label(
+                header,
+                text="AUTO POST",
+                fg=ACCENT,
+                bg=BG,
+                font=("Segoe UI", 9, "bold"),
+            ).pack(side="right", pady=12)
+
+            tk.Frame(self, bg="#2a1834", height=1).pack(fill="x", padx=28, pady=(0, 7))
 
         connection_shell = tk.Frame(self, bg="#11303a", padx=1, pady=1)
-        connection_shell.pack(fill="x", padx=28, pady=(0, 9))
+        connection_shell.pack(fill="x", padx=outer_pad, pady=((8 if self.embedded else 0), section_gap))
         connection = tk.Frame(connection_shell, bg=PANEL)
         connection.pack(fill="x")
         tk.Frame(connection, bg=ACCENT_2, width=3).pack(side="left", fill="y")
@@ -376,7 +381,7 @@ class TikTokAutoPostView(tk.Frame):
         ).pack(side="right", padx=10, pady=6)
 
         top = tk.Frame(self, bg=BG)
-        top.pack(fill="x", padx=28, pady=(0, 9))
+        top.pack(fill="x", padx=outer_pad, pady=(0, section_gap))
         top.grid_columnconfigure(0, weight=3, uniform="post")
         top.grid_columnconfigure(1, weight=2, uniform="post")
 
@@ -434,7 +439,7 @@ class TikTokAutoPostView(tk.Frame):
 
         self.caption = tk.Text(
             compose,
-            height=5,
+            height=4 if self.embedded else 5,
             bg=SURFACE,
             fg=TEXT,
             insertbackground=TEXT,
@@ -645,7 +650,7 @@ class TikTokAutoPostView(tk.Frame):
         ).grid(row=0, column=3, rowspan=2, padx=(12, 8), pady=7)
 
         stats_shell = tk.Frame(self, bg="#23152b", padx=1, pady=1)
-        stats_shell.pack(fill="x", padx=28, pady=(0, 9))
+        stats_shell.pack(fill="x", padx=outer_pad, pady=(0, section_gap))
         stats_row = tk.Frame(stats_shell, bg=PANEL)
         stats_row.pack(fill="x")
         tk.Label(
@@ -725,7 +730,7 @@ class TikTokAutoPostView(tk.Frame):
             columns=cols,
             show="headings",
             style="TikTok.Treeview",
-            height=3,
+            height=2 if self.embedded else 3,
         )
         widths = {
             "due": 130,
@@ -766,7 +771,7 @@ class TikTokAutoPostView(tk.Frame):
         queue_xscroll.grid(row=2, column=0, columnspan=2, sticky="ew")
 
         activity = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        activity.pack(fill="x", padx=28, pady=(0, 14))
+        activity.pack(fill="x", padx=outer_pad, pady=(0, 8 if self.embedded else 14))
         activity_head = tk.Frame(activity, bg=PANEL)
         activity_head.pack(fill="x", padx=12, pady=(8, 5))
         tk.Label(
@@ -796,7 +801,7 @@ class TikTokAutoPostView(tk.Frame):
 
         self.log = tk.Text(
             log_body,
-            height=3,
+            height=2 if self.embedded else 3,
             bg=SURFACE,
             fg="#cbd3df",
             insertbackground=TEXT,
