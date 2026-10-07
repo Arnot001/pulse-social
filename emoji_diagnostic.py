@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import json
+import argparse
+import gc
 import os
 import platform
 import sys
 import time
 import traceback
+from collections import Counter
 from pathlib import Path
 
 LOG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Pulse Social"
@@ -23,182 +25,130 @@ def log(message: str) -> None:
         pass
 
 
-def timed(label: str, fn):
-    log(f"START {label}")
-    started = time.perf_counter()
-    result = fn()
-    elapsed = time.perf_counter() - started
-    log(f"PASS  {label} · {elapsed:.3f}s")
-    return result
+def widgets(parent):
+    for child in parent.winfo_children():
+        yield child
+        yield from widgets(child)
 
 
-def main() -> int:
-    log("=" * 64)
+def wait_for_sprite(root, window, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        root.update()
+        status = window._emoji_diagnostics()
+        if status["sprite_error"]:
+            raise RuntimeError(status["sprite_error"])
+        if status["sprite_state"] == "ready" and "pending" not in status["sources"]:
+            return
+        time.sleep(0.01)
+    raise TimeoutError("The real picker did not finish loading its sprite within 10 seconds.")
+
+
+def verify_picker(root, window):
+    """Exercise the real picker and read pixels back from its Tk button images."""
+    from PIL import Image, ImageTk
+    from platforms.common import emoji_picker as picker
+
+    wait_for_sprite(root, window)
+    categories = {w._emoji_category: w for w in widgets(window) if hasattr(w, "_emoji_category")}
+    tones = {w._emoji_tone: w for w in widgets(window) if hasattr(w, "_emoji_tone")}
+    manifest = picker._load_sprite_manifest()
+    with Image.open(picker._resource_path(picker.SPRITE_RELATIVE_PATH)) as source:
+        sheet = source.convert("RGBA")
+    total = 0
+
+    def check(category, tone="DEFAULT"):
+        nonlocal total
+        categories[category].invoke()
+        tones[tone].invoke()
+        root.update()
+        gc.collect()
+        buttons = [w for w in widgets(window) if hasattr(w, "_emoji")]
+        expected_values = picker.filter_emojis(category, tone=tone)
+        if [w._emoji for w in buttons] != expected_values:
+            raise AssertionError(f"{category}: the picker did not render the requested category.")
+        counts = Counter()
+        for button in buttons:
+            emoji = button._emoji
+            source = button._emoji_source
+            counts[source] += 1
+            if source not in {"embedded", "sprite"} or not button.cget("image"):
+                raise AssertionError(f"{category}: {ascii(emoji)} is using {source}, not artwork.")
+            # PhotoImage references must survive GC; compare pixels from the actual
+            # Tk image, not merely the Pillow tile or diagnostic source label.
+            photo = button._emoji_photo
+            if str(photo) != str(button.cget("image")):
+                raise AssertionError("Button image reference does not match its Tk image.")
+            if source == "sprite":
+                coords = manifest.get(emoji) or manifest.get(emoji.replace("\ufe0f", ""))
+                x, y = (value * 34 + 1 for value in coords)
+                expected = sheet.crop((x, y, x + 32, y + 32)).resize((28, 28), Image.Resampling.LANCZOS)
+                actual = ImageTk.getimage(photo)
+                # Tk can discard RGB data on fully transparent pixels.
+                background = Image.new("RGBA", (28, 28), picker.PANEL)
+                if (Image.alpha_composite(background, actual).tobytes()
+                        != Image.alpha_composite(background, expected).tobytes()):
+                    raise AssertionError(f"Wrong sprite pixels: {ascii(emoji)}")
+            total += 1
+        log(f"PASS {category}/{tone}: {len(buttons)} real Tk buttons, {dict(counts)}")
+
+    for category in picker.EMOJI_CATALOG:
+        check(category)
+    for tone in picker.TONE_MODIFIERS:
+        if tone != "DEFAULT":
+            check("PEOPLE", tone)
+    categories["ANIMALS"].invoke()
+    root.update()
+    log(f"PASS actual picker: {total} button images verified, including all skin tones")
+    return total
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Verify the actual offline Tk emoji picker.")
+    parser.add_argument("--show-picker", action="store_true", help="Leave the real picker open for visual inspection.")
+    args = parser.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    root = None
     log("PULSE SOCIAL EMOJI DIAGNOSTIC")
-    log(f"Python {sys.version.split()[0]} · {platform.platform()}")
+    log(f"Python {sys.version.split()[0]} | {platform.platform()}")
     log(f"Executable: {sys.executable}")
-    log(f"Repo: {Path.cwd()}")
-    log(f"Log: {LOG_PATH}")
-
     try:
         import tkinter as tk
-        log(f"Tkinter imported · Tk {tk.TkVersion} · Tcl {tk.TclVersion}")
-
         try:
             import PIL
-            from PIL import Image, ImageTk
-            log(f"Pillow {getattr(PIL, '__version__', 'unknown')}")
-        except Exception as exc:
-            Image = ImageTk = None
-            log(f"Pillow unavailable/error: {exc!r}")
-
-        def import_assets():
-            from platforms.common import emoji_assets
-            return emoji_assets
-
-        emoji_assets = timed("import embedded emoji asset modules", import_assets)
-        asset_count = len(getattr(emoji_assets, "ASSETS", {}))
-        encoded_chars = sum(len(value) for value in getattr(emoji_assets, "ASSETS", {}).values())
-        log(f"Embedded assets: {asset_count} · base64 chars: {encoded_chars:,}")
-
-        def import_picker():
-            from platforms.common import emoji_picker
-            return emoji_picker
-
-        picker = timed("import emoji picker module", import_picker)
-        log(
-            "Catalog sizes: "
-            + ", ".join(f"{name}={len(values)}" for name, values in picker.EMOJI_CATALOG.items())
-        )
-
-        manifest_path = picker._resource_path(picker.SPRITE_MANIFEST_RELATIVE_PATH)
-        sprite_path = picker._resource_path(picker.SPRITE_RELATIVE_PATH)
-        log(f"Manifest path: {manifest_path} · exists={manifest_path.exists()}")
-        log(
-            f"Sprite path: {sprite_path} · exists={sprite_path.exists()} · "
-            f"size={sprite_path.stat().st_size:,} bytes" if sprite_path.exists()
-            else f"Sprite path: {sprite_path} · exists=False"
-        )
-
-        manifest = timed("read sprite manifest", picker._load_sprite_manifest)
-        log(f"Manifest entries: {len(manifest)}")
-
-        root = timed("create Tk root", lambda: tk.Tk())
-        root.withdraw()
-
-        def render_embedded_sample():
-            refs = []
-            sample = list(picker.EMOJI_CATALOG["SMILEYS"])[:20]
-            for index, emoji in enumerate(sample, start=1):
-                data = emoji_assets.asset_base64(emoji)
-                if not data:
-                    continue
-                if index in {1, 5, 10, 20}:
-                    log(f"  embedded PhotoImage progress {index}/{len(sample)}")
-                refs.append(tk.PhotoImage(data=data))
-            root._diag_refs = refs
-            root.update_idletasks()
-            return len(refs)
-
-        embedded_count = timed("create 20 embedded Tk PhotoImages", render_embedded_sample)
-        log(f"Embedded PhotoImages created: {embedded_count}")
-
-        def render_all_smileys():
-            refs = []
-            smileys = list(picker.EMOJI_CATALOG["SMILEYS"])
-            for index, emoji in enumerate(smileys, start=1):
-                data = emoji_assets.asset_base64(emoji)
-                if data:
-                    refs.append(tk.PhotoImage(data=data))
-                if index % 25 == 0 or index == len(smileys):
-                    log(f"  full smiley PhotoImage progress {index}/{len(smileys)}")
-                    root.update_idletasks()
-            root._diag_smiley_refs = refs
-            return len(refs)
-
-        smiley_count = timed("create all smiley Tk PhotoImages", render_all_smileys)
-        log(f"Full smiley PhotoImages created: {smiley_count}")
-
-        sprite_image = None
-        if sprite_path.exists() and Image is not None and ImageTk is not None:
-            def load_sprite_with_pillow():
-                nonlocal sprite_image
-                with Image.open(sprite_path) as source:
-                    loaded = source.convert("RGBA")
-                    loaded.load()
-                sprite_image = loaded
-                return loaded.size
-
-            dimensions = timed("decode 6.38 MB sprite with Pillow", load_sprite_with_pillow)
-            log(f"Sprite dimensions: {dimensions[0]}x{dimensions[1]}")
-
-            def crop_sprite_cells():
-                refs = []
-                sample = ["😀", "😂", "👋", "🐶", "🍕", "⚽", "✈️", "💡", "❤️", "🏁"]
-                for index, emoji in enumerate(sample, start=1):
-                    coords = manifest.get(emoji) or manifest.get(emoji.replace("\ufe0f", ""))
-                    if coords is None:
-                        log(f"  no manifest coords for {emoji}")
-                        continue
-                    source_x = coords[0] * picker.SPRITE_CELL + 1
-                    source_y = coords[1] * picker.SPRITE_CELL + 1
-                    tile = sprite_image.crop(
-                        (
-                            source_x,
-                            source_y,
-                            source_x + picker.SPRITE_SIZE,
-                            source_y + picker.SPRITE_SIZE,
-                        )
-                    )
-                    photo = ImageTk.PhotoImage(tile)
-                    refs.append(photo)
-                    log(f"  cropped colour sprite cell {index}/{len(sample)} · {emoji}")
-                root._diag_cell_refs = refs
-                root.update_idletasks()
-                return len(refs)
-
-            copied = timed("crop 10 colour cells and create Tk images", crop_sprite_cells)
-            log(f"Colour sprite cells created: {copied}")
-
-        def build_button_grid():
-            top = tk.Toplevel(root)
-            top.withdraw()
-            frame = tk.Frame(top)
-            frame.pack()
-            refs = []
-            buttons = []
-            values = list(picker.EMOJI_CATALOG["SMILEYS"])
-            for index, emoji in enumerate(values):
-                data = emoji_assets.asset_base64(emoji)
-                if data:
-                    photo = tk.PhotoImage(data=data).subsample(2, 2)
-                    refs.append(photo)
-                    button = tk.Button(frame, image=photo, width=46, height=44)
-                else:
-                    button = tk.Button(frame, text=emoji, width=3, height=1)
-                button.grid(row=index // 10, column=index % 10)
-                buttons.append(button)
-                if (index + 1) % 25 == 0 or index + 1 == len(values):
-                    log(f"  button-grid progress {index + 1}/{len(values)}")
-            top._diag_refs = refs
-            top._diag_buttons = buttons
-            top.update_idletasks()
-            top.destroy()
-            return len(buttons)
-
-        button_count = timed("construct full smiley button grid", build_button_grid)
-        log(f"Buttons constructed: {button_count}")
-
-        root.destroy()
-        log("RESULT: ALL LOW-LEVEL EMOJI TESTS PASSED")
-        log("If Social still crashes, the fault is in picker/app integration rather than raw image decoding.")
+            from PIL import ImageTk
+        except ImportError as exc:
+            raise RuntimeError("Pillow is required. Install the project requirements with this Python and restart Social.") from exc
+        log(f"Pillow {PIL.__version__} | Tk {tk.TkVersion}")
+        from platforms.common import emoji_picker as picker
+        log(f"Sprite: {picker._resource_path(picker.SPRITE_RELATIVE_PATH)}")
+        log(f"Manifest entries: {len(picker._load_sprite_manifest())}")
+        root = tk.Tk()
+        root.title("Emoji diagnostic - no posting")
+        root.geometry("420x100")
+        if not args.show_picker:
+            root.withdraw()
+        target = tk.Text(root, height=2)
+        target.pack(fill="both", expand=True)
+        window = picker.open_emoji_picker(target)
+        verify_picker(root, window)
+        log("RESULT: ACTUAL TK PICKER ARTWORK CHECKS PASSED")
+        if args.show_picker:
+            log("Picker left open on ANIMALS for visual inspection; close the diagnostic to finish.")
+            window.protocol("WM_DELETE_WINDOW", root.destroy)
+            window.lift()
+            root.mainloop()
+            root = None
         return 0
-
-    except BaseException as exc:
+    except Exception as exc:
         log(f"FAIL: {type(exc).__name__}: {exc}")
         for line in traceback.format_exc().splitlines():
             log(line)
         return 1
+    finally:
+        if root is not None:
+            root.destroy()
 
 
 if __name__ == "__main__":

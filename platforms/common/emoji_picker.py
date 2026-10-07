@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
@@ -85,7 +86,7 @@ CATEGORY_LABELS = {
     "FLAGS": "🏁",
 }
 
-# Curated Unicode only. No external artwork, web service, or runtime dependency.
+# Curated Unicode catalog; artwork is bundled locally. No runtime network access.
 EMOJI_CATALOG = {
     "SMILEYS": "😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 🙃 😉 😌 😍 🥰 😘 😗 😙 😚 😋 😛 😝 😜 🤪 🤨 🧐 🤓 😎 🥸 🤩 🥳 😏 😒 😞 😔 😟 😕 🙁 ☹️ 😣 😖 😫 😩 🥺 😢 😭 😤 😠 😡 🤬 🤯 😳 🥵 🥶 😱 😨 😰 😥 😓 🤗 🤔 🫣 🤭 🫢 🫡 🤫 🫠 🤥 😶 🫥 😐 🫤 😑 😬 🙄 😯 😦 😧 😮 😲 🥱 😴 🤤 😪 😵 😵‍💫 🤐 🥴 🤢 🤮 🤧 😷 🤒 🤕 🤑 🤠 😈 👿 👹 👺 🤡 💩 👻 💀 ☠️ 👽 👾 🤖 🎃 😺 😸 😹 😻 😼 😽 🙀 😿 😾".split(),
     "PEOPLE": "👋 🤚 🖐️ ✋ 🖖 🫱 🫲 🫳 🫴 👌 🤌 🤏 ✌️ 🤞 🫰 🤟 🤘 🤙 👈 👉 👆 🖕 👇 ☝️ 👍 👎 ✊ 👊 🤛 🤜 👏 🙌 🫶 👐 🤲 🤝 🙏 ✍️ 💅 🤳 💪 🦾 🦵 🦿 🦶 👂 🦻 👃 🧠 🫀 🫁 🦷 🦴 👀 👁️ 👅 👄 🫦 👶 🧒 👦 👧 🧑 👱 👨 🧔 👩 🧓 👴 👵 🙍 🙎 🙅 🙆 💁 🙋 🧏 🙇 🤦 🤷 👮 🕵️ 💂 🥷 👷 🫅 🤴 👸 👳 👲 🧕 🤵 👰 🤰 🫃 🫄 🤱 👼 🎅 🤶 🦸 🦹 🧙 🧚 🧛 🧜 🧝 🧞 🧟 💆 💇 🚶 🧍 🧎 🏃 💃 🕺 🕴️ 👯 🧖 🧗 🤺 🏇 ⛷️ 🏂 🏌️ 🏄 🚣 🏊 ⛹️ 🏋️ 🚴 🚵 🤸 🤼 🤽 🤾 🤹 🧘 🛀 🛌 👭 👫 👬 💏 💑 👪".split(),
@@ -328,6 +329,23 @@ def open_emoji_picker(
     sprite_state = "idle"
     sprite_error = None
     sprite_path = _resource_path(SPRITE_RELATIVE_PATH)
+    image_sources: dict[tuple[str, int], str] = {}
+    reported_error = False
+
+    def report_sprite_error(error):
+        nonlocal sprite_error, reported_error
+        sprite_error = str(error)
+        if not reported_error:
+            logging.getLogger(__name__).error("Emoji sprite artwork unavailable: %s", error)
+            reported_error = True
+
+    # Read-only diagnostics for the actual picker, including the visible buttons.
+    window._emoji_diagnostics = lambda: {
+        "sprite_state": sprite_state,
+        "sprite_error": str(sprite_error) if sprite_error else None,
+        "category": category_var.get(),
+        "sources": [getattr(btn, "_emoji_source", None) for btn in grid.winfo_children()],
+    }
 
     def poll_sprite_loader():
         if sprite_state == "loading":
@@ -337,6 +355,8 @@ def open_emoji_picker(
             except tk.TclError:
                 pass
             return
+        if sprite_state == "failed":
+            report_sprite_error(sprite_error)
         if sprite_state == "ready":
             try:
                 if window.winfo_exists():
@@ -348,8 +368,16 @@ def open_emoji_picker(
         nonlocal sprite_state
         if sprite_state != "idle":
             return
-        if Image is None or ImageTk is None or not sprite_manifest or not sprite_path.exists():
+        error = None
+        if Image is None or ImageTk is None:
+            error = f"Pillow is required by {sys.executable}; install the project requirements and restart Social."
+        elif not sprite_manifest:
+            error = "The bundled emoji manifest is missing or invalid."
+        elif not sprite_path.exists():
+            error = f"The bundled emoji sprite is missing: {sprite_path}"
+        if error:
             sprite_state = "failed"
+            report_sprite_error(error)
             return
 
         sprite_state = "loading"
@@ -381,10 +409,11 @@ def open_emoji_picker(
         bundled = asset_base64(emoji)
         if bundled:
             try:
-                photo = tk.PhotoImage(data=bundled)
+                photo = tk.PhotoImage(master=window, data=bundled)
                 divisor = 2 if size >= 24 else 3
                 photo = photo.subsample(divisor, divisor)
                 emoji_images[key] = photo
+                image_sources[key] = "embedded"
                 return photo
             except tk.TclError:
                 pass
@@ -396,6 +425,10 @@ def open_emoji_picker(
             try:
                 source_x = coords[0] * SPRITE_CELL + 1
                 source_y = coords[1] * SPRITE_CELL + 1
+                if (source_x < 1 or source_y < 1
+                        or source_x + SPRITE_SIZE > sprite_image.width
+                        or source_y + SPRITE_SIZE > sprite_image.height):
+                    raise ValueError("Emoji sprite coordinates are outside the bundled sheet.")
                 tile = sprite_image.crop(
                     (
                         source_x,
@@ -407,13 +440,17 @@ def open_emoji_picker(
                 if size != SPRITE_SIZE:
                     resampling = getattr(Image, "Resampling", Image)
                     tile = tile.resize((size, size), resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(tile)
+                # Called only by Tk callbacks; the worker decodes Pillow data only.
+                photo = ImageTk.PhotoImage(tile, master=window)
                 emoji_images[key] = photo
+                image_sources[key] = "sprite"
                 return photo
-            except Exception:
-                pass
+            except Exception as exc:
+                report_sprite_error(exc)
 
-        if coords is not None and sprite_state in {"idle", "loading"}:
+        # Never cache a font substitute for artwork that exists. Loading or
+        # rendering failures must stay diagnosable and allow a later render.
+        if coords is not None:
             return None
 
         if Image is None or ImageDraw is None or ImageFont is None or ImageTk is None:
@@ -435,11 +472,12 @@ def open_emoji_picker(
                 anchor="mm",
                 embedded_color=True,
             )
-            photo = ImageTk.PhotoImage(image)
+            photo = ImageTk.PhotoImage(image, master=window)
         except Exception:
             photo = None
 
         emoji_images[key] = photo
+        image_sources[key] = "font"
         return photo
 
     def render(*_):
@@ -476,7 +514,6 @@ def open_emoji_picker(
                 waiting_for_colour = (
                     photo is None
                     and has_sprite_asset
-                    and sprite_state in {"idle", "loading"}
                 )
                 if photo is not None:
                     btn = tk.Button(
@@ -531,6 +568,9 @@ def open_emoji_picker(
                         cursor="hand2",
                     )
 
+                btn._emoji = emoji
+                btn._emoji_photo = photo
+                btn._emoji_source = image_sources.get((emoji, 28), "pending" if has_sprite_asset else "font")
                 btn.bind(
                     "<Enter>",
                     lambda _event, widget=btn, glow=tile_glow: widget.configure(
@@ -615,6 +655,7 @@ def open_emoji_picker(
             )
         btn.pack(side="left", padx=(0, 4))
         category_buttons[name] = btn
+        btn._emoji_category = name
 
     for name, glyph in tone_labels:
         btn = tk.Button(
@@ -634,6 +675,7 @@ def open_emoji_picker(
         )
         btn.pack(side="left", padx=(5, 0))
         tone_buttons[name] = btn
+        btn._emoji_tone = name
 
     def resize_grid(event):
         canvas.itemconfigure(canvas_window, width=event.width)
