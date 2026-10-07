@@ -100,44 +100,14 @@ class TikTokModule(tk.Frame):
         self._ambient_after_id = self.after(150, animate)
         self.bind("<Destroy>", self._on_destroy, add="+")
 
-        header = tk.Frame(self, bg=BG)
-        header.pack(fill="x", padx=24, pady=(18, 7))
-        badge = tk.Canvas(header, width=38, height=38, bg=BG, highlightthickness=0, bd=0)
-        badge.pack(side="left", padx=(0, 12))
-        badge.create_rectangle(3, 3, 35, 35, outline="#35243e", fill="#0b1018", width=1)
-        badge.create_text(20, 20, text="♪", fill=ACCENT, font=("Segoe UI Symbol", 20, "bold"))
-        badge.create_text(17, 17, text="♪", fill=ACCENT_2, font=("Segoe UI Symbol", 20, "bold"))
-        badge.create_text(18.5, 18.5, text="♪", fill=TEXT, font=("Segoe UI Symbol", 18, "bold"))
-
-        brand = tk.Frame(header, bg=BG)
-        brand.pack(side="left")
-        title = tk.Frame(brand, bg=BG)
-        title.pack(anchor="w")
-        tk.Label(title, text="PULSE", bg=BG, fg=TEXT, font=("Segoe UI", 22, "bold")).pack(side="left")
-        tk.Label(title, text=" TIKTOK", bg=BG, fg=ACCENT, font=("Segoe UI", 22, "bold")).pack(side="left")
-        tk.Label(
-            brand,
-            text="Shop intelligence and publishing tools in one TikTok workspace.",
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 9),
-        ).pack(anchor="w", pady=(1, 0))
-        tk.Label(
-            header,
-            text="PLATFORM MODULE",
-            bg=BG,
-            fg=ACCENT_2,
-            font=("Segoe UI", 8, "bold"),
-        ).pack(side="right", pady=12)
-
         nav_shell = tk.Frame(self, bg="#11303a", padx=1, pady=1)
-        nav_shell.pack(fill="x", padx=24, pady=(0, 10))
+        nav_shell.pack(fill="x", padx=14, pady=(14, 8))
         nav = tk.Frame(nav_shell, bg=PANEL)
         nav.pack(fill="x")
         tk.Label(nav, text="TOOLS", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(
             side="left", padx=(13, 11), pady=9
         )
-        for key, label in (("shop", "SHOP"), ("autopost", "AUTO POST"), ("analytics", "ANALYTICS")):
+        for key, label in (("shop", "SHOP"), ("autopost", "AUTO POST")):
             button = tk.Button(
                 nav,
                 text=label,
@@ -159,7 +129,7 @@ class TikTokModule(tk.Frame):
             self.feature_buttons[key] = button
 
         self.content = tk.Frame(self, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
-        self.content.pack(fill="both", expand=True, padx=24, pady=(0, 24))
+        self.content.pack(fill="both", expand=True, padx=14, pady=(0, 14))
 
     def _clear_content(self):
         for child in self.content.winfo_children():
@@ -178,7 +148,7 @@ class TikTokModule(tk.Frame):
         if feature == "shop":
             TikTokShopView(self.content).pack(fill="both", expand=True)
         elif feature == "autopost":
-            TikTokAutoPostView(self.content).pack(fill="both", expand=True)
+            TikTokAutoPostView(self.content, embedded=True).pack(fill="both", expand=True)
         else:
             self._show_placeholder("ANALYTICS", "TikTok account and content intelligence will live here.")
 
