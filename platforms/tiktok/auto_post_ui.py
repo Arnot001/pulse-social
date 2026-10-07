@@ -712,7 +712,15 @@ class TikTokAutoPostView(tk.Frame):
             font=("Segoe UI", 8),
         ).pack(side="right", padx=12, pady=8)
 
-        queue_parent = self if self.embedded else top
+        lower = None
+        if self.embedded:
+            lower = tk.Frame(self, bg=BG)
+            lower.pack(fill="both", expand=True, padx=outer_pad, pady=(0, 8))
+            lower.grid_rowconfigure(0, weight=1)
+            lower.grid_columnconfigure(0, weight=3, uniform="lower")
+            lower.grid_columnconfigure(1, weight=2, uniform="lower")
+
+        queue_parent = lower if self.embedded else top
         queue_card = tk.Frame(
             queue_parent,
             bg=TABLE_BG,
@@ -720,9 +728,7 @@ class TikTokAutoPostView(tk.Frame):
             highlightbackground=BORDER,
         )
         if self.embedded:
-            queue_card.pack(fill="x", padx=outer_pad, pady=(0, section_gap))
-            queue_card.configure(height=138)
-            queue_card.pack_propagate(False)
+            queue_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         else:
             queue_card.grid(row=1, column=0, sticky="nsew", padx=(0, 7), pady=(7, 0))
 
@@ -758,7 +764,7 @@ class TikTokAutoPostView(tk.Frame):
             columns=cols,
             show="headings",
             style="TikTok.Treeview",
-            height=3,
+            height=4 if self.embedded else 3,
         )
         widths = {
             "due": 130,
@@ -798,16 +804,17 @@ class TikTokAutoPostView(tk.Frame):
         queue_scroll.grid(row=1, column=1, sticky="ns")
         queue_xscroll.grid(row=2, column=0, columnspan=2, sticky="ew")
 
-        activity = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        activity.pack(
-            fill="x",
-            expand=False,
-            padx=outer_pad,
-            pady=(0, 8 if self.embedded else 14),
+        activity_parent = lower if self.embedded else self
+        activity = tk.Frame(
+            activity_parent,
+            bg=PANEL,
+            highlightthickness=1,
+            highlightbackground=BORDER,
         )
         if self.embedded:
-            activity.configure(height=132)
-            activity.pack_propagate(False)
+            activity.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        else:
+            activity.pack(fill="x", padx=outer_pad, pady=(0, 14))
         activity_head = tk.Frame(activity, bg=PANEL)
         activity_head.pack(
             fill="x",
@@ -849,7 +856,7 @@ class TikTokAutoPostView(tk.Frame):
 
         self.log = tk.Text(
             log_body,
-            height=5 if self.embedded else 3,
+            height=7 if self.embedded else 3,
             bg=SURFACE,
             fg="#cbd3df",
             insertbackground=TEXT,
