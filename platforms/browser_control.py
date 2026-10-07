@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -111,6 +112,22 @@ def _profile_dir(spec: BrowserSpec) -> Path:
     return BROWSER_PROFILE_ROOT / spec.name.casefold()
 
 
+def bundled_pdh_extension_dir() -> Path | None:
+    """Return the release-bundled PDH extension when it is available."""
+    candidates = []
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "pdh_extension")
+
+    override = os.environ.get("PULSE_PDH_EXTENSION_DIR", "").strip()
+    if override:
+        candidates.append(Path(override).expanduser())
+
+    for candidate in candidates:
+        if (candidate / "manifest.json").is_file():
+            return candidate.resolve()
+    return None
+
+
 def _launch_args(spec: BrowserSpec, exe: Path, start_url: str | None = None) -> list[str]:
     profile_dir = _profile_dir(spec)
     args = [
@@ -121,6 +138,9 @@ def _launch_args(spec: BrowserSpec, exe: Path, start_url: str | None = None) -> 
         "--no-first-run",
         "--no-default-browser-check",
     ]
+    pdh_extension = bundled_pdh_extension_dir()
+    if pdh_extension is not None:
+        args.append(f"--load-extension={pdh_extension}")
     if start_url:
         args.append(start_url)
     return args
