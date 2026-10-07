@@ -1,4 +1,4 @@
 @echo off
-cd /d "C:\Users\lenno\Desktop\Pulse social"
+cd /d "%~dp0"
 py pulse_social_launcher.py
 pause
