@@ -29,17 +29,7 @@ CYAN = "#27def5"
 CYAN_SOFT = "#102d37"
 SUCCESS = "#31d27c"
 DANGER = "#9c213b"
-ROOT = (
-    Path(sys.executable).resolve().parent
-    if getattr(sys, "frozen", False)
-    else Path(__file__).resolve().parent
-)
-FROZEN_EXE_MAP = {
-    "pulse_social_ui.py": "Pulse Social X Cleanup.exe",
-    "x_auto_post_ui.py": "Pulse Social X Auto Post.exe",
-    "tiktok_shop_ui.py": "Pulse Social TikTok Shop.exe",
-    "tiktok_auto_post_ui.py": "Pulse Social TikTok Auto Post.exe",
-}
+ROOT = Path(__file__).resolve().parent
 children: list[subprocess.Popen] = []
 status_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdh-status")
 status_future = None
@@ -207,26 +197,7 @@ def platform_badge(parent, title, card_bg, accent):
 
 
 def launch(script: str) -> None:
-    if getattr(sys, "frozen", False):
-        executable_name = FROZEN_EXE_MAP.get(script)
-        if not executable_name:
-            messagebox.showerror(
-                "Pulse Social",
-                f"No packaged launcher target is configured for {script}.",
-                parent=root,
-            )
-            return
-        target = ROOT / executable_name
-        if not target.is_file():
-            messagebox.showerror(
-                "Pulse Social",
-                f"Pulse Social component is missing:\n\n{target.name}",
-                parent=root,
-            )
-            return
-        proc = subprocess.Popen([str(target)], cwd=str(ROOT))
-    else:
-        proc = subprocess.Popen([sys.executable, str(ROOT / script)], cwd=str(ROOT))
+    proc = subprocess.Popen([sys.executable, str(ROOT / script)], cwd=str(ROOT))
     children.append(proc)
 
 
