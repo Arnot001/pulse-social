@@ -45,6 +45,7 @@ if (-not $SkipTests) {
         tests/test_emoji_picker.py `
         tests/test_emoji_assets.py `
         tests/test_release_bootstrap.py `
+        tests/test_pulse_splash.py `
         -q
     if ($LASTEXITCODE -ne 0) {
         throw "Focused release tests failed."
