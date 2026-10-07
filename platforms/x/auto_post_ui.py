@@ -502,7 +502,7 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     # ACTIVITY
     activity = tk.Frame(window, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-    activity.pack(fill="x", padx=28, pady=(0, 14))
+    activity.pack(fill="both", expand=True, padx=28, pady=(0, 14))
     activity_head = tk.Frame(activity, bg=PANEL)
     activity_head.pack(fill="x", padx=14, pady=(10, 6))
     tk.Label(activity_head, text="ACTIVITY", fg=TEXT, bg=PANEL, font=("Segoe UI", 10, "bold")).pack(side="left")
