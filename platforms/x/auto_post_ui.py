@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -24,13 +25,64 @@ ACCENT_2 = "#ff4bb0"
 SUCCESS = "#35d07f"
 WARNING = "#f0b85a"
 DANGER = "#ff4d67"
+SOFT_BORDER = "#3b2944"
+SUBTLE = "#65758b"
+TABLE_BG = "#0b111b"
+
+_WAVE_TILE_WIDTH = 900
+_WAVE_TILE_HEIGHT = 820
+_WAVE_PPM_CACHE = None
+
+
+def _wave_ppm():
+    """Smooth local raster ambience matching the polished Pulse Social surfaces."""
+    global _WAVE_PPM_CACHE
+    if _WAVE_PPM_CACHE is not None:
+        return _WAVE_PPM_CACHE
+
+    width = _WAVE_TILE_WIDTH
+    height = _WAVE_TILE_HEIGHT
+    base = (6, 7, 11)
+    centers = []
+    for x in range(width):
+        t = (x / width) * math.tau
+        centers.append(
+            (
+                145 + 34 * math.sin(t + 0.35) + 12 * math.sin(t * 0.48 + 1.1),
+                435 + 48 * math.sin(t * 0.82 + 1.9) + 18 * math.sin(t * 0.36 - 0.5),
+                710 + 38 * math.sin(t * 1.05 + 3.0) + 14 * math.sin(t * 0.50 + 0.8),
+            )
+        )
+
+    def gaussian_lookup(sigma):
+        return [math.exp(-((distance / sigma) ** 2)) for distance in range(height + 1)]
+
+    g1 = gaussian_lookup(88.0)
+    g2 = gaussian_lookup(110.0)
+    g3 = gaussian_lookup(94.0)
+    pixels = bytearray(width * height * 3)
+    index = 0
+    for y in range(height):
+        vertical = (1.0 - y / height) * 1.6
+        for x in range(width):
+            c1, c2, c3 = centers[x]
+            a = g1[min(height, int(abs(y - c1)))]
+            b = g2[min(height, int(abs(y - c2)))]
+            d = g3[min(height, int(abs(y - c3)))]
+            pixels[index] = min(255, int(base[0] + vertical + 44 * a + 18 * b + 38 * d))
+            pixels[index + 1] = min(255, int(base[1] + vertical + 4 * a + 9 * b + 3 * d))
+            pixels[index + 2] = min(255, int(base[2] + vertical + 35 * a + 46 * b + 28 * d))
+            index += 3
+
+    _WAVE_PPM_CACHE = f"P6\n{width} {height}\n255\n".encode("ascii") + bytes(pixels)
+    return _WAVE_PPM_CACHE
 
 
 def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     window = tk.Toplevel(parent)
     window.title("Pulse Social — X Auto Post")
-    window.geometry("1180x760")
-    window.minsize(980, 680)
+    window.geometry("1180x800")
+    window.minsize(980, 700)
     window.configure(bg=BG)
 
     stop_event = threading.Event()
@@ -56,31 +108,36 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
         pass
     style.configure(
         "Pulse.Treeview",
-        background=PANEL,
-        fieldbackground=PANEL,
+        background=TABLE_BG,
+        fieldbackground=TABLE_BG,
         foreground=TEXT,
-        rowheight=32,
+        rowheight=31,
         borderwidth=0,
-        font=("Segoe UI", 10),
+        font=("Segoe UI", 9),
     )
     style.map(
         "Pulse.Treeview",
-        background=[("selected", "#281229")],
+        background=[("selected", "#34203b")],
         foreground=[("selected", TEXT)],
     )
     style.configure(
         "Pulse.Treeview.Heading",
-        background=PANEL_2,
+        background="#141c2a",
         foreground=MUTED,
         relief="flat",
-        font=("Segoe UI", 9, "bold"),
-        padding=(10, 8),
+        borderwidth=0,
+        font=("Segoe UI", 8, "bold"),
+        padding=(8, 9),
     )
 
     def button(parent, text, command, accent=False, danger=False, compact=False):
-        bg = ACCENT if accent else DANGER if danger else PANEL_2
-        active = ACCENT_2 if accent else "#7e2637" if danger else "#202b3d"
-        return tk.Button(
+        if accent:
+            bg, active, border = ACCENT, ACCENT_2, "#ff5abb"
+        elif danger:
+            bg, active, border = "#5b1623", "#7e2637", "#7e2637"
+        else:
+            bg, active, border = "#182235", "#223049", BORDER
+        btn = tk.Button(
             parent,
             text=text,
             command=command,
@@ -90,48 +147,126 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
             activeforeground=TEXT,
             relief="flat",
             bd=0,
-            padx=12 if compact else 16,
-            pady=7 if compact else 9,
-            font=("Segoe UI", 9, "bold"),
+            padx=11 if compact else 15,
+            pady=6 if compact else 9,
+            font=("Segoe UI", 8 if compact else 9, "bold"),
             cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=border,
+            highlightcolor=border,
         )
+        btn.bind("<Enter>", lambda _event: btn.configure(bg=active))
+        btn.bind("<Leave>", lambda _event: btn.configure(bg=bg))
+        return btn
 
-    def pill(parent, variable, fg=SUCCESS):
-        frame = tk.Frame(parent, bg=PANEL_2)
-        tk.Label(frame, text="●", bg=PANEL_2, fg=fg, font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 4), pady=6)
-        tk.Label(frame, textvariable=variable, bg=PANEL_2, fg=TEXT, font=("Consolas", 9, "bold")).pack(side="left", padx=(0, 9), pady=6)
-        return frame
+    # Ambient Pulse backdrop.
+    backdrop = tk.Canvas(window, bg=BG, highlightthickness=0, bd=0)
+    backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+    wave_photo = tk.PhotoImage(data=_wave_ppm(), format="PPM")
+    backdrop.wave_photo = wave_photo
+    wave_items = [
+        backdrop.create_image(0, 0, image=wave_photo, anchor="nw"),
+        backdrop.create_image(_WAVE_TILE_WIDTH, 0, image=wave_photo, anchor="nw"),
+        backdrop.create_image(_WAVE_TILE_WIDTH * 2, 0, image=wave_photo, anchor="nw"),
+    ]
+    wave_offset = [0]
+    ambient_after = [None]
+
+    def animate_backdrop():
+        if not backdrop.winfo_exists():
+            return
+        wave_offset[0] = (wave_offset[0] + 1) % _WAVE_TILE_WIDTH
+        x = -wave_offset[0]
+        for index, item in enumerate(wave_items):
+            backdrop.coords(item, x + index * _WAVE_TILE_WIDTH, 0)
+        ambient_after[0] = window.after(140, animate_backdrop)
+
+    ambient_after[0] = window.after(140, animate_backdrop)
 
     # HERO
     hero = tk.Frame(window, bg=BG)
-    hero.pack(fill="x", padx=30, pady=(18, 10))
+    hero.pack(fill="x", padx=28, pady=(18, 6))
+
+    badge = tk.Canvas(hero, width=38, height=38, bg=BG, highlightthickness=0, bd=0)
+    badge.pack(side="left", padx=(0, 12))
+    badge.create_rectangle(3, 3, 35, 35, outline="#35243e", fill="#0b1018", width=1)
+    badge.create_text(19, 19, text="X", fill=TEXT, font=("Segoe UI", 17, "bold"))
+
     brand = tk.Frame(hero, bg=BG)
     brand.pack(side="left")
-    tk.Label(brand, text="PULSE", fg=TEXT, bg=BG, font=("Segoe UI", 28, "bold")).pack(side="left")
-    tk.Label(brand, text=" SOCIAL", fg=ACCENT, bg=BG, font=("Segoe UI", 28, "bold")).pack(side="left")
-    tk.Label(brand, text="  /  X AUTO POST", fg=MUTED, bg=BG, font=("Consolas", 10, "bold")).pack(side="left", padx=(8, 0), pady=(10, 0))
+    brand_row = tk.Frame(brand, bg=BG)
+    brand_row.pack(anchor="w")
+    tk.Label(brand_row, text="PULSE", fg=TEXT, bg=BG, font=("Segoe UI", 24, "bold")).pack(side="left")
+    tk.Label(brand_row, text=" X", fg=ACCENT, bg=BG, font=("Segoe UI", 24, "bold")).pack(side="left")
+    tk.Label(
+        brand,
+        text="Create, schedule and manage X posts from one workspace.",
+        fg=MUTED,
+        bg=BG,
+        font=("Segoe UI", 9),
+    ).pack(anchor="w", pady=(1, 0))
+    tk.Label(
+        hero,
+        text="AUTO POST",
+        fg=ACCENT,
+        bg=BG,
+        font=("Segoe UI", 9, "bold"),
+    ).pack(side="right", pady=12)
 
-    hero_right = tk.Frame(hero, bg=BG)
-    hero_right.pack(side="right")
-    browser_pill = pill(hero_right, browser_var, SUCCESS)
-    browser_pill.pack(side="left", padx=(0, 8))
-    status_pill = pill(hero_right, status, ACCENT)
-    status_pill.pack(side="left")
+    tk.Frame(window, bg="#2a1834", height=1).pack(fill="x", padx=28, pady=(0, 7))
+
+    connection_shell = tk.Frame(window, bg="#351431", padx=1, pady=1)
+    connection_shell.pack(fill="x", padx=28, pady=(0, 9))
+    connection = tk.Frame(connection_shell, bg=PANEL)
+    connection.pack(fill="x")
+    tk.Frame(connection, bg=ACCENT, width=3).pack(side="left", fill="y")
+    tk.Label(connection, text="●", fg=SUCCESS, bg=PANEL, font=("Segoe UI", 9, "bold")).pack(
+        side="left", padx=(13, 7), pady=9
+    )
+    tk.Label(
+        connection,
+        text="PULSE BROWSER / X",
+        fg=MUTED,
+        bg=PANEL,
+        font=("Segoe UI", 8, "bold"),
+    ).pack(side="left", pady=9)
+    tk.Frame(connection, bg=BORDER, width=1, height=16).pack(side="left", padx=14)
+    tk.Label(
+        connection,
+        textvariable=browser_var,
+        fg=TEXT,
+        bg=PANEL,
+        font=("Segoe UI", 9, "bold"),
+    ).pack(side="left", pady=9)
+    tk.Label(
+        connection,
+        textvariable=status,
+        fg=ACCENT,
+        bg=PANEL,
+        font=("Segoe UI", 8, "bold"),
+    ).pack(side="right", padx=13, pady=9)
 
     # TOP GRID
     top = tk.Frame(window, bg=BG)
-    top.pack(fill="x", padx=30, pady=(0, 8))
-    top.grid_columnconfigure(0, weight=3)
-    top.grid_columnconfigure(1, weight=1)
+    top.pack(fill="x", padx=28, pady=(0, 9))
+    top.grid_columnconfigure(0, weight=3, uniform="xpost")
+    top.grid_columnconfigure(1, weight=2, uniform="xpost")
 
-    compose = tk.Frame(top, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-    compose.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    compose_shell = tk.Frame(top, bg=SOFT_BORDER, padx=1, pady=1)
+    compose_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+    compose = tk.Frame(compose_shell, bg="#121827")
+    compose.pack(fill="both", expand=True)
     compose.grid_columnconfigure(0, weight=1)
+    tk.Frame(compose, bg=ACCENT, height=2).grid(row=0, column=0, sticky="ew")
 
     compose_head = tk.Frame(compose, bg=PANEL)
-    compose_head.grid(row=0, column=0, sticky="ew", padx=18, pady=(12, 6))
-    tk.Label(compose_head, text="COMPOSE", fg=TEXT, bg=PANEL, font=("Segoe UI", 12, "bold")).pack(side="left")
-    tk.Label(compose_head, textvariable=char_var, fg=MUTED, bg=PANEL, font=("Consolas", 9)).pack(side="right")
+    compose_head.configure(bg="#121827")
+    compose_head.grid(row=1, column=0, sticky="ew", padx=16, pady=(11, 7))
+    compose_copy = tk.Frame(compose_head, bg="#121827")
+    compose_copy.pack(side="left")
+    tk.Label(compose_copy, text="POST COMPOSER", fg=ACCENT, bg="#121827", font=("Segoe UI", 8, "bold")).pack(anchor="w")
+    tk.Label(compose_copy, text="Build your post", fg=TEXT, bg="#121827", font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(1, 0))
+    tk.Label(compose_head, textvariable=char_var, fg=SUBTLE, bg="#121827", font=("Consolas", 8)).pack(side="right", padx=(0, 10))
     button(
         compose_head,
         "😀 EMOJI",
@@ -153,10 +288,12 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
         pady=12,
         undo=True,
     )
-    text.grid(row=1, column=0, sticky="ew", padx=18)
+    text.configure(highlightthickness=1, highlightbackground="#1b2738")
+    text.grid(row=2, column=0, sticky="ew", padx=16)
 
     media_row = tk.Frame(compose, bg=PANEL)
-    media_row.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 0))
+    media_row.configure(bg="#121827")
+    media_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 0))
 
     def refresh_media_label():
         if not selected_media:
@@ -202,10 +339,10 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     button(media_row, "ADD IMAGES", add_images, compact=True).pack(side="left")
     button(media_row, "ADD VIDEO", add_video, compact=True).pack(side="left", padx=6)
     button(media_row, "CLEAR MEDIA", clear_media, compact=True).pack(side="left")
-    tk.Label(media_row, textvariable=media_var, fg=MUTED, bg=PANEL, font=("Consolas", 8)).pack(side="left", padx=12)
+    tk.Label(media_row, textvariable=media_var, fg=MUTED, bg="#121827", font=("Consolas", 8)).pack(side="left", padx=12)
 
-    schedule = tk.Frame(compose, bg=PANEL)
-    schedule.grid(row=3, column=0, sticky="ew", padx=18, pady=(8, 12))
+    schedule = tk.Frame(compose, bg="#121827")
+    schedule.grid(row=4, column=0, sticky="ew", padx=16, pady=(8, 12))
     delay = tk.StringVar(value="1")
 
     delay_mode = tk.Radiobutton(
@@ -279,13 +416,16 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     queue_button_holder.pack(side="right")
 
     # STATS
-    stats = tk.Frame(top, bg=BG)
-    stats.grid(row=0, column=1, sticky="nsew")
+    stats_shell = tk.Frame(top, bg="#351431", padx=1, pady=1)
+    stats_shell.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+    stats = tk.Frame(stats_shell, bg="#0f1723")
+    stats.pack(fill="both", expand=True)
+    tk.Frame(stats, bg=ACCENT, height=2).grid(row=0, column=0, sticky="ew")
     stats.grid_columnconfigure(0, weight=1)
 
     def stat_card(row, label, variable, accent):
         card = tk.Frame(stats, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        card.grid(row=row, column=0, sticky="ew", pady=(0, 8 if row < 2 else 0))
+        card.grid(row=row + 1, column=0, sticky="ew", padx=14, pady=(10 if row == 0 else 0, 8))
         tk.Label(card, text=label, fg=MUTED, bg=PANEL, font=("Consolas", 8, "bold")).pack(anchor="w", padx=14, pady=(10, 0))
         tk.Label(card, textvariable=variable, fg=accent, bg=PANEL, font=("Segoe UI", 22, "bold")).pack(anchor="w", padx=14, pady=(0, 10))
 
@@ -294,8 +434,8 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     stat_card(2, "ERRORS", stats_var["error"], DANGER)
 
     # QUEUE
-    queue_card = tk.Frame(window, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-    queue_card.pack(fill="both", expand=True, padx=30, pady=(0, 8))
+    queue_card = tk.Frame(window, bg=TABLE_BG, highlightthickness=1, highlightbackground=BORDER)
+    queue_card.pack(fill="both", expand=True, padx=28, pady=(0, 8))
 
     queue_head = tk.Frame(queue_card, bg=PANEL)
     queue_head.pack(fill="x", padx=16, pady=(12, 8))
@@ -316,12 +456,44 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     tree.tag_configure("posted", foreground=SUCCESS)
     tree.tag_configure("error", foreground=DANGER)
     tree.tag_configure("queued", foreground=TEXT)
-    tree.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+
+    queue_body = tk.Frame(queue_card, bg=TABLE_BG)
+    queue_body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+    queue_scroll = tk.Scrollbar(
+        queue_body,
+        orient="vertical",
+        command=tree.yview,
+        bg=BORDER,
+        troughcolor=TABLE_BG,
+        activebackground=ACCENT,
+        relief="flat",
+        bd=0,
+        highlightthickness=0,
+        width=11,
+    )
+    queue_xscroll = tk.Scrollbar(
+        queue_body,
+        orient="horizontal",
+        command=tree.xview,
+        bg=BORDER,
+        troughcolor=TABLE_BG,
+        activebackground=ACCENT,
+        relief="flat",
+        bd=0,
+        highlightthickness=0,
+        width=9,
+    )
+    tree.configure(yscrollcommand=queue_scroll.set, xscrollcommand=queue_xscroll.set)
+    tree.grid(in_=queue_body, row=0, column=0, sticky="nsew")
+    queue_scroll.grid(row=0, column=1, sticky="ns")
+    queue_xscroll.grid(row=1, column=0, columnspan=2, sticky="ew")
+    queue_body.rowconfigure(0, weight=1)
+    queue_body.columnconfigure(0, weight=1)
     mapping = {}
 
     # ACTIVITY
     activity = tk.Frame(window, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-    activity.pack(fill="x", padx=30, pady=(0, 8))
+    activity.pack(fill="x", padx=28, pady=(0, 14))
     activity_head = tk.Frame(activity, bg=PANEL)
     activity_head.pack(fill="x", padx=14, pady=(10, 6))
     tk.Label(activity_head, text="ACTIVITY", fg=TEXT, bg=PANEL, font=("Segoe UI", 10, "bold")).pack(side="left")
@@ -353,7 +525,24 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     button(activity_head, "COPY LOG", copy_log, compact=True).pack(side="right", padx=(6, 0))
     button(activity_head, "CLEAR", clear_log, compact=True).pack(side="right")
-    log.pack(fill="x", padx=14, pady=(0, 12))
+
+    log_body = tk.Frame(activity, bg=PANEL)
+    log_body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+    activity_scroll = tk.Scrollbar(
+        log_body,
+        orient="vertical",
+        command=log.yview,
+        bg=BORDER,
+        troughcolor=PANEL_3,
+        activebackground=ACCENT,
+        relief="flat",
+        bd=0,
+        highlightthickness=0,
+        width=11,
+    )
+    log.configure(yscrollcommand=activity_scroll.set)
+    log.pack(in_=log_body, side="left", fill="both", expand=True)
+    activity_scroll.pack(side="right", fill="y")
 
     def update_char_count(*_):
         count = len(text.get("1.0", "end-1c"))
@@ -496,6 +685,12 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     def close():
         stop_event.set()
+        if ambient_after[0] is not None:
+            try:
+                window.after_cancel(ambient_after[0])
+            except tk.TclError:
+                pass
+            ambient_after[0] = None
         window.destroy()
 
     window.protocol("WM_DELETE_WINDOW", close)
