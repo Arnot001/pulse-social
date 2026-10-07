@@ -22,13 +22,15 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=Pulse Social Beta
 SetupLogging=yes
+SetupIconFile=..\platforms\tiktok\favicon.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Files]
 Source: "output\Pulse Social\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\Pulse Social"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\Pulse Social"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\Pulse Social"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; IconIndex: 0
+Name: "{autodesktop}\Pulse Social"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; IconIndex: 0; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked

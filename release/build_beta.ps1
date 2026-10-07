@@ -20,6 +20,11 @@ $OutputRoot = Join-Path $ReleaseRoot "output"
 $AppOutput = Join-Path $OutputRoot "Pulse Social"
 $AssetsPath = Join-Path $RepoRoot "assets"
 $AssetsDataArg = "$AssetsPath;assets"
+$IconPath = Join-Path $RepoRoot "platforms\tiktok\favicon.ico"
+
+if (-not (Test-Path -LiteralPath $IconPath -PathType Leaf)) {
+    throw "The approved Pulse Social icon was not found at '$IconPath'."
+}
 
 Write-Host ""
 Write-Host "PULSE // SOCIAL BETA BUILD" -ForegroundColor Magenta
@@ -45,6 +50,7 @@ if (-not $SkipTests) {
         tests/test_emoji_picker.py `
         tests/test_emoji_assets.py `
         tests/test_release_bootstrap.py `
+        tests/test_release_icon.py `
         tests/test_pulse_splash.py `
         -q
     if ($LASTEXITCODE -ne 0) {
@@ -69,6 +75,7 @@ $pyiArgs = @(
     "--onedir",
     "--windowed",
     "--name", "Pulse Social",
+    "--icon", $IconPath,
     "--distpath", $OutputRoot,
     "--workpath", (Join-Path $GeneratedRoot "build"),
     "--specpath", (Join-Path $GeneratedRoot "spec"),
@@ -119,7 +126,8 @@ if ($SkipInstaller) {
 
 $isccCandidates = @(
     (Join-Path ([Environment]::GetFolderPath("ProgramFilesX86")) "Inno Setup 6\ISCC.exe"),
-    (Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "Inno Setup 6\ISCC.exe")
+    (Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "Inno Setup 6\ISCC.exe"),
+    (Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "Programs\Inno Setup 6\ISCC.exe")
 ) | Where-Object { $_ -and (Test-Path $_) }
 
 if (-not $isccCandidates) {
@@ -129,7 +137,7 @@ if (-not $isccCandidates) {
     exit 0
 }
 
-$Iscc = $isccCandidates[0]
+$Iscc = @($isccCandidates)[0]
 & $Iscc (Join-Path $ReleaseRoot "PulseSocial.iss")
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup build failed."
