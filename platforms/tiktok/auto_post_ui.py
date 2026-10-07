@@ -439,7 +439,7 @@ class TikTokAutoPostView(tk.Frame):
 
         self.caption = tk.Text(
             compose,
-            height=3 if self.embedded else 5,
+            height=2 if self.embedded else 5,
             bg=SURFACE,
             fg=TEXT,
             insertbackground=TEXT,
@@ -452,18 +452,18 @@ class TikTokAutoPostView(tk.Frame):
             highlightthickness=1,
             highlightbackground="#1b2738",
         )
-        self.caption.pack(fill="x", padx=16, pady=(5, 8))
+        self.caption.pack(fill="x", padx=16, pady=((4, 6) if self.embedded else (5, 8)))
         self.caption.bind("<KeyRelease>", self._update_chars)
 
         media_row = tk.Frame(compose, bg="#121827")
-        media_row.pack(fill="x", padx=16, pady=(0, 8))
+        media_row.pack(fill="x", padx=16, pady=(0, 5 if self.embedded else 8))
         self._button(media_row, "ADD VIDEO", self._choose_video, compact=True).pack(side="left")
         self._button(media_row, "ADD IMAGES", self._choose_images, compact=True).pack(side="left", padx=(6, 0))
         self._button(media_row, "ADD MUSIC", self._choose_music, compact=True).pack(side="left", padx=(6, 0))
         self._button(media_row, "CLEAR", self._clear_media, compact=True).pack(side="left", padx=(6, 0))
 
         media_state = tk.Frame(compose, bg=SURFACE, highlightthickness=1, highlightbackground="#1b2738")
-        media_state.pack(fill="x", padx=16, pady=(0, 10))
+        media_state.pack(fill="x", padx=16, pady=(0, 6 if self.embedded else 10))
         tk.Label(
             media_state,
             text="MEDIA",
@@ -498,7 +498,13 @@ class TikTokAutoPostView(tk.Frame):
         )
 
         settings_shell = tk.Frame(top, bg="#17343d", padx=1, pady=1)
-        settings_shell.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(7, 0))
+        settings_shell.grid(
+            row=0,
+            column=1,
+            rowspan=1 if self.embedded else 2,
+            sticky="nsew",
+            padx=(7, 0),
+        )
         options = tk.Frame(settings_shell, bg="#0f1a24")
         options.pack(fill="both", expand=True)
         tk.Frame(options, bg=ACCENT, height=2).pack(fill="x")
@@ -706,13 +712,19 @@ class TikTokAutoPostView(tk.Frame):
             font=("Segoe UI", 8),
         ).pack(side="right", padx=12, pady=8)
 
+        queue_parent = self if self.embedded else top
         queue_card = tk.Frame(
-            top,
+            queue_parent,
             bg=TABLE_BG,
             highlightthickness=1,
             highlightbackground=BORDER,
         )
-        queue_card.grid(row=1, column=0, sticky="nsew", padx=(0, 7), pady=(7, 0))
+        if self.embedded:
+            queue_card.pack(fill="x", padx=outer_pad, pady=(0, section_gap))
+            queue_card.configure(height=138)
+            queue_card.pack_propagate(False)
+        else:
+            queue_card.grid(row=1, column=0, sticky="nsew", padx=(0, 7), pady=(7, 0))
 
         queue_head = tk.Frame(queue_card, bg=PANEL)
         queue_head.grid(row=0, column=0, columnspan=2, sticky="ew")
@@ -746,7 +758,7 @@ class TikTokAutoPostView(tk.Frame):
             columns=cols,
             show="headings",
             style="TikTok.Treeview",
-            height=1 if self.embedded else 3,
+            height=3,
         )
         widths = {
             "due": 130,
@@ -794,7 +806,7 @@ class TikTokAutoPostView(tk.Frame):
             pady=(0, 8 if self.embedded else 14),
         )
         if self.embedded:
-            activity.configure(height=138)
+            activity.configure(height=132)
             activity.pack_propagate(False)
         activity_head = tk.Frame(activity, bg=PANEL)
         activity_head.pack(
@@ -837,7 +849,7 @@ class TikTokAutoPostView(tk.Frame):
 
         self.log = tk.Text(
             log_body,
-            height=4 if self.embedded else 3,
+            height=5 if self.embedded else 3,
             bg=SURFACE,
             fg="#cbd3df",
             insertbackground=TEXT,
