@@ -18,6 +18,8 @@ $ReleaseRoot = Join-Path $RepoRoot "release"
 $GeneratedRoot = Join-Path $ReleaseRoot "generated"
 $OutputRoot = Join-Path $ReleaseRoot "output"
 $AppOutput = Join-Path $OutputRoot "Pulse Social"
+$AssetsPath = Join-Path $RepoRoot "assets"
+$AssetsDataArg = "$AssetsPath;assets"
 
 Write-Host ""
 Write-Host "PULSE // SOCIAL BETA BUILD" -ForegroundColor Magenta
@@ -69,7 +71,7 @@ $pyiArgs = @(
     "--distpath", $OutputRoot,
     "--workpath", (Join-Path $GeneratedRoot "build"),
     "--specpath", (Join-Path $GeneratedRoot "spec"),
-    "--add-data", "assets;assets",
+    "--add-data", $AssetsDataArg,
     "--collect-submodules", "platforms",
     "--collect-submodules", "commerce",
     "--collect-submodules", "pulse_backend",
