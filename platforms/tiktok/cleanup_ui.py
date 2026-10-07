@@ -11,6 +11,7 @@ from platforms.pdh_bridge import ensure_bridge_server, pdh_connected
 from .cleanup import CLEANUP_LOG_FILE, CleanupOptions, run_cleanup
 
 BG = "#06070b"
+SURFACE = "#0b0f17"
 PANEL = "#101622"
 PANEL_2 = "#151d2c"
 PANEL_3 = "#0a0e15"
