@@ -461,7 +461,7 @@ class TikTokCleanupView(tk.Frame):
     def _toggle_delete_all(self):
         self.count_entry.config(state="disabled" if self.delete_all_var.get() else "normal")
 
-    def _options(self) -> CleanupOptions:
+    def _cleanup_options(self) -> CleanupOptions:
         delete_all = self.delete_all_var.get()
         try:
             count = int(self.count_var.get())
@@ -488,7 +488,7 @@ class TikTokCleanupView(tk.Frame):
             self.write("A cleanup run is already active.")
             return
         try:
-            options = self._options()
+            options = self._cleanup_options()
         except Exception as exc:
             messagebox.showerror("TikTok Cleanup", str(exc), parent=self.winfo_toplevel())
             return
