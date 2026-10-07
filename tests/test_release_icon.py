@@ -35,16 +35,17 @@ def test_pyinstaller_and_setup_use_the_same_existing_asset():
     setup = (ROOT / 'release/PulseSocial.iss').read_text(encoding='utf-8')
     match = re.search(r'^SetupIconFile=(.+)$', setup, re.MULTILINE)
     assert match and (ROOT / 'release').joinpath(*match[1].split('\\')).resolve() == ICON
-    assert 'UninstallDisplayIcon={app}\\{#MyAppExeName}' in setup
+    assert 'UninstallDisplayIcon={app}\\pulse_social.ico' in setup
+    assert 'Source: "..\\platforms\\tiktok\\favicon.ico"; DestDir: "{app}"; DestName: "pulse_social.ico"; Flags: ignoreversion' in setup
 
 
 @pytest.mark.parametrize('location', ['autoprograms', 'autodesktop'])
-def test_shortcuts_explicitly_use_installed_exe_icon(location):
+def test_shortcuts_explicitly_use_installed_icon_file(location):
     setup = (ROOT / 'release/PulseSocial.iss').read_text(encoding='utf-8')
     entry = next(line for line in setup.splitlines() if line.startswith(f'Name: "{{{location}}}'))
     assert 'Filename: "{app}\\{#MyAppExeName}"' in entry
-    assert 'IconFilename: "{app}\\{#MyAppExeName}"' in entry
-    assert 'IconIndex: 0' in entry
+    assert 'IconFilename: "{app}\\pulse_social.ico"' in entry
+    assert 'IconIndex:' not in entry
 
 
 def assert_embedded_icon_matches(executable):
