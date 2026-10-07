@@ -504,7 +504,11 @@ class TikTokAutoPostView(tk.Frame):
         tk.Frame(options, bg=ACCENT, height=2).pack(fill="x")
 
         settings_head = tk.Frame(options, bg="#0f1a24")
-        settings_head.pack(fill="x", padx=16, pady=(11, 8))
+        settings_head.pack(
+            fill="x",
+            padx=16,
+            pady=((7, 4) if self.embedded else (11, 8)),
+        )
         tk.Label(
             settings_head,
             text="POST SETTINGS",
@@ -521,7 +525,7 @@ class TikTokAutoPostView(tk.Frame):
         ).pack(anchor="w", pady=(1, 0))
 
         privacy_row = tk.Frame(options, bg="#0f1a24")
-        privacy_row.pack(fill="x", padx=16, pady=(0, 7))
+        privacy_row.pack(fill="x", padx=16, pady=(0, 4 if self.embedded else 7))
         tk.Label(
             privacy_row,
             text="PRIVACY",
@@ -540,7 +544,7 @@ class TikTokAutoPostView(tk.Frame):
         self.privacy_menu.pack(side="right")
 
         delete_row = tk.Frame(options, bg="#0f1a24")
-        delete_row.pack(fill="x", padx=16, pady=(0, 7))
+        delete_row.pack(fill="x", padx=16, pady=(0, 4 if self.embedded else 7))
         tk.Label(
             delete_row,
             text="AUTO DELETE",
@@ -559,16 +563,17 @@ class TikTokAutoPostView(tk.Frame):
         self.auto_delete_menu.pack(side="right")
 
         checks = tk.Frame(options, bg="#0f1a24")
-        checks.pack(fill="x", padx=12, pady=(1, 6))
-        for label, variable in (
+        checks.pack(fill="x", padx=12, pady=(1, 4 if self.embedded else 6))
+        check_items = (
             ("Comments", self.comments_var),
             ("Duet", self.duet_var),
             ("Stitch", self.stitch_var),
             ("Paid partnership", self.brand_content_var),
             ("Own brand promo", self.brand_organic_var),
             ("AI-generated content", self.aigc_var),
-        ):
-            tk.Checkbutton(
+        )
+        for index, (label, variable) in enumerate(check_items):
+            check = tk.Checkbutton(
                 checks,
                 text=label,
                 variable=variable,
@@ -578,7 +583,17 @@ class TikTokAutoPostView(tk.Frame):
                 activeforeground=TEXT,
                 selectcolor=PANEL_2,
                 font=("Segoe UI", 8),
-            ).pack(anchor="w", pady=0 if self.embedded else 1)
+            )
+            if self.embedded:
+                check.grid(
+                    row=index % 3,
+                    column=index // 3,
+                    sticky="w",
+                    padx=(0, 18),
+                    pady=0,
+                )
+            else:
+                check.pack(anchor="w", pady=1)
 
         schedule = tk.Frame(options, bg=SURFACE, highlightthickness=1, highlightbackground="#1b2738")
         schedule.pack(fill="x", padx=16, pady=(1, 6 if self.embedded else 12))
@@ -773,13 +788,13 @@ class TikTokAutoPostView(tk.Frame):
 
         activity = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         activity.pack(
-            fill="both" if self.embedded else "x",
-            expand=self.embedded,
+            fill="x",
+            expand=False,
             padx=outer_pad,
             pady=(0, 8 if self.embedded else 14),
         )
         if self.embedded:
-            activity.configure(height=108)
+            activity.configure(height=138)
             activity.pack_propagate(False)
         activity_head = tk.Frame(activity, bg=PANEL)
         activity_head.pack(
@@ -822,7 +837,7 @@ class TikTokAutoPostView(tk.Frame):
 
         self.log = tk.Text(
             log_body,
-            height=3 if self.embedded else 3,
+            height=4 if self.embedded else 3,
             bg=SURFACE,
             fg="#cbd3df",
             insertbackground=TEXT,
