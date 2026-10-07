@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -14,6 +15,8 @@ from typing import Callable
 
 from playwright.sync_api import sync_playwright
 
+from platforms import browser_control
+
 APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "Pulse Social"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_FILE = APP_DIR / "x_auto_post_queue.json"
@@ -22,12 +25,10 @@ MEDIA_CACHE_DIR = APP_DIR / "x_media_cache"
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 POSTING_PAGE_NAME = "pulse-social-auto-post"
-CDP_PORTS = (9222, 9223, 9224, 9225)
-BROWSER_USER_DATA_DIRS = (
-    ("Chrome", Path(os.environ["LOCALAPPDATA"]) / "Google" / "Chrome" / "User Data"),
-    ("Brave", Path(os.environ["LOCALAPPDATA"]) / "BraveSoftware" / "Brave-Browser" / "User Data"),
-)
 X_ACTION_LOCK = threading.Lock()
+QUEUE_LOCK = threading.RLock()
+SCHEDULER_LOCK = threading.Lock()
+_POSTING_TARGET_ID = None
 
 
 @dataclass
@@ -37,20 +38,34 @@ class QueuedPost:
     due_at: str
     status: str = "queued"
     media_paths: list[str] = field(default_factory=list)
+    posted_at: str = ""
 
 
 def load_queue() -> list[QueuedPost]:
-    if not QUEUE_FILE.exists():
-        return []
-    try:
-        data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
-        return [QueuedPost(**item) for item in data if isinstance(item, dict)]
-    except Exception:
-        return []
+    with QUEUE_LOCK:
+        if not QUEUE_FILE.exists():
+            return []
+        try:
+            data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+            unique = {}
+            for record in data:
+                if not isinstance(record, dict):
+                    continue
+                item = QueuedPost(**record)
+                previous = unique.get(item.post_id)
+                # A persisted success must never be requeued by a duplicate record.
+                if previous is None or (previous.status != "posted" and item.status != "queued"):
+                    unique[item.post_id] = item
+            return list(unique.values())
+        except (OSError, ValueError, TypeError):
+            return []
 
 
 def save_queue(items: list[QueuedPost]) -> None:
-    QUEUE_FILE.write_text(json.dumps([asdict(x) for x in items], indent=2, ensure_ascii=False), encoding="utf-8")
+    with QUEUE_LOCK:
+        temporary = QUEUE_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps([asdict(x) for x in items], indent=2, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(QUEUE_FILE)
 
 
 def add_post(text: str, due_at: datetime, media_paths: list[str] | None = None) -> QueuedPost:
@@ -59,84 +74,58 @@ def add_post(text: str, due_at: datetime, media_paths: list[str] | None = None) 
     if not clean and not media:
         raise ValueError("Post text and media are both empty.")
     item = QueuedPost(
-        post_id=f"{int(time.time()*1000)}",
+        post_id=uuid.uuid4().hex,
         text=clean,
         due_at=due_at.isoformat(timespec="seconds"),
         media_paths=media,
     )
-    items = load_queue()
-    items.append(item)
-    items.sort(key=lambda x: x.due_at)
-    save_queue(items)
+    with QUEUE_LOCK:
+        items = load_queue()
+        items.append(item)
+        items.sort(key=lambda x: x.due_at)
+        save_queue(items)
     return item
 
 
 def remove_post(post_id: str) -> None:
-    save_queue([x for x in load_queue() if x.post_id != post_id])
+    with QUEUE_LOCK:
+        save_queue([x for x in load_queue() if x.post_id != post_id])
 
 
-def _x_page(context):
-    for page in context.pages:
-        try:
-            if "x.com" in page.url.lower() or "twitter.com" in page.url.lower():
-                return page
-        except Exception:
-            pass
-    page = context.new_page()
-    page.goto("https://x.com/home", wait_until="domcontentloaded")
-    return page
-
-
-def _candidate_endpoints():
-    seen = set()
-    for label, user_data_dir in BROWSER_USER_DATA_DIRS:
-        port_file = user_data_dir / "DevToolsActivePort"
-        if not port_file.exists():
-            continue
-        try:
-            lines = [line.strip() for line in port_file.read_text(encoding="utf-8").splitlines() if line.strip()]
-            if len(lines) < 2 or not lines[0].isdigit():
-                continue
-            endpoint = f"ws://127.0.0.1:{lines[0]}{lines[1]}"
-            if endpoint not in seen:
-                seen.add(endpoint)
-                yield label, endpoint
-        except OSError:
-            pass
-    for port in CDP_PORTS:
-        endpoint = f"http://127.0.0.1:{port}"
-        if endpoint not in seen:
-            seen.add(endpoint)
-            yield f"CDP {port}", endpoint
+def _verify_pulse_profile(browser) -> None:
+    """Verify the CDP browser process uses a Pulse profile before touching its tabs."""
+    session = browser.new_browser_cdp_session()
+    try:
+        processes = session.send("SystemInfo.getProcessInfo")["processInfo"]
+        pid = int(next(process["id"] for process in processes if process["type"] == "browser"))
+    finally:
+        session.detach()
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+         f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine | ConvertTo-Json -Compress"],
+        capture_output=True, text=True, timeout=10,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    command = json.loads(result.stdout) if result.returncode == 0 and result.stdout.strip() else ""
+    match = re.search(r'(?:"--user-data-dir=([^\"]+)"|--user-data-dir="([^\"]+)"|--user-data-dir=([^\s\"]+))', command or "")
+    profile = Path(next(value for value in match.groups() if value)).resolve() if match else None
+    allowed = { (browser_control.BROWSER_PROFILE_ROOT / name).resolve()
+                for name in ("brave", "chrome", "edge") }
+    if profile not in allowed:
+        raise RuntimeError("X Auto Post requires the dedicated Pulse Browser profile. Reconnect Pulse Browser first.")
 
 
 def _connect_x_browser(playwright):
-    fallback = None
-    attempts = []
-    for label, endpoint in _candidate_endpoints():
-        try:
-            browser = playwright.chromium.connect_over_cdp(endpoint, timeout=3500)
-        except Exception as exc:
-            attempts.append(f"{label}: {type(exc).__name__}")
-            continue
-        for context in browser.contexts:
-            for page in context.pages:
-                try:
-                    url = page.url.lower()
-                    if "x.com" in url or "twitter.com" in url:
-                        return browser, context, page, label
-                except Exception:
-                    pass
-        if fallback is None and browser.contexts:
-            fallback = (browser, browser.contexts[0], label)
-    if fallback is not None:
-        browser, context, label = fallback
-        return browser, context, _x_page(context), label
-    detail = "; ".join(attempts) if attempts else "no debugging endpoints discovered"
-    raise RuntimeError(
-        "NO CONTROLLABLE X BROWSER FOUND. X may be open, but Pulse needs that browser's "
-        f"debugging connection to be enabled. Discovery: {detail}."
-    )
+    # Only Pulse's endpoint is eligible; never scan normal browser profiles/ports.
+    if not browser_control.cdp_responding():
+        ok, detail = browser_control.connect_browser()
+        if not ok:
+            raise RuntimeError(detail)
+    browser = playwright.chromium.connect_over_cdp(browser_control.CDP_URL, timeout=3500)
+    _verify_pulse_profile(browser)
+    if not browser.contexts:
+        raise RuntimeError("Pulse Browser attached but no browser context was available.")
+    return browser, browser.contexts[0], None, "Pulse Browser"
 
 
 def _dismiss_x_overlays(page) -> None:
@@ -194,22 +183,30 @@ def _close_x_composer(page) -> None:
             pass
 
 
+def _posting_target_id(context, page):
+    session = context.new_cdp_session(page)
+    try:
+        return session.send("Target.getTargetInfo")["targetInfo"]["targetId"]
+    finally:
+        session.detach()
+
+
 def _get_or_create_posting_page(context):
-    """Reuse one dedicated Pulse posting tab inside the authenticated browser."""
+    """Reacquire the same Chromium target across Playwright connections."""
+    global _POSTING_TARGET_ID
     for page in context.pages:
         try:
             if page.is_closed():
                 continue
-            if page.evaluate("window.name") == POSTING_PAGE_NAME:
+            target_id = _posting_target_id(context, page)
+            if target_id == _POSTING_TARGET_ID or page.evaluate("window.name") == POSTING_PAGE_NAME:
+                _POSTING_TARGET_ID = target_id
                 return page, False
         except Exception:
             continue
 
     page = context.new_page()
-    try:
-        page.evaluate("(name) => { window.name = name; }", POSTING_PAGE_NAME)
-    except Exception:
-        pass
+    _POSTING_TARGET_ID = _posting_target_id(context, page)
     return page, True
 
 
@@ -359,6 +356,9 @@ def publish_post(
                     wait_until="domcontentloaded",
                     timeout=30000,
                 )
+                # Set the marker on X's origin, after navigation (which can clear window.name).
+                # The target ID also survives navigation and new Playwright connections.
+                page.evaluate("(name) => { window.name = name; }", POSTING_PAGE_NAME)
                 _dismiss_x_overlays(page)
 
                 editor = page.locator('[data-testid="tweetTextarea_0"]').first
@@ -414,36 +414,60 @@ def publish_post(
                 path.unlink(missing_ok=True)
 
 
+def _save_post_result(item: QueuedPost) -> None:
+    """Merge one result into current state without losing edits made during posting."""
+    with QUEUE_LOCK:
+        items = load_queue()
+        for index, current in enumerate(items):
+            if current.post_id == item.post_id:
+                items[index] = item
+                break
+        else:
+            # If removed while in flight, still retain a confirmed successful post.
+            if item.status == "posted":
+                items.append(item)
+        save_queue(items)
+
+
 def run_scheduler(stop_event: threading.Event, log: Callable[[str], None]) -> None:
     log("AUTO POST scheduler started.")
     while not stop_event.wait(5):
-        items = load_queue()
-        now = datetime.now()
-        changed = False
-        for item in items:
-            if item.status != "queued":
-                continue
-            try:
-                due = datetime.fromisoformat(item.due_at)
-            except ValueError:
-                item.status = "invalid"
-                changed = True
-                continue
-            if due > now:
-                continue
-            try:
-                media_note = f" | MEDIA {len(item.media_paths)}" if item.media_paths else ""
-                log(f"POSTING | {item.text[:100]}{media_note}")
-                publish_post(item.text, item.media_paths, log=log)
+        # Multiple open windows must not publish stale snapshots of the same queue.
+        with SCHEDULER_LOCK:
+            now = datetime.now()
+            for candidate in load_queue():
+                if stop_event.is_set():
+                    break
+                item = next((x for x in load_queue() if x.post_id == candidate.post_id), None)
+                if item is None or item.status != "queued":
+                    continue
+                try:
+                    due = datetime.fromisoformat(item.due_at)
+                except ValueError:
+                    item.status = "invalid"
+                    _save_post_result(item)
+                    continue
+                if due > now:
+                    continue
+                try:
+                    media_note = f" | MEDIA {len(item.media_paths)}" if item.media_paths else ""
+                    log(f"POSTING | {item.text[:100]}{media_note}")
+                    publish_post(item.text, item.media_paths, log=log)
+                except Exception as exc:
+                    item.status = "error"
+                    _save_post_result(item)
+                    log(f"POST ERROR | {exc}")
+                    continue
+
                 item.status = "posted"
-                stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                with HISTORY_FILE.open("a", encoding="utf-8") as f:
-                    f.write(f"{stamp} | POSTED | media={len(item.media_paths)} | {item.text.replace(chr(10), ' ')}\n")
+                item.posted_at = datetime.now().isoformat(timespec="seconds")
+                # Persist before notifying the UI; it can now display this success immediately.
+                _save_post_result(item)
+                try:
+                    with HISTORY_FILE.open("a", encoding="utf-8") as f:
+                        f.write(f"{item.posted_at} | POSTED | media={len(item.media_paths)} | {item.text.replace(chr(10), ' ')}\n")
+                except OSError as exc:
+                    # A history-log failure must not turn a published post into a retry.
+                    log(f"HISTORY WARNING | {exc}")
                 log("POSTED successfully.")
-            except Exception as exc:
-                item.status = "error"
-                log(f"POST ERROR | {exc}")
-            changed = True
-        if changed:
-            save_queue(items)
     log("AUTO POST scheduler stopped.")

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import math
+import queue
 import threading
 import tkinter as tk
 from pathlib import Path
 from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
 
+from platforms.common.emoji_assets import asset_base64
 from platforms.common.emoji_picker import open_emoji_picker
 
 from .auto_post import add_post, load_queue, remove_post, run_scheduler
@@ -76,6 +78,48 @@ def _wave_ppm():
 
     _WAVE_PPM_CACHE = f"P6\n{width} {height}\n255\n".encode("ascii") + bytes(pixels)
     return _WAVE_PPM_CACHE
+
+
+def _enable_clipboard(widget, on_change=None):
+    """Keep native editing and expose the same operations to keyboard and mouse."""
+    def select_all(_event=None):
+        if isinstance(widget, tk.Text):
+            widget.tag_add(tk.SEL, "1.0", "end-1c")
+            widget.mark_set(tk.INSERT, "end-1c")
+        else:
+            widget.selection_range(0, tk.END)
+            widget.icursor(tk.END)
+        return "break"
+
+    def edit(event_name):
+        widget.event_generate(event_name)
+        if on_change:
+            on_change()
+        return "break"
+
+    widget.configure(exportselection=False)
+    widget.bind("<<SelectAll>>", select_all)
+    for key, event_name in (("a", "<<SelectAll>>"), ("c", "<<Copy>>"),
+                            ("v", "<<Paste>>"), ("x", "<<Cut>>")):
+        for letter in (key, key.upper()):
+            widget.bind(f"<Control-{letter}>", lambda _event, name=event_name: edit(name))
+
+    menu = tk.Menu(widget, tearoff=False)
+    for label, event_name in (("Cut", "<<Cut>>"), ("Copy", "<<Copy>>"),
+                              ("Paste", "<<Paste>>"), ("Select All", "<<SelectAll>>")):
+        menu.add_command(label=label, command=lambda name=event_name: edit(name))
+
+    def popup(event):
+        widget.focus_set()
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    widget.bind("<Button-3>", popup)
+    widget.bind("<Shift-F10>", popup)
+    return menu
 
 
 def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
@@ -288,12 +332,16 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     tk.Label(compose_copy, text="POST COMPOSER", fg=ACCENT, bg="#121827", font=("Segoe UI", 8, "bold")).pack(anchor="w")
     tk.Label(compose_copy, text="Build your post", fg=TEXT, bg="#121827", font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(1, 0))
     tk.Label(compose_head, textvariable=char_var, fg=SUBTLE, bg="#121827", font=("Consolas", 8)).pack(side="right", padx=(0, 10))
-    button(
+    emoji_button = button(
         compose_head,
-        "😀 EMOJI",
+        " EMOJI",
         lambda: open_emoji_picker(text, on_insert=update_char_count, accent=ACCENT),
         compact=True,
-    ).pack(side="right", padx=(0, 10))
+    )
+    emoji_photo = tk.PhotoImage(master=window, data=asset_base64("😀")).subsample(4, 4)
+    emoji_button.configure(image=emoji_photo, compound="left")
+    emoji_button._emoji_photo = emoji_photo
+    emoji_button.pack(side="right", padx=(0, 10))
 
     text = tk.Text(
         compose,
@@ -472,8 +520,10 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     queue_actions.pack(side="right")
     tk.Label(queue_actions, textvariable=next_var, fg=MUTED, bg=PANEL, font=("Consolas", 9)).pack(side="left", padx=(0, 12))
 
+    queue_body = tk.Frame(queue_card, bg=TABLE_BG)
+    queue_body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
     cols = ("due", "status", "post")
-    tree = ttk.Treeview(queue_card, columns=cols, show="headings", style="Pulse.Treeview", height=5)
+    tree = ttk.Treeview(queue_body, columns=cols, show="headings", style="Pulse.Treeview", height=5)
     for col, title, width in (
         ("due", "DUE", 150),
         ("status", "STATUS", 100),
@@ -485,8 +535,6 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     tree.tag_configure("error", foreground=DANGER)
     tree.tag_configure("queued", foreground=TEXT)
 
-    queue_body = tk.Frame(queue_card, bg=TABLE_BG)
-    queue_body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
     queue_scroll = ttk.Scrollbar(
         queue_body,
         orient="vertical",
@@ -500,7 +548,7 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
         style="Pulse.Horizontal.TScrollbar",
     )
     tree.configure(yscrollcommand=queue_scroll.set, xscrollcommand=queue_xscroll.set)
-    tree.grid(in_=queue_body, row=0, column=0, sticky="nsew")
+    tree.grid(row=0, column=0, sticky="nsew")
     queue_scroll.grid(row=0, column=1, sticky="ns")
     queue_xscroll.grid(row=1, column=0, columnspan=2, sticky="ew")
     queue_body.rowconfigure(0, weight=1)
@@ -514,8 +562,9 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     activity_head.pack(fill="x", padx=14, pady=(10, 6))
     tk.Label(activity_head, text="ACTIVITY", fg=TEXT, bg=PANEL, font=("Segoe UI", 10, "bold")).pack(side="left")
 
+    log_body = tk.Frame(activity, bg=PANEL)
     log = tk.Text(
-        activity,
+        log_body,
         height=4,
         bg=PANEL_3,
         fg="#cbd3df",
@@ -542,7 +591,6 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
     button(activity_head, "COPY LOG", copy_log, compact=True).pack(side="right", padx=(6, 0))
     button(activity_head, "CLEAR", clear_log, compact=True).pack(side="right")
 
-    log_body = tk.Frame(activity, bg=PANEL)
     log_body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
     activity_scroll = ttk.Scrollbar(
         log_body,
@@ -551,7 +599,7 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
         style="Pulse.Vertical.TScrollbar",
     )
     log.configure(yscrollcommand=activity_scroll.set)
-    log.pack(in_=log_body, side="left", fill="both", expand=True)
+    log.pack(side="left", fill="both", expand=True)
     activity_scroll.pack(side="right", fill="y")
 
     def update_char_count(*_):
@@ -559,11 +607,21 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
         char_var.set(f"{count} chars")
 
     text.bind("<KeyRelease>", update_char_count)
+    for widget in (text, delay_entry, clock_entry, log):
+        _enable_clipboard(widget, update_char_count if widget is text else None)
+
+    seen_posted = set()
+    previous_items = [None]
+    messages = queue.SimpleQueue()
+    poll_after = [None]
 
     def refresh():
         selected = tree.selection()
         selected_id = mapping.get(selected[0]).post_id if selected and selected[0] in mapping else None
         items = load_queue()
+        if items == previous_items[0]:
+            return
+        previous_items[0] = items
         mapping.clear()
         for iid in tree.get_children():
             tree.delete(iid)
@@ -578,6 +636,14 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
                 queued += 1
             elif status_name == "posted":
                 posted += 1
+                if item.post_id not in seen_posted:
+                    summary = ((f"[MEDIA {len(item.media_paths)}] " if item.media_paths else "")
+                               + item.text.replace("\n", " ")).strip()
+                    stamp = item.posted_at or f"scheduled {item.due_at}"
+                    log.insert(tk.END, f"{stamp} | POSTED | {summary}\n")
+                    log.see(tk.END)
+                    seen_posted.add(item.post_id)
+                continue
             elif status_name == "error":
                 errors += 1
 
@@ -592,6 +658,7 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
             iid = tree.insert(
                 "",
                 "end",
+                iid=item.post_id,
                 values=(
                     due,
                     item.status.upper(),
@@ -610,16 +677,27 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
         stats_var["posted"].set(str(posted))
         stats_var["error"].set(str(errors))
         next_var.set(f"NEXT // {next_due:%H:%M}" if next_due else "No posts queued")
-        browser_var.set(browser_status())
 
     def write(msg):
-        def apply():
-            if not log.winfo_exists():
-                return
-            log.insert(tk.END, msg + "\n")
-            log.see(tk.END)
-            refresh()
-        window.after(0, apply)
+        # Scheduler workers never call Tk, including after a window has closed.
+        messages.put(msg)
+
+    def poll_updates():
+        received = False
+        while True:
+            try:
+                msg = messages.get_nowait()
+            except queue.Empty:
+                break
+            received = True
+            # The persisted post below supplies the single, identifiable success row.
+            if msg != "POSTED successfully.":
+                log.insert(tk.END, msg + "\n")
+                log.see(tk.END)
+        refresh()
+        if received:
+            browser_var.set(browser_status())
+        poll_after[0] = window.after(250, poll_updates)
 
     def queue_post():
         body = text.get("1.0", tk.END).strip()
@@ -695,6 +773,9 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     def close():
         stop_event.set()
+        if poll_after[0] is not None:
+            window.after_cancel(poll_after[0])
+            poll_after[0] = None
         if ambient_after[0] is not None:
             try:
                 window.after_cancel(ambient_after[0])
@@ -705,5 +786,6 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     window.protocol("WM_DELETE_WINDOW", close)
     refresh()
+    poll_after[0] = window.after(250, poll_updates)
     update_char_count()
     return window
