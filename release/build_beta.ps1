@@ -55,6 +55,7 @@ Write-Host "[2/5] Cleaning generated output..." -ForegroundColor Cyan
 Remove-Item $GeneratedRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $OutputRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $GeneratedRoot -ItemType Directory -Force | Out-Null
+New-Item (Join-Path $GeneratedRoot "spec") -ItemType Directory -Force | Out-Null
 New-Item $OutputRoot -ItemType Directory -Force | Out-Null
 
 Write-Host "[3/5] Building Pulse Social..." -ForegroundColor Cyan
