@@ -21,3 +21,11 @@ settings.json
 captures/
 pdh_captures/
 *.har
+
+
+# Release/build outputs
+build/
+dist/
+release/generated/
+release/output/
+release/pdh_extension/
