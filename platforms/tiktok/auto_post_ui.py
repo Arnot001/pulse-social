@@ -211,6 +211,27 @@ class TikTokAutoPostView(tk.Frame):
             selectbackground=[("readonly", PANEL_2)],
             selectforeground=[("readonly", TEXT)],
         )
+        for scrollbar_style in ("TikTok.Vertical.TScrollbar", "TikTok.Horizontal.TScrollbar"):
+            style.configure(
+                scrollbar_style,
+                troughcolor=TABLE_BG,
+                background="#151e2d",
+                bordercolor=TABLE_BG,
+                lightcolor="#151e2d",
+                darkcolor="#151e2d",
+                arrowcolor=SUBTLE,
+                relief="flat",
+                width=10,
+                arrowsize=9,
+            )
+            style.map(
+                scrollbar_style,
+                background=[
+                    ("pressed", "#31415a"),
+                    ("active", "#26344a"),
+                ],
+                arrowcolor=[("active", TEXT)],
+            )
 
     def _button(self, parent, text, command, accent=False, danger=False, compact=False):
         if accent:
@@ -722,29 +743,17 @@ class TikTokAutoPostView(tk.Frame):
         self.tree.tag_configure("deleted", foreground=MUTED)
         self.tree.tag_configure("error", foreground=DANGER)
         self.tree.tag_configure("processing", foreground=ACCENT)
-        queue_scroll = tk.Scrollbar(
+        queue_scroll = ttk.Scrollbar(
             queue_card,
             orient="vertical",
             command=self.tree.yview,
-            bg=BORDER,
-            troughcolor=TABLE_BG,
-            activebackground=ACCENT_2,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            width=11,
+            style="TikTok.Vertical.TScrollbar",
         )
-        queue_xscroll = tk.Scrollbar(
+        queue_xscroll = ttk.Scrollbar(
             queue_card,
             orient="horizontal",
             command=self.tree.xview,
-            bg=BORDER,
-            troughcolor=TABLE_BG,
-            activebackground=ACCENT_2,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            width=9,
+            style="TikTok.Horizontal.TScrollbar",
         )
         self.tree.configure(
             yscrollcommand=queue_scroll.set,
@@ -800,17 +809,11 @@ class TikTokAutoPostView(tk.Frame):
             highlightthickness=1,
             highlightbackground="#1b2738",
         )
-        activity_scroll = tk.Scrollbar(
+        activity_scroll = ttk.Scrollbar(
             log_body,
             orient="vertical",
             command=self.log.yview,
-            bg=BORDER,
-            troughcolor=SURFACE,
-            activebackground=ACCENT,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            width=11,
+            style="TikTok.Vertical.TScrollbar",
         )
         self.log.configure(yscrollcommand=activity_scroll.set)
         self.log.pack(side="left", fill="both", expand=True)
