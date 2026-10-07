@@ -129,6 +129,27 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
         font=("Segoe UI", 8, "bold"),
         padding=(8, 9),
     )
+    for scrollbar_style in ("Pulse.Vertical.TScrollbar", "Pulse.Horizontal.TScrollbar"):
+        style.configure(
+            scrollbar_style,
+            troughcolor=TABLE_BG,
+            background="#151e2d",
+            bordercolor=TABLE_BG,
+            lightcolor="#151e2d",
+            darkcolor="#151e2d",
+            arrowcolor=SUBTLE,
+            relief="flat",
+            width=10,
+            arrowsize=9,
+        )
+        style.map(
+            scrollbar_style,
+            background=[
+                ("pressed", "#31415a"),
+                ("active", "#26344a"),
+            ],
+            arrowcolor=[("active", TEXT)],
+        )
 
     def button(parent, text, command, accent=False, danger=False, compact=False):
         if accent:
@@ -459,29 +480,17 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     queue_body = tk.Frame(queue_card, bg=TABLE_BG)
     queue_body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
-    queue_scroll = tk.Scrollbar(
+    queue_scroll = ttk.Scrollbar(
         queue_body,
         orient="vertical",
         command=tree.yview,
-        bg=BORDER,
-        troughcolor=TABLE_BG,
-        activebackground=ACCENT,
-        relief="flat",
-        bd=0,
-        highlightthickness=0,
-        width=11,
+        style="Pulse.Vertical.TScrollbar",
     )
-    queue_xscroll = tk.Scrollbar(
+    queue_xscroll = ttk.Scrollbar(
         queue_body,
         orient="horizontal",
         command=tree.xview,
-        bg=BORDER,
-        troughcolor=TABLE_BG,
-        activebackground=ACCENT,
-        relief="flat",
-        bd=0,
-        highlightthickness=0,
-        width=9,
+        style="Pulse.Horizontal.TScrollbar",
     )
     tree.configure(yscrollcommand=queue_scroll.set, xscrollcommand=queue_xscroll.set)
     tree.grid(in_=queue_body, row=0, column=0, sticky="nsew")
@@ -528,17 +537,11 @@ def open_auto_post_window(parent: tk.Misc) -> tk.Toplevel:
 
     log_body = tk.Frame(activity, bg=PANEL)
     log_body.pack(fill="both", expand=True, padx=14, pady=(0, 12))
-    activity_scroll = tk.Scrollbar(
+    activity_scroll = ttk.Scrollbar(
         log_body,
         orient="vertical",
         command=log.yview,
-        bg=BORDER,
-        troughcolor=PANEL_3,
-        activebackground=ACCENT,
-        relief="flat",
-        bd=0,
-        highlightthickness=0,
-        width=11,
+        style="Pulse.Vertical.TScrollbar",
     )
     log.configure(yscrollcommand=activity_scroll.set)
     log.pack(in_=log_body, side="left", fill="both", expand=True)
