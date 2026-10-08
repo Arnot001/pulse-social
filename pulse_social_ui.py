@@ -273,14 +273,23 @@ def cleaner_worker(settings):
                     if stale_rounds==3: page.reload(wait_until="domcontentloaded"); time.sleep(5)
                     continue
                 acted=False; requery_after_mutation=False
+                reply_owned_count=0; reply_marked_count=0; reply_marked_owned_count=0
                 for i in range(count):
                     if (not until_empty and actions>=max_actions) or stop_event.is_set(): break
                     article=articles.nth(i)
                     try:
-                        if mode=="replies" and not is_reply_article(article): continue
                         require_owned=mode in ("posts","replies"); identity=article_identity(article,handle=handle if require_owned else None,require_owned=require_owned)
+                        reply_marked=is_reply_article(article) if mode=="replies" else False
+                        if mode=="replies":
+                            if identity: reply_owned_count+=1
+                            if reply_marked: reply_marked_count+=1
+                            if identity and reply_marked: reply_marked_owned_count+=1
                         if require_owned and not identity: continue
                         if identity and identity in seen_items: continue
+                        if mode=="replies" and not reply_marked:
+                            if identity and len(seen_items)<3:
+                                ui_log(f"Reply status {identity.split(':',1)[-1]} is owned but X exposed no explicit reply marker on this timeline card.")
+                            continue
                         did=delete_own_post(page,article,dry_run,delay,handle,mode) if require_owned else undo_repost(page,article,dry_run,delay) if mode=="reposts" else unlike_post(page,article,dry_run,delay)
                         if did:
                             if identity: seen_items.add(identity)
@@ -292,6 +301,8 @@ def cleaner_worker(settings):
                         elif identity: seen_items.add(identity)
                     except TimeoutError: ui_log("Skipped one: X did not respond in time; it can be retried on a later pass"); close_menu(page)
                     except Exception as e: ui_log(f"Skipped one: {e}"); close_menu(page)
+                if mode=="replies":
+                    ui_log(f"Reply scan: articles {count} | owned {reply_owned_count} | reply-marked {reply_marked_count} | owned+reply {reply_marked_owned_count}")
                 if (not until_empty and actions>=max_actions) or stop_event.is_set(): break
                 if requery_after_mutation: time.sleep(.8); continue
                 try:
