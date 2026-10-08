@@ -93,16 +93,21 @@ def log_action(action,text,mode=None):
 def close_menu(page):
     try: page.keyboard.press("Escape")
     except Exception: pass
-def connect_cdp(playwright,timeout_seconds=10):
+def connect_cdp(playwright,timeout_seconds=30):
     if not cdp_responding():
         ui_log("Starting the dedicated Pulse Browser...")
         ok,message=open_x_browser()
         if not ok: raise RuntimeError(f"Could not start/connect Pulse Browser: {message}")
-    deadline=time.time()+timeout_seconds; last_error=None
+    deadline=time.time()+timeout_seconds; last_error=None; attempt=0
     while time.time()<deadline:
-        try: return playwright.chromium.connect_over_cdp(CDP_URL,timeout=3000)
-        except Exception as e: last_error=e; time.sleep(.5)
-    raise RuntimeError(f"Could not attach to Pulse Browser on port {CDP_PORT}. Try ATTACH BRAVE again. Last error: {last_error}")
+        attempt+=1
+        try: return playwright.chromium.connect_over_cdp(CDP_URL,timeout=15000)
+        except Exception as e:
+            last_error=e
+            if time.time()<deadline:
+                ui_log(f"Pulse Browser answered on :{CDP_PORT}, but Playwright attach is still completing (attempt {attempt}). Retrying...")
+                time.sleep(1)
+    raise RuntimeError(f"Could not attach to Pulse Browser on port {CDP_PORT}. The CDP endpoint answered, but Playwright could not finish the attach handshake. Last error: {last_error}")
 def find_x_page(context,target_url):
     for page in context.pages:
         try:
