@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import tkinter as tk
 from tkinter import messagebox
 from playwright.sync_api import sync_playwright, TimeoutError
-from platforms.browser_control import CDP_PORT, CDP_URL, cdp_responding
+from platforms.browser_control import CDP_PORT, CDP_URL, cdp_responding, restart_pulse_browser
 from platforms.x.browser_session import open_x_browser
 
 APP_DIR = os.path.join(os.environ["LOCALAPPDATA"], "Pulse Social")
@@ -98,16 +98,23 @@ def connect_cdp(playwright,timeout_seconds=30):
         ui_log("Starting the dedicated Pulse Browser...")
         ok,message=open_x_browser()
         if not ok: raise RuntimeError(f"Could not start/connect Pulse Browser: {message}")
-    deadline=time.time()+timeout_seconds; last_error=None; attempt=0
-    while time.time()<deadline:
-        attempt+=1
-        try: return playwright.chromium.connect_over_cdp(CDP_URL,timeout=15000)
-        except Exception as e:
-            last_error=e
-            if time.time()<deadline:
-                ui_log(f"Pulse Browser answered on :{CDP_PORT}, but Playwright attach is still completing (attempt {attempt}). Retrying...")
-                time.sleep(1)
-    raise RuntimeError(f"Could not attach to Pulse Browser on port {CDP_PORT}. The CDP endpoint answered, but Playwright could not finish the attach handshake. Last error: {last_error}")
+    try:
+        return playwright.chromium.connect_over_cdp(CDP_URL,timeout=12000)
+    except Exception as first_error:
+        if not cdp_responding():
+            raise RuntimeError(f"Pulse Browser stopped responding on port {CDP_PORT}. Last error: {first_error}")
+        ui_log("Pulse Browser CDP attach stalled. Restarting only the dedicated Pulse Browser profile...")
+        ok,message=restart_pulse_browser(start_url="https://x.com/home")
+        if not ok:
+            raise RuntimeError(f"Could not safely recover Pulse Browser: {message}. Last attach error: {first_error}")
+        deadline=time.time()+timeout_seconds; last_error=first_error
+        while time.time()<deadline:
+            try:
+                return playwright.chromium.connect_over_cdp(CDP_URL,timeout=15000)
+            except Exception as e:
+                last_error=e
+                if time.time()<deadline: time.sleep(1)
+        raise RuntimeError(f"Pulse Browser restarted, but Playwright still could not attach. Last error: {last_error}")
 def find_x_page(context,target_url):
     for page in context.pages:
         try:
