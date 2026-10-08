@@ -132,7 +132,7 @@ def test_attach_failure_retains_last_error_after_safe_recovery(cleanup, monkeypa
     monkeypatch.setitem(cleanup, "cdp_responding", lambda: True)
     restart = Mock(return_value=(True, "BRAVE // CONNECTED // CDP :9222"))
     monkeypatch.setitem(cleanup, "restart_pulse_browser", restart)
-    clock = iter([0, 0, 31])
+    clock = iter([0, 0, 31, 31])
     monkeypatch.setattr(cleanup["time"], "time", lambda: next(clock))
     monkeypatch.setattr(cleanup["time"], "sleep", lambda seconds: None)
     playwright, _ = fake_playwright()
