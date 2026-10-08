@@ -148,6 +148,45 @@ def matches_topic(text: str, topic: str) -> bool:
     return topic == result["topic"] or topic in result["topics"]
 
 
+def search_terms(query: str) -> list[str]:
+    """Return case-folded search terms. Commas mean OR; otherwise text is one phrase."""
+    clean = (query or "").strip().casefold()
+    if not clean:
+        return []
+    if "," in clean:
+        return [term.strip() for term in clean.split(",") if term.strip()]
+    return [clean]
+
+
+def matches_search(text: str, query: str) -> bool:
+    """Case-insensitive literal word/phrase search across scanned status text."""
+    terms = search_terms(query)
+    if not terms:
+        return True
+    haystack = _normalise(text)
+    return any(term in haystack for term in terms)
+
+
+def filter_inventory(
+    items: Iterable[dict],
+    *,
+    mode: str | None = None,
+    topic: str = ALL_TOPIC,
+    query: str = "",
+) -> list[dict]:
+    """Filter the saved scan without ever inventing or expanding status IDs."""
+    matches = []
+    for item in items:
+        if mode and item.get("mode") != mode:
+            continue
+        if topic != ALL_TOPIC and item.get("topic") != topic:
+            continue
+        if not matches_search(str(item.get("text") or ""), query):
+            continue
+        matches.append(item)
+    return matches
+
+
 def inventory_counts(items: Iterable[dict]) -> dict[str, int]:
     counter = Counter(str(item.get("topic") or OTHER_TOPIC) for item in items)
     return dict(counter)
