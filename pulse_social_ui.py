@@ -110,6 +110,45 @@ def find_x_page(context,target_url):
         except Exception: pass
     page=context.new_page(); page.goto(target_url,wait_until="domcontentloaded"); return page
 
+def x_path(url):
+    try: return urlparse(url).path.rstrip("/").lower()
+    except Exception: return ""
+
+def reply_tab_locator(page,handle):
+    clean=handle.strip().lstrip("@")
+    try:
+        exact=page.locator(f'a[role="tab"][href="/{clean}/with_replies"]')
+        if exact.count()>0: return exact
+    except Exception: pass
+    return page.locator('a[role="tab"][href$="/with_replies"]')
+
+def ensure_target_timeline(page,target_url,handle,mode):
+    target_path=x_path(target_url)
+    if mode=="replies" and x_path(page.url)!=target_path:
+        try:
+            tab=reply_tab_locator(page,handle)
+            if tab.count()>0:
+                ui_log("Opening X Replies tab...")
+                tab.first.click(timeout=4000)
+                deadline=time.time()+8
+                while time.time()<deadline and x_path(page.url)!=target_path: time.sleep(.2)
+        except Exception: pass
+    if x_path(page.url)!=target_path:
+        page.goto(target_url,wait_until="domcontentloaded")
+    if x_path(page.url)!=target_path:
+        raise RuntimeError(f"X did not open the expected {mode} timeline.")
+    if mode=="replies":
+        try:
+            tab=reply_tab_locator(page,handle)
+            if tab.count()>0 and tab.first.get_attribute("aria-selected")!="true":
+                ui_log("Selecting X Replies tab...")
+                tab.first.click(timeout=4000)
+                deadline=time.time()+8
+                while time.time()<deadline and x_path(page.url)!=target_path: time.sleep(.2)
+        except Exception: pass
+        time.sleep(1.0)
+        ui_log("Replies timeline verified.")
+
 def delete_own_post(page,article,dry_run,delay,handle,mode):
     text=safe_text(article)
     if not text or is_repost(text): return False
@@ -163,7 +202,7 @@ def cleaner_worker(settings):
             set_run_state("armed",dry_run,mode,limit_label); continue_event.wait()
             if stop_event.is_set(): ui_log("Stopped before cleanup."); return
             try:
-                if page.url.rstrip("/")!=url.rstrip("/"): page.goto(url,wait_until="domcontentloaded")
+                ensure_target_timeline(page,url,handle,mode)
             except Exception as e: ui_log(f"Could not open target X page: {e}"); return
             set_run_state("running",dry_run,mode,limit_label); ui_log(f"Mode: {mode} | Dry run: {dry_run} | {limit_label}"); ui_log("Cleanup started.")
             if mode=="reposts": ui_log("Repost safety: dedicated /reposts page + active repost control required.")
@@ -183,6 +222,7 @@ def cleaner_worker(settings):
                     if (not until_empty and actions>=max_actions) or stop_event.is_set(): break
                     article=articles.nth(i)
                     try:
+                        if mode=="replies" and not is_reply_article(article): continue
                         require_owned=mode in ("posts","replies"); identity=article_identity(article,handle=handle if require_owned else None,require_owned=require_owned)
                         if require_owned and not identity: continue
                         if identity and identity in seen_items: continue
