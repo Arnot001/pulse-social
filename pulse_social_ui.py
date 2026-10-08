@@ -10,6 +10,7 @@ from tkinter import messagebox
 from playwright.sync_api import sync_playwright, TimeoutError
 from platforms.browser_control import CDP_PORT, CDP_URL, cdp_responding, restart_pulse_browser
 from platforms.x.browser_session import open_x_browser
+from platforms.x.profile_intelligence import ALL_TOPIC, TOPIC_LABELS, classify_text, inventory_counts, ranked_inventory
 
 APP_DIR = os.path.join(os.environ["LOCALAPPDATA"], "Pulse Social")
 os.makedirs(APP_DIR, exist_ok=True)
@@ -19,10 +20,12 @@ POST_LOG_FILE = os.path.join(APP_DIR, "post_log.txt")
 REPLY_LOG_FILE = os.path.join(APP_DIR, "reply_log.txt")
 REPOST_LOG_FILE = os.path.join(APP_DIR, "repost_log.txt")
 LIKE_LOG_FILE = os.path.join(APP_DIR, "like_log.txt")
+PROFILE_INTELLIGENCE_FILE = os.path.join(APP_DIR, "profile_intelligence.json")
+PROFILE_SCAN_LIMIT_PER_MODE = 400
 
 BG = "#07090f"; PANEL = "#0d111b"; PANEL_2 = "#121827"; BORDER = "#20283a"; TEXT = "#f5f7fb"; MUTED = "#8993a6"; ACCENT = "#ff008c"; SUCCESS = "#35d07f"; DANGER = "#ff4057"
-DEFAULTS = {"handle":"", "mode":"posts", "dry_run":True, "run_until_empty":False, "max_actions":10, "delay":3, "refresh_every":25}
-log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue()
+DEFAULTS = {"handle":"", "mode":"posts", "dry_run":True, "run_until_empty":False, "max_actions":10, "delay":3, "refresh_every":25, "topic_filter":ALL_TOPIC}
+log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue(); intel_queue = queue.Queue()
 
 def ui_log(msg): log_queue.put(msg)
 def set_run_state(state, dry_run=None, mode=None, limit_label=None): run_state_queue.put((state, dry_run, mode, limit_label))
@@ -34,6 +37,27 @@ def load_settings():
     return DEFAULTS.copy()
 def save_settings(settings):
     with open(SETTINGS_FILE,"w",encoding="utf-8") as f: json.dump(settings,f,indent=2)
+def load_profile_intelligence():
+    if os.path.exists(PROFILE_INTELLIGENCE_FILE):
+        try:
+            with open(PROFILE_INTELLIGENCE_FILE,"r",encoding="utf-8") as f:
+                payload=json.load(f)
+            if isinstance(payload,dict) and isinstance(payload.get("items"),list): return payload
+        except Exception: pass
+    return {"handle":"","scanned_at":"","items":[]}
+def save_profile_intelligence(payload):
+    with open(PROFILE_INTELLIGENCE_FILE,"w",encoding="utf-8") as f: json.dump(payload,f,indent=2,ensure_ascii=False)
+def topic_key_from_label(label):
+    for key,value in TOPIC_LABELS.items():
+        if value==label: return key
+    return ALL_TOPIC
+def intelligence_summary(payload):
+    items=payload.get("items") or []
+    if not items: return "NOT SCANNED // local topic intelligence ready"
+    ranked=ranked_inventory(items)[:3]
+    bits=[f"{TOPIC_LABELS.get(key,key).upper()} {count}" for key,count in ranked]
+    handle=str(payload.get("handle") or "").lstrip("@")
+    return f"@{handle} // {len(items)} SCANNED // " + "  •  ".join(bits)
 def safe_text(locator):
     try: return locator.inner_text(timeout=3000)
     except Exception: return ""
@@ -200,6 +224,75 @@ def ensure_target_timeline(page,target_url,handle,mode):
     if x_path(page.url)!=target_path:
         raise RuntimeError(f"X did not open the expected {mode} timeline.")
 
+def scan_authored_timeline(page,target_url,handle,mode,seen,items,max_items):
+    ensure_target_timeline(page,target_url,handle,mode)
+    stale_rounds=0; mode_added=0; empty_threshold=6
+    while mode_added<max_items and stale_rounds<empty_threshold and not stop_event.is_set():
+        articles=page.locator("article"); count=articles.count(); added=0
+        for i in range(count):
+            if mode_added>=max_items or stop_event.is_set(): break
+            article=articles.nth(i)
+            owned=authored_status(article,handle)
+            if not owned or owned[1] in seen: continue
+            text=safe_text(article).strip()
+            if not text or is_repost(text): continue
+            result=classify_text(text)
+            seen.add(owned[1]); added+=1; mode_added+=1
+            items.append({
+                "status_id":owned[1],
+                "mode":mode,
+                "topic":result["topic"],
+                "topics":result["topics"],
+                "confidence":result["confidence"],
+                "text":text[:500],
+            })
+        if added:
+            stale_rounds=0
+            ui_log(f"PROFILE SCAN // {mode.upper()} // +{added} // {mode_added} THIS TIMELINE // {len(items)} UNIQUE TOTAL")
+        else:
+            stale_rounds+=1
+            ui_log(f"PROFILE SCAN // {mode.upper()} // loading older items {stale_rounds}/{empty_threshold}")
+        if mode_added>=max_items or stop_event.is_set(): break
+        try:
+            articles=page.locator("article"); count=articles.count()
+            if count: articles.nth(count-1).scroll_into_view_if_needed(timeout=3000)
+            page.evaluate("window.scrollBy(0, Math.max(850, window.innerHeight * 0.9))")
+        except Exception:
+            page.mouse.wheel(0,1800)
+        time.sleep(1.4)
+
+def profile_scan_worker(handle):
+    stop_event.clear()
+    clean=handle.strip().lstrip("@")
+    profile_url=f"https://x.com/{clean}"
+    items=[]; seen=set()
+    ui_log("PROFILE INTELLIGENCE // read-only scan starting")
+    ui_log("Scanning authored Posts first, then Replies. Exact status IDs are deduplicated before classification.")
+    try:
+        with sync_playwright() as p:
+            browser=connect_cdp(p)
+            if not browser.contexts: raise RuntimeError("Pulse Browser attached but no browser context was available.")
+            context=browser.contexts[0]
+            page=find_x_page(context,profile_url)
+            scan_authored_timeline(page,profile_url,clean,"posts",seen,items,PROFILE_SCAN_LIMIT_PER_MODE)
+            if not stop_event.is_set():
+                replies_url=f"https://x.com/{clean}/with_replies"
+                scan_authored_timeline(page,replies_url,clean,"replies",seen,items,PROFILE_SCAN_LIMIT_PER_MODE)
+        payload={
+            "handle":clean,
+            "scanned_at":datetime.now().isoformat(timespec="seconds"),
+            "items":items,
+        }
+        save_profile_intelligence(payload)
+        ui_log(f"PROFILE INTELLIGENCE COMPLETE // {len(items)} unique authored statuses scanned")
+        for index,(key,count) in enumerate(ranked_inventory(items),start=1):
+            ui_log(f"{index}. {TOPIC_LABELS.get(key,key).upper()} // {count}")
+        if stop_event.is_set(): ui_log("PROFILE SCAN STOPPED // partial inventory saved")
+        intel_queue.put(("done",payload))
+    except Exception as e:
+        ui_log(f"PROFILE INTELLIGENCE FAILED // {e}")
+        intel_queue.put(("error",str(e)))
+
 def delete_own_post(page,article,dry_run,delay,handle,mode):
     text=safe_text(article)
     if not text or is_repost(text): return False
@@ -236,6 +329,7 @@ def unlike_post(page,article,dry_run,delay):
 
 def cleaner_worker(settings):
     stop_event.clear(); continue_event.clear(); handle=settings["handle"].strip().replace("@",""); mode=settings["mode"]; dry_run=settings["dry_run"]; until_empty=settings.get("run_until_empty",False)
+    topic_filter=settings.get("topic_filter",ALL_TOPIC); target_status_ids=set(settings.get("target_status_ids") or [])
     max_actions=int(settings["max_actions"]); delay=float(settings["delay"]); refresh_every=int(settings["refresh_every"]); limit_label="UNTIL EMPTY" if until_empty else f"MAX {max_actions}"
     if not handle: ui_log("Enter your X handle first."); set_run_state("idle"); return
     set_run_state("attaching",dry_run,mode,limit_label)
@@ -245,10 +339,10 @@ def cleaner_worker(settings):
         with sync_playwright() as p:
             try: browser=connect_cdp(p)
             except Exception as e: ui_log(str(e)); return
-            if not browser.contexts: ui_log("Brave attached but no browser context was available."); return
+            if not browser.contexts: ui_log("Pulse Browser attached but no browser context was available."); return
             context=browser.contexts[0]
             try: page=find_x_page(context,url)
-            except Exception as e: ui_log(f"Could not find/open X in Brave: {e}"); return
+            except Exception as e: ui_log(f"Could not find/open X in Pulse Browser: {e}"); return
             ui_log("Attached to Pulse Browser. Sign in to X there if needed before continuing."); ui_log(f"RUN LOCKED: {'PREVIEW ONLY' if dry_run else 'LIVE ACTIONS'} | {mode} | {limit_label}"); ui_log("Click ARM / CONTINUE once to begin.")
             set_run_state("armed",dry_run,mode,limit_label); continue_event.wait()
             if stop_event.is_set(): ui_log("Stopped before cleanup."); return
@@ -259,6 +353,7 @@ def cleaner_worker(settings):
             if mode=="replies": ui_log("Reply safety: verified /with_replies timeline + exact authored status link required.")
             if mode=="reposts": ui_log("Repost safety: dedicated /reposts page + active repost control required.")
             if mode=="likes": ui_log("Like safety: private History/Likes page + active unlike control required.")
+            if topic_filter!=ALL_TOPIC: ui_log(f"SMART TARGET // {TOPIC_LABELS.get(topic_filter,topic_filter)} // {len(target_status_ids)} scanned {mode} IDs")
             if until_empty: ui_log("Run-until-empty enabled: Pulse will stop only after repeated passes find no new matching items.")
             actions=0; stale_rounds=0; seen_items=set(); empty_threshold=8
             target_path=x_path(url)
@@ -285,6 +380,11 @@ def cleaner_worker(settings):
                         require_owned=mode in ("posts","replies"); identity=article_identity(article,handle=handle if require_owned else None,require_owned=require_owned)
                         if require_owned and not identity: continue
                         if identity and identity in seen_items: continue
+                        if require_owned and topic_filter!=ALL_TOPIC:
+                            status_id=identity.split(":",1)[1] if identity and ":" in identity else ""
+                            if status_id not in target_status_ids:
+                                if identity: seen_items.add(identity)
+                                continue
                         did=delete_own_post(page,article,dry_run,delay,handle,mode) if require_owned else undo_repost(page,article,dry_run,delay) if mode=="reposts" else unlike_post(page,article,dry_run,delay)
                         if did:
                             if identity: seen_items.add(identity)
@@ -313,12 +413,46 @@ def cleaner_worker(settings):
 
 def start_session():
     if worker_active.get(): ui_log("A cleanup run is already active. Stop it before starting another."); return
-    try: s={"handle":handle_var.get().strip(),"mode":mode_var.get(),"dry_run":dry_var.get(),"run_until_empty":until_empty_var.get(),"max_actions":int(max_actions_var.get()),"delay":float(delay_var.get()),"refresh_every":int(refresh_var.get())}
+    try: s={"handle":handle_var.get().strip(),"mode":mode_var.get(),"dry_run":dry_var.get(),"run_until_empty":until_empty_var.get(),"max_actions":int(max_actions_var.get()),"delay":float(delay_var.get()),"refresh_every":int(refresh_var.get()),"topic_filter":topic_key_from_label(topic_var.get())}
     except ValueError: messagebox.showerror("Invalid settings","Max actions, delay and refresh every must be numbers."); return
     if not s["handle"]: messagebox.showerror("Missing handle","Enter your X handle first."); return
-    save_settings(s); limit_text="UNTIL EMPTY" if s["run_until_empty"] else f"MAX {s['max_actions']}"
-    if not s["dry_run"] and not messagebox.askyesno("LIVE CLEANUP",f"LIVE MODE IS ARMED.\n\n{s['mode'].upper()} will run {limit_text}.\n\nThe run mode will be LOCKED until it finishes or you press STOP.\n\nContinue?"): return
+    if s["topic_filter"]!=ALL_TOPIC:
+        if s["mode"] not in ("posts","replies"):
+            messagebox.showerror("Smart target","Topic targeting currently supports Posts and Replies only."); return
+        scanned_handle=str(profile_inventory.get("handle") or "").lstrip("@").casefold()
+        if scanned_handle!=s["handle"].lstrip("@").casefold():
+            messagebox.showerror("Scan profile first","Run PROFILE INTELLIGENCE for this X handle before targeting a topic."); return
+        target_ids=[
+            str(item.get("status_id"))
+            for item in profile_inventory.get("items",[])
+            if item.get("mode")==s["mode"] and item.get("topic")==s["topic_filter"] and item.get("status_id")
+        ]
+        if not target_ids:
+            messagebox.showinfo("No matching items",f"No scanned {s['mode']} are classified as {TOPIC_LABELS.get(s['topic_filter'],s['topic_filter'])}."); return
+        s["target_status_ids"]=target_ids
+    save_settings({key:value for key,value in s.items() if key!="target_status_ids"}); limit_text="UNTIL EMPTY" if s["run_until_empty"] else f"MAX {s['max_actions']}"
+    target_text="" if s["topic_filter"]==ALL_TOPIC else f"\n\nSMART TARGET: {TOPIC_LABELS.get(s['topic_filter'],s['topic_filter'])}"
+    if not s["dry_run"] and not messagebox.askyesno("LIVE CLEANUP",f"LIVE MODE IS ARMED.\n\n{s['mode'].upper()} will run {limit_text}.{target_text}\n\nThe run mode will be LOCKED until it finishes or you press STOP.\n\nContinue?"): return
     worker_active.set(True); set_controls_locked(True); show_run_mode("attaching",s["dry_run"],s["mode"],limit_text); threading.Thread(target=cleaner_worker,args=(s,),daemon=True).start()
+
+def start_profile_scan():
+    if worker_active.get(): ui_log("Another Pulse Social task is already active."); return
+    handle=handle_var.get().strip()
+    if not handle: messagebox.showerror("Missing handle","Enter your X handle first."); return
+    worker_active.set(True); stop_event.clear(); set_controls_locked(True); arm_btn.config(state="disabled"); stop_btn.config(state="normal")
+    status_var.set("PROFILE INTELLIGENCE // SCANNING // READ ONLY"); status_label.config(fg=SUCCESS)
+    threading.Thread(target=profile_scan_worker,args=(handle,),daemon=True).start()
+
+def refresh_topic_menu(payload):
+    counts=inventory_counts(payload.get("items") or [])
+    keys=[ALL_TOPIC]+[key for key,_count in ranked_inventory(payload.get("items") or [])]
+    menu=topic_menu["menu"]; menu.delete(0,"end")
+    for key in keys:
+        label=TOPIC_LABELS.get(key,key)
+        menu.add_command(label=label,command=lambda value=label: topic_var.set(value))
+    current=topic_key_from_label(topic_var.get())
+    if current not in keys: topic_var.set(TOPIC_LABELS[ALL_TOPIC])
+    intel_summary_var.set(intelligence_summary(payload))
 def continue_cleanup():
     if worker_active.get(): continue_event.set()
 def stop_cleanup():
@@ -333,6 +467,14 @@ def poll_logs():
     changed=False
     while not log_queue.empty(): log_box.insert(tk.END,log_queue.get()+"\n"); changed=True
     if changed: log_box.see(tk.END)
+    while not intel_queue.empty():
+        kind,payload=intel_queue.get()
+        worker_active.set(False); set_controls_locked(False); toggle_until_empty(); arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
+        if kind=="done":
+            profile_inventory.clear(); profile_inventory.update(payload); refresh_topic_menu(profile_inventory)
+            status_var.set(f"PROFILE INTELLIGENCE READY // {len(profile_inventory.get('items',[]))} ITEMS"); status_label.config(fg=SUCCESS)
+        else:
+            status_var.set("PROFILE INTELLIGENCE FAILED"); status_label.config(fg=DANGER)
     while not run_state_queue.empty():
         state,dry_run,mode,limit_label=run_state_queue.get()
         if state=="idle": worker_active.set(False); set_controls_locked(False); toggle_until_empty(); show_run_mode("idle"); arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
@@ -341,8 +483,8 @@ def poll_logs():
 def button(parent,text,command,bg=PANEL_2,fg=TEXT,width=None): return tk.Button(parent,text=text,command=command,bg=bg,fg=fg,activebackground=ACCENT,activeforeground="white",relief="flat",bd=0,padx=14,pady=8,width=width,font=("Segoe UI",9,"bold"),cursor="hand2")
 def field(parent,var,width=12): return tk.Entry(parent,textvariable=var,width=width,bg="#090d15",fg=TEXT,insertbackground=TEXT,relief="flat",highlightthickness=1,highlightbackground=BORDER,highlightcolor=ACCENT,font=("Segoe UI",10))
 
-settings=load_settings(); root=tk.Tk(); root.title("Pulse Social — X Cleanup"); root.geometry("760x790"); root.minsize(700,730); root.configure(bg=BG)
-handle_var=tk.StringVar(value=settings["handle"]); mode_var=tk.StringVar(value=settings["mode"]); dry_var=tk.BooleanVar(value=settings["dry_run"]); until_empty_var=tk.BooleanVar(value=settings.get("run_until_empty",False)); max_actions_var=tk.StringVar(value=str(settings["max_actions"])); delay_var=tk.StringVar(value=str(settings["delay"])); refresh_var=tk.StringVar(value=str(settings["refresh_every"])); status_var=tk.StringVar(value="READY // SAFE MODE"); worker_active=tk.BooleanVar(value=False)
+settings=load_settings(); profile_inventory=load_profile_intelligence(); root=tk.Tk(); root.title("Pulse Social — X Cleanup"); root.geometry("820x900"); root.minsize(760,820); root.configure(bg=BG)
+handle_var=tk.StringVar(value=settings["handle"]); mode_var=tk.StringVar(value=settings["mode"]); dry_var=tk.BooleanVar(value=settings["dry_run"]); until_empty_var=tk.BooleanVar(value=settings.get("run_until_empty",False)); max_actions_var=tk.StringVar(value=str(settings["max_actions"])); delay_var=tk.StringVar(value=str(settings["delay"])); refresh_var=tk.StringVar(value=str(settings["refresh_every"])); topic_var=tk.StringVar(value=TOPIC_LABELS.get(settings.get("topic_filter",ALL_TOPIC),TOPIC_LABELS[ALL_TOPIC])); intel_summary_var=tk.StringVar(value=intelligence_summary(profile_inventory)); status_var=tk.StringVar(value="READY // SAFE MODE"); worker_active=tk.BooleanVar(value=False)
 header=tk.Frame(root,bg=BG); header.pack(fill="x",padx=26,pady=(22,12)); tk.Label(header,text="PULSE",fg=TEXT,bg=BG,font=("Segoe UI",24,"bold")).pack(side="left"); tk.Label(header,text=" SOCIAL",fg=ACCENT,bg=BG,font=("Segoe UI",24,"bold")).pack(side="left"); tk.Label(header,text="X CLEANUP  //  COMMERCE INTELLIGENCE READY",fg=MUTED,bg=BG,font=("Consolas",9)).pack(side="right",pady=10)
 card=tk.Frame(root,bg=PANEL,highlightthickness=1,highlightbackground=BORDER); card.pack(fill="x",padx=26,pady=8); tk.Label(card,text="CLEANUP CONTROL",fg=TEXT,bg=PANEL,font=("Segoe UI",12,"bold")).grid(row=0,column=0,columnspan=4,sticky="w",padx=18,pady=(14,12))
 for label,row in [("X HANDLE",1),("MODE",2),("MAX ACTIONS",3),("DELAY / SEC",4),("REFRESH EVERY",5)]: tk.Label(card,text=label,fg=MUTED,bg=PANEL,font=("Consolas",8,"bold")).grid(row=row,column=0,sticky="w",padx=18,pady=7)
@@ -351,12 +493,21 @@ mode_menu=tk.OptionMenu(card,mode_var,"posts","replies","reposts","likes"); mode
 max_actions_entry=field(card,max_actions_var); max_actions_entry.grid(row=3,column=1,sticky="w",pady=7); delay_entry=field(card,delay_var); delay_entry.grid(row=4,column=1,sticky="w",pady=7); refresh_entry=field(card,refresh_var); refresh_entry.grid(row=5,column=1,sticky="w",pady=7)
 until_empty_check=tk.Checkbutton(card,text="  RUN UNTIL EMPTY",variable=until_empty_var,command=toggle_until_empty,fg=ACCENT,bg=PANEL,activebackground=PANEL,activeforeground=ACCENT,selectcolor=PANEL_2,font=("Segoe UI",9,"bold")); until_empty_check.grid(row=6,column=0,columnspan=3,sticky="w",padx=14,pady=(8,2))
 dry_check=tk.Checkbutton(card,text="  DRY RUN / PREVIEW ONLY",variable=dry_var,fg=SUCCESS,bg=PANEL,activebackground=PANEL,activeforeground=SUCCESS,selectcolor=PANEL_2,font=("Segoe UI",9,"bold")); dry_check.grid(row=7,column=0,columnspan=3,sticky="w",padx=14,pady=(2,15))
-actions=tk.Frame(root,bg=BG); actions.pack(fill="x",padx=26,pady=8); attach_btn=button(actions,"01  ATTACH BRAVE",start_session,bg=ACCENT,width=18); attach_btn.pack(side="left",padx=(0,8)); arm_btn=button(actions,"02  ARM / CONTINUE",continue_cleanup,width=18); arm_btn.pack(side="left",padx=8); stop_btn=button(actions,"STOP",stop_cleanup,bg="#421526",fg="#ffb4c8",width=10); stop_btn.pack(side="right")
-status=tk.Frame(root,bg=PANEL_2); status.pack(fill="x",padx=26,pady=(4,10)); status_label=tk.Label(status,textvariable=status_var,fg=SUCCESS,bg=PANEL_2,font=("Consolas",9,"bold")); status_label.pack(side="left",padx=14,pady=8); tk.Label(status,text="BROWSER: EXISTING BRAVE CDP :9222  •  SESSION: YOURS",fg=MUTED,bg=PANEL_2,font=("Consolas",8)).pack(side="right",padx=14)
+
+intel_card=tk.Frame(root,bg=PANEL,highlightthickness=1,highlightbackground=BORDER); intel_card.pack(fill="x",padx=26,pady=(2,8))
+tk.Label(intel_card,text="PROFILE INTELLIGENCE",fg=TEXT,bg=PANEL,font=("Segoe UI",11,"bold")).grid(row=0,column=0,sticky="w",padx=16,pady=(11,3))
+tk.Label(intel_card,text="LOCAL // HASHTAGS + KEYWORDS + TEXT TOPICS // NO AI CREDITS",fg=MUTED,bg=PANEL,font=("Consolas",8)).grid(row=1,column=0,columnspan=3,sticky="w",padx=16,pady=(0,8))
+scan_btn=button(intel_card,"SCAN PROFILE",start_profile_scan,bg="#143342",fg=TEXT,width=15); scan_btn.grid(row=2,column=0,sticky="w",padx=16,pady=(0,10))
+topic_menu=tk.OptionMenu(intel_card,topic_var,TOPIC_LABELS[ALL_TOPIC]); topic_menu.config(bg=PANEL_2,fg=TEXT,activebackground=ACCENT,relief="flat",width=24,highlightthickness=0); topic_menu["menu"].config(bg=PANEL_2,fg=TEXT); topic_menu.grid(row=2,column=1,sticky="w",padx=(0,12),pady=(0,10))
+tk.Label(intel_card,textvariable=intel_summary_var,fg=MUTED,bg=PANEL,font=("Consolas",8),anchor="w",justify="left").grid(row=3,column=0,columnspan=3,sticky="ew",padx=16,pady=(0,11))
+intel_card.columnconfigure(2,weight=1)
+
+actions=tk.Frame(root,bg=BG); actions.pack(fill="x",padx=26,pady=8); attach_btn=button(actions,"01  ATTACH PULSE BROWSER",start_session,bg=ACCENT,width=22); attach_btn.pack(side="left",padx=(0,8)); arm_btn=button(actions,"02  ARM / CONTINUE",continue_cleanup,width=18); arm_btn.pack(side="left",padx=8); stop_btn=button(actions,"STOP",stop_cleanup,bg="#421526",fg="#ffb4c8",width=10); stop_btn.pack(side="right")
+status=tk.Frame(root,bg=PANEL_2); status.pack(fill="x",padx=26,pady=(4,10)); status_label=tk.Label(status,textvariable=status_var,fg=SUCCESS,bg=PANEL_2,font=("Consolas",9,"bold")); status_label.pack(side="left",padx=14,pady=8); tk.Label(status,text="BROWSER: AUTO-DETECTED • DEDICATED PULSE PROFILE • CDP :9222",fg=MUTED,bg=PANEL_2,font=("Consolas",8)).pack(side="right",padx=14)
 log_card=tk.Frame(root,bg=PANEL,highlightthickness=1,highlightbackground=BORDER); log_card.pack(fill="both",expand=True,padx=26,pady=(0,22)); log_head=tk.Frame(log_card,bg=PANEL); log_head.pack(fill="x",padx=14,pady=(12,6)); tk.Label(log_head,text="ACTIVITY STREAM",fg=TEXT,bg=PANEL,font=("Segoe UI",11,"bold")).pack(side="left"); button(log_head,"COPY LOG",copy_log).pack(side="right",padx=(6,0)); button(log_head,"CLEAR VIEW",clear_log_view).pack(side="right")
 log_box=tk.Text(log_card,bg="#080c13",fg="#cbd3df",insertbackground=TEXT,relief="flat",bd=0,font=("Consolas",9),padx=12,pady=10,wrap="word"); log_box.pack(fill="both",expand=True,padx=14,pady=(0,8)); tk.Label(log_card,text=f"MASTER LOG  //  {LOG_FILE}",fg=MUTED,bg=PANEL,font=("Consolas",8)).pack(anchor="w",padx=14,pady=(0,10))
 
-locked_controls=[handle_entry,copy_handle_btn,mode_menu,max_actions_entry,delay_entry,refresh_entry,until_empty_check,dry_check,attach_btn]
+locked_controls=[handle_entry,copy_handle_btn,mode_menu,max_actions_entry,delay_entry,refresh_entry,until_empty_check,dry_check,attach_btn,scan_btn,topic_menu]
 def set_controls_locked(locked):
     state="disabled" if locked else "normal"
     for widget in locked_controls:
@@ -366,4 +517,4 @@ def show_run_mode(state,dry_run=None,mode=None,limit_label=None):
     if state=="idle": status_var.set("READY // SAFE MODE"); status_label.config(fg=SUCCESS); return
     label="PREVIEW // NO CHANGES" if dry_run else "LIVE // REAL ACTIONS"; phase={"attaching":"ATTACHING","armed":"ARMED","running":"RUNNING"}.get(state,state.upper()); status_var.set(f"{phase} // {label} // {str(mode).upper()} // {limit_label}"); status_label.config(fg=SUCCESS if dry_run else DANGER)
 
-arm_btn.config(state="disabled"); stop_btn.config(state="disabled"); toggle_until_empty(); poll_logs(); root.mainloop()
+refresh_topic_menu(profile_inventory); arm_btn.config(state="disabled"); stop_btn.config(state="disabled"); toggle_until_empty(); poll_logs(); root.mainloop()
