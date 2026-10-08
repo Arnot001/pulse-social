@@ -146,6 +146,10 @@ def reply_tab_locator(page,handle):
     except Exception: pass
     return page.locator('a[role="tab"][href$="/with_replies"]')
 
+def on_verified_replies_timeline(page,handle):
+    clean=handle.strip().lstrip("@").lower()
+    return bool(clean) and x_path(page.url)==f"/{clean}/with_replies"
+
 def ensure_target_timeline(page,target_url,handle,mode):
     target_path=x_path(target_url)
     try: page.bring_to_front()
@@ -201,7 +205,7 @@ def delete_own_post(page,article,dry_run,delay,handle,mode):
     if not text or is_repost(text): return False
     owned=authored_status(article,handle)
     if not owned: return False
-    if mode=="replies" and not is_reply_article(article): return False
+    if mode=="replies" and not on_verified_replies_timeline(page,handle): return False
     more=article.locator('[aria-label="More"]').first
     if more.count()==0: return False
     if dry_run:
@@ -252,6 +256,7 @@ def cleaner_worker(settings):
                 ensure_target_timeline(page,url,handle,mode)
             except Exception as e: ui_log(f"Could not open target X page: {e}"); return
             set_run_state("running",dry_run,mode,limit_label); ui_log(f"Mode: {mode} | Dry run: {dry_run} | {limit_label}"); ui_log("Cleanup started.")
+            if mode=="replies": ui_log("Reply safety: verified /with_replies timeline + exact authored status link required.")
             if mode=="reposts": ui_log("Repost safety: dedicated /reposts page + active repost control required.")
             if mode=="likes": ui_log("Like safety: private History/Likes page + active unlike control required.")
             if until_empty: ui_log("Run-until-empty enabled: Pulse will stop only after repeated passes find no new matching items.")
@@ -273,23 +278,13 @@ def cleaner_worker(settings):
                     if stale_rounds==3: page.reload(wait_until="domcontentloaded"); time.sleep(5)
                     continue
                 acted=False; requery_after_mutation=False
-                reply_owned_count=0; reply_marked_count=0; reply_marked_owned_count=0
                 for i in range(count):
                     if (not until_empty and actions>=max_actions) or stop_event.is_set(): break
                     article=articles.nth(i)
                     try:
                         require_owned=mode in ("posts","replies"); identity=article_identity(article,handle=handle if require_owned else None,require_owned=require_owned)
-                        reply_marked=is_reply_article(article) if mode=="replies" else False
-                        if mode=="replies":
-                            if identity: reply_owned_count+=1
-                            if reply_marked: reply_marked_count+=1
-                            if identity and reply_marked: reply_marked_owned_count+=1
                         if require_owned and not identity: continue
                         if identity and identity in seen_items: continue
-                        if mode=="replies" and not reply_marked:
-                            if identity and len(seen_items)<3:
-                                ui_log(f"Reply status {identity.split(':',1)[-1]} is owned but X exposed no explicit reply marker on this timeline card.")
-                            continue
                         did=delete_own_post(page,article,dry_run,delay,handle,mode) if require_owned else undo_repost(page,article,dry_run,delay) if mode=="reposts" else unlike_post(page,article,dry_run,delay)
                         if did:
                             if identity: seen_items.add(identity)
@@ -301,8 +296,6 @@ def cleaner_worker(settings):
                         elif identity: seen_items.add(identity)
                     except TimeoutError: ui_log("Skipped one: X did not respond in time; it can be retried on a later pass"); close_menu(page)
                     except Exception as e: ui_log(f"Skipped one: {e}"); close_menu(page)
-                if mode=="replies":
-                    ui_log(f"Reply scan: articles {count} | owned {reply_owned_count} | reply-marked {reply_marked_count} | owned+reply {reply_marked_owned_count}")
                 if (not until_empty and actions>=max_actions) or stop_event.is_set(): break
                 if requery_after_mutation: time.sleep(.8); continue
                 try:
