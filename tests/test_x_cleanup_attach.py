@@ -53,7 +53,7 @@ def test_existing_cdp_is_reused_without_launching(cleanup, monkeypatch):
     assert cleanup["connect_cdp"](playwright) is browser
 
     playwright.chromium.connect_over_cdp.assert_called_once_with(
-        "http://127.0.0.1:9222", timeout=3000)
+        "http://127.0.0.1:9222", timeout=12000)
     launch.assert_not_called()
     browser_control.subprocess.Popen.assert_not_called()
 
@@ -89,7 +89,7 @@ def test_no_cdp_launches_dedicated_profile_with_bundled_pdh_then_attaches(cleanu
     assert json.loads(browser_control.STATE_FILE.read_text())["profile"] == str(profile)
     browser_control._kill_browser.assert_not_called()
     playwright.chromium.connect_over_cdp.assert_called_once_with(
-        "http://127.0.0.1:9222", timeout=3000)
+        "http://127.0.0.1:9222", timeout=12000)
 
 
 @pytest.mark.parametrize("failure", ["spawn", "timeout"])
@@ -111,21 +111,28 @@ def test_true_launch_failure_stops_before_attach(cleanup, monkeypatch, failure):
     browser_control.subprocess.Popen.assert_called_once()
 
 
-def test_attach_retries_existing_cdp_without_launching_another_browser(cleanup, monkeypatch):
+def test_stalled_existing_cdp_restarts_only_dedicated_profile_then_attaches(cleanup, monkeypatch):
     monkeypatch.setitem(cleanup, "cdp_responding", lambda: True)
     monkeypatch.setattr(cleanup["time"], "sleep", lambda seconds: None)
+    restart = Mock(return_value=(True, "BRAVE // CONNECTED // CDP :9222"))
+    monkeypatch.setitem(cleanup, "restart_pulse_browser", restart)
     playwright, browser = fake_playwright()
     playwright.chromium.connect_over_cdp.side_effect = [RuntimeError("not ready"), browser]
 
     assert cleanup["connect_cdp"](playwright) is browser
 
     assert playwright.chromium.connect_over_cdp.call_count == 2
+    assert playwright.chromium.connect_over_cdp.call_args_list[0].kwargs["timeout"] == 12000
+    assert playwright.chromium.connect_over_cdp.call_args_list[1].kwargs["timeout"] == 15000
+    restart.assert_called_once_with(start_url="https://x.com/home")
     browser_control.subprocess.Popen.assert_not_called()
 
 
-def test_attach_failure_retains_last_error(cleanup, monkeypatch):
+def test_attach_failure_retains_last_error_after_safe_recovery(cleanup, monkeypatch):
     monkeypatch.setitem(cleanup, "cdp_responding", lambda: True)
-    clock = iter([0, 0, 11])
+    restart = Mock(return_value=(True, "BRAVE // CONNECTED // CDP :9222"))
+    monkeypatch.setitem(cleanup, "restart_pulse_browser", restart)
+    clock = iter([0, 0, 31])
     monkeypatch.setattr(cleanup["time"], "time", lambda: next(clock))
     monkeypatch.setattr(cleanup["time"], "sleep", lambda seconds: None)
     playwright, _ = fake_playwright()
@@ -135,6 +142,7 @@ def test_attach_failure_retains_last_error(cleanup, monkeypatch):
         cleanup["connect_cdp"](playwright)
 
     assert "Start Brave with" not in str(error.value)
+    restart.assert_called_once_with(start_url="https://x.com/home")
     browser_control.subprocess.Popen.assert_not_called()
 
 
