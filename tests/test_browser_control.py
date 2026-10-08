@@ -88,3 +88,52 @@ def test_status_shows_current_open_browser_before_stale_saved_choice(monkeypatch
     monkeypatch.setattr(browser_control, "installed_browser_names", lambda: ["Brave", "Chrome"])
 
     assert browser_control.browser_status() == "BRAVE OPEN // READY TO ATTACH"
+
+
+
+def test_pulse_browser_pid_lookup_matches_only_dedicated_profile(monkeypatch, tmp_path):
+    spec = _chrome_spec()
+    monkeypatch.setattr(browser_control, "BROWSER_PROFILE_ROOT", tmp_path / "profiles")
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = "4321\n"
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env", {})
+        return Result()
+
+    monkeypatch.setattr(browser_control.subprocess, "run", fake_run)
+
+    assert browser_control._pulse_browser_pids(spec) == [4321]
+    assert captured["env"]["PULSE_PROFILE_MATCH"] == str(tmp_path / "profiles" / "chrome")
+    assert captured["env"]["PULSE_BROWSER_IMAGE"] == "chrome.exe"
+    assert captured["args"][0].lower() == "powershell"
+
+
+def test_stop_pulse_browser_kills_profile_pid_not_browser_image(monkeypatch):
+    spec = _chrome_spec()
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(browser_control, "browser_spec", lambda name: spec)
+    monkeypatch.setattr(browser_control, "_pulse_browser_pids", lambda value: [4321])
+    monkeypatch.setattr(browser_control, "cdp_responding", lambda: False)
+    monkeypatch.setattr(
+        browser_control.subprocess,
+        "run",
+        lambda args, **kwargs: calls.append(args) or Result(),
+    )
+
+    ok, message = browser_control.stop_pulse_browser("Chrome")
+
+    assert ok is True
+    assert "stopped" in message.lower()
+    assert calls == [["taskkill", "/PID", "4321", "/T", "/F"]]
