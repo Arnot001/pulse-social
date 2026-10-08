@@ -26,6 +26,8 @@ PROFILE_SCAN_LIMIT_PER_MODE = 400
 BG = "#07090f"; PANEL = "#0d111b"; PANEL_2 = "#121827"; BORDER = "#20283a"; TEXT = "#f5f7fb"; MUTED = "#8993a6"; ACCENT = "#ff008c"; SUCCESS = "#35d07f"; DANGER = "#ff4057"
 DEFAULTS = {"handle":"", "mode":"posts", "dry_run":True, "run_until_empty":False, "max_actions":10, "delay":3, "refresh_every":25, "topic_filter":ALL_TOPIC, "search_query":""}
 log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue(); intel_queue = queue.Queue()
+selected_target_ids = set()
+category_buttons = {}
 
 def ui_log(msg): log_queue.put(msg)
 def set_run_state(state, dry_run=None, mode=None, limit_label=None): run_state_queue.put((state, dry_run, mode, limit_label))
@@ -58,6 +60,11 @@ def intelligence_summary(payload):
     bits=[f"{TOPIC_LABELS.get(key,key).upper()} {count}" for key,count in ranked]
     handle=str(payload.get("handle") or "").lstrip("@")
     return f"@{handle} // {len(items)} SCANNED // " + "  •  ".join(bits)
+def topic_mode_counts(items,key):
+    selected=items if key==ALL_TOPIC else [item for item in items if item.get("topic")==key]
+    posts=sum(1 for item in selected if item.get("mode")=="posts")
+    replies=sum(1 for item in selected if item.get("mode")=="replies")
+    return len(selected),posts,replies
 def safe_text(locator):
     try: return locator.inner_text(timeout=3000)
     except Exception: return ""
@@ -420,7 +427,7 @@ def start_session():
     try: s={"handle":handle_var.get().strip(),"mode":mode_var.get(),"dry_run":dry_var.get(),"run_until_empty":until_empty_var.get(),"max_actions":int(max_actions_var.get()),"delay":float(delay_var.get()),"refresh_every":int(refresh_var.get()),"topic_filter":topic_key_from_label(topic_var.get()),"search_query":search_var.get().strip()}
     except ValueError: messagebox.showerror("Invalid settings","Max actions, delay and refresh every must be numbers."); return
     if not s["handle"]: messagebox.showerror("Missing handle","Enter your X handle first."); return
-    smart_target=s["topic_filter"]!=ALL_TOPIC or bool(s["search_query"])
+    smart_target=s["topic_filter"]!=ALL_TOPIC or bool(s["search_query"]) or bool(selected_target_ids)
     if smart_target:
         if s["mode"] not in ("posts","replies"):
             messagebox.showerror("Smart target","Topic/search targeting currently supports Posts and Replies only."); return
@@ -433,14 +440,16 @@ def start_session():
             topic=s["topic_filter"],
             query=s["search_query"],
         )
-        target_ids=[str(item.get("status_id")) for item in matches if item.get("status_id")]
+        allowed_ids=[str(item.get("status_id")) for item in matches if item.get("status_id")]
+        target_ids=[status_id for status_id in allowed_ids if status_id in selected_target_ids] if selected_target_ids else allowed_ids
         if not target_ids:
-            messagebox.showinfo("No matching items","No scanned items match the selected topic/search for this mode."); return
+            messagebox.showinfo("No matching items","No scanned items match the current topic/search/selection for this mode."); return
         s["target_status_ids"]=target_ids
     save_settings({key:value for key,value in s.items() if key!="target_status_ids"}); limit_text="UNTIL EMPTY" if s["run_until_empty"] else f"MAX {s['max_actions']}"
     target_bits=[]
     if s["topic_filter"]!=ALL_TOPIC: target_bits.append(TOPIC_LABELS.get(s["topic_filter"],s["topic_filter"]))
     if s["search_query"]: target_bits.append(f'SEARCH "{s["search_query"]}"')
+    if selected_target_ids: target_bits.append(f"{len(s.get('target_status_ids',[]))} SELECTED")
     target_text="" if not target_bits else "\n\nSMART TARGET: " + " + ".join(target_bits)
     if not s["dry_run"] and not messagebox.askyesno("LIVE CLEANUP",f"LIVE MODE IS ARMED.\n\n{s['mode'].upper()} will run {limit_text}.{target_text}\n\nThe run mode will be LOCKED until it finishes or you press STOP.\n\nContinue?"): return
     worker_active.set(True); set_controls_locked(True); show_run_mode("attaching",s["dry_run"],s["mode"],limit_text); threading.Thread(target=cleaner_worker,args=(s,),daemon=True).start()
@@ -453,18 +462,137 @@ def start_profile_scan():
     status_var.set("PROFILE INTELLIGENCE // SCANNING // READ ONLY"); status_label.config(fg=SUCCESS)
     threading.Thread(target=profile_scan_worker,args=(handle,),daemon=True).start()
 
-def refresh_topic_menu(payload):
-    counts=inventory_counts(payload.get("items") or [])
-    keys=[ALL_TOPIC]+[key for key,_count in ranked_inventory(payload.get("items") or [])]
-    menu=topic_menu["menu"]; menu.delete(0,"end")
-    for key in keys:
+def clear_selected_targets(quiet=False):
+    selected_target_ids.clear()
+    if "selection_summary_var" in globals():
+        selection_summary_var.set("TARGET // all matches in current filter")
+    if not quiet: ui_log("SMART TARGET SELECTION CLEARED")
+
+def select_topic(key):
+    topic_var.set(TOPIC_LABELS.get(key,key))
+    clear_selected_targets(quiet=True)
+    refresh_topic_cards(profile_inventory)
+    update_match_summary()
+
+def refresh_topic_cards(payload):
+    for widget in topic_cards_frame.winfo_children(): widget.destroy()
+    category_buttons.clear()
+    items=payload.get("items") or []
+    ranked_keys=[key for key,_count in ranked_inventory(items)]
+    keys=[ALL_TOPIC]+ranked_keys
+    selected=topic_key_from_label(topic_var.get())
+    if selected not in keys:
+        selected=ALL_TOPIC
+        topic_var.set(TOPIC_LABELS[ALL_TOPIC])
+    for index,key in enumerate(keys):
+        total,posts,replies=topic_mode_counts(items,key)
         label=TOPIC_LABELS.get(key,key)
-        menu.add_command(label=label,command=lambda value=label: topic_var.set(value))
-    current=topic_key_from_label(topic_var.get())
-    if current not in keys: topic_var.set(TOPIC_LABELS[ALL_TOPIC])
+        text=f"{label.upper()}\n{total} TOTAL  •  P {posts}  •  R {replies}" if items else f"{label.upper()}\nNOT SCANNED"
+        chosen=key==selected
+        btn=tk.Button(
+            topic_cards_frame,text=text,command=lambda value=key: select_topic(value),
+            bg="#241323" if chosen else PANEL_2,fg=ACCENT if chosen else TEXT,
+            activebackground="#2d1930",activeforeground=TEXT,relief="flat",bd=0,
+            highlightthickness=1,highlightbackground=ACCENT if chosen else BORDER,
+            padx=10,pady=7,font=("Segoe UI",8,"bold"),justify="left",anchor="w",cursor="hand2"
+        )
+        btn.grid(row=index//2,column=index%2,sticky="ew",padx=(0,5) if index%2==0 else (5,0),pady=4)
+        category_buttons[key]=btn
+    topic_cards_frame.columnconfigure(0,weight=1,uniform="topics")
+    topic_cards_frame.columnconfigure(1,weight=1,uniform="topics")
     intel_summary_var.set(intelligence_summary(payload))
 
+def current_inventory_matches():
+    mode=mode_var.get() if mode_var.get() in ("posts","replies") else None
+    return filter_inventory(
+        profile_inventory.get("items",[]),
+        mode=mode,
+        topic=topic_key_from_label(topic_var.get()),
+        query=search_var.get().strip(),
+    )
+
+def update_match_summary():
+    if not profile_inventory.get("items"):
+        search_result_var.set("SEARCH // scan the profile to build the local inventory")
+        return
+    matches=current_inventory_matches()
+    mode=mode_var.get() if mode_var.get() in ("posts","replies") else "posts + replies"
+    query=search_var.get().strip()
+    query_text=f' // "{query}"' if query else ""
+    search_result_var.set(f"MATCHES // {len(matches)} // {str(mode).upper()}{query_text}")
+
 def preview_search_matches():
+    query=search_var.get().strip()
+    if not query:
+        messagebox.showinfo("Search profile","Type a word or phrase first."); return
+    handle=handle_var.get().strip().lstrip("@")
+    scanned_handle=str(profile_inventory.get("handle") or "").lstrip("@")
+    if not profile_inventory.get("items") or scanned_handle.casefold()!=handle.casefold():
+        messagebox.showinfo("Scan profile first","Run PROFILE INTELLIGENCE for this X handle before searching."); return
+    matches=current_inventory_matches()
+    scope=mode_var.get().upper() if mode_var.get() in ("posts","replies") else "POSTS + REPLIES"
+    search_result_var.set(f'SEARCH "{query}" // {len(matches)} MATCHES // {scope}')
+    ui_log(f'PROFILE SEARCH // "{query}" // {len(matches)} match(es) // {scope}')
+    for item in matches[:20]:
+        preview=str(item.get("text") or "").replace("\n"," ")[:180]
+        ui_log(f'[{str(item.get("mode") or "").upper()} {item.get("status_id")}] {preview}')
+    if len(matches)>20: ui_log(f"... {len(matches)-20} more match(es) not shown in the activity stream.")
+
+def review_matches():
+    handle=handle_var.get().strip().lstrip("@")
+    scanned_handle=str(profile_inventory.get("handle") or "").lstrip("@")
+    if not profile_inventory.get("items") or scanned_handle.casefold()!=handle.casefold():
+        messagebox.showinfo("Scan profile first","Run PROFILE INTELLIGENCE for this X handle before reviewing matches."); return
+    if mode_var.get() not in ("posts","replies"):
+        messagebox.showinfo("Choose Posts or Replies","Smart review currently targets Posts or Replies."); return
+    matches=current_inventory_matches()
+    if not matches:
+        messagebox.showinfo("No matches","Nothing in the saved scan matches the current filters."); return
+
+    win=tk.Toplevel(root); win.title("Pulse Social — Smart Cleanup Review"); win.geometry("1040x650"); win.minsize(860,520); win.configure(bg=BG); win.transient(root)
+    tk.Label(win,text="SMART CLEANUP REVIEW",fg=TEXT,bg=BG,font=("Segoe UI",18,"bold")).pack(anchor="w",padx=22,pady=(18,2))
+    filter_text=f"{mode_var.get().upper()}  //  {topic_var.get()}"
+    if search_var.get().strip(): filter_text+=f'  //  SEARCH "{search_var.get().strip()}"'
+    tk.Label(win,text=f"{filter_text}  //  {len(matches)} EXACT SCANNED STATUS IDs",fg=MUTED,bg=BG,font=("Consolas",9)).pack(anchor="w",padx=22,pady=(0,12))
+
+    body=tk.Frame(win,bg=BG); body.pack(fill="both",expand=True,padx=22,pady=(0,10))
+    listbox=tk.Listbox(body,selectmode=tk.EXTENDED,bg="#080c13",fg=TEXT,selectbackground="#39152b",selectforeground=TEXT,relief="flat",bd=0,font=("Consolas",9),activestyle="none",exportselection=False)
+    scroll=tk.Scrollbar(body,command=listbox.yview); listbox.configure(yscrollcommand=scroll.set)
+    listbox.pack(side="left",fill="both",expand=True); scroll.pack(side="right",fill="y")
+    for item in matches:
+        preview=" ".join(str(item.get("text") or "").split())[:145]
+        listbox.insert(tk.END,f'{item.get("status_id")}  |  {preview}')
+
+    preview_var=tk.StringVar(value="Select a row to inspect its full scanned text.")
+    preview_label=tk.Label(win,textvariable=preview_var,fg="#cbd3df",bg=PANEL,justify="left",anchor="nw",wraplength=970,font=("Segoe UI",9),padx=12,pady=10)
+    preview_label.pack(fill="x",padx=22,pady=(0,10))
+    def show_review_preview(_event=None):
+        chosen=listbox.curselection()
+        if not chosen: preview_var.set("Select a row to inspect its full scanned text."); return
+        item=matches[chosen[0]]
+        preview_var.set(str(item.get("text") or ""))
+    listbox.bind("<<ListboxSelect>>",show_review_preview)
+
+    footer=tk.Frame(win,bg=BG); footer.pack(fill="x",padx=22,pady=(0,18))
+    def target_selected(use_all=False):
+        indexes=range(len(matches)) if use_all else listbox.curselection()
+        ids={str(matches[index].get("status_id")) for index in indexes if matches[index].get("status_id")}
+        if not ids:
+            messagebox.showinfo("Nothing selected","Select one or more statuses first.",parent=win); return
+        selected_target_ids.clear(); selected_target_ids.update(ids)
+        selection_summary_var.set(f"TARGET // {len(ids)} exact scanned {mode_var.get()} status IDs")
+        ui_log(f"SMART TARGET // {len(ids)} exact scanned {mode_var.get()} status IDs selected")
+        win.destroy()
+    button(footer,"SELECT ALL",lambda: listbox.selection_set(0,tk.END)).pack(side="left")
+    button(footer,"CLEAR",lambda: listbox.selection_clear(0,tk.END)).pack(side="left",padx=8)
+    button(footer,"TARGET ALL MATCHES",lambda: target_selected(True),bg="#143342").pack(side="right")
+    button(footer,"TARGET SELECTED",lambda: target_selected(False),bg=ACCENT).pack(side="right",padx=8)
+
+def on_filter_changed(*_args):
+    clear_selected_targets(quiet=True)
+    update_match_summary()
+
+def continue_cleanup():
     query=search_var.get().strip()
     if not query:
         messagebox.showinfo("Search profile","Type a word or phrase first."); return
@@ -501,7 +629,7 @@ def poll_logs():
         kind,payload=intel_queue.get()
         worker_active.set(False); set_controls_locked(False); toggle_until_empty(); arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
         if kind=="done":
-            profile_inventory.clear(); profile_inventory.update(payload); refresh_topic_menu(profile_inventory)
+            profile_inventory.clear(); profile_inventory.update(payload); clear_selected_targets(quiet=True); refresh_topic_cards(profile_inventory); update_match_summary()
             status_var.set(f"PROFILE INTELLIGENCE READY // {len(profile_inventory.get('items',[]))} ITEMS"); status_label.config(fg=SUCCESS)
         else:
             status_var.set("PROFILE INTELLIGENCE FAILED"); status_label.config(fg=DANGER)
@@ -514,7 +642,7 @@ def button(parent,text,command,bg=PANEL_2,fg=TEXT,width=None): return tk.Button(
 def field(parent,var,width=12): return tk.Entry(parent,textvariable=var,width=width,bg="#090d15",fg=TEXT,insertbackground=TEXT,relief="flat",highlightthickness=1,highlightbackground=BORDER,highlightcolor=ACCENT,font=("Segoe UI",10))
 
 settings=load_settings(); profile_inventory=load_profile_intelligence(); root=tk.Tk(); root.title("Pulse Social — X Cleanup"); root.geometry("1180x820"); root.minsize(1040,720); root.configure(bg=BG)
-handle_var=tk.StringVar(value=settings["handle"]); mode_var=tk.StringVar(value=settings["mode"]); dry_var=tk.BooleanVar(value=settings["dry_run"]); until_empty_var=tk.BooleanVar(value=settings.get("run_until_empty",False)); max_actions_var=tk.StringVar(value=str(settings["max_actions"])); delay_var=tk.StringVar(value=str(settings["delay"])); refresh_var=tk.StringVar(value=str(settings["refresh_every"])); topic_var=tk.StringVar(value=TOPIC_LABELS.get(settings.get("topic_filter",ALL_TOPIC),TOPIC_LABELS[ALL_TOPIC])); search_var=tk.StringVar(value=settings.get("search_query","")); search_result_var=tk.StringVar(value="SEARCH // enter a word, phrase, hashtag, or comma-separated terms"); intel_summary_var=tk.StringVar(value=intelligence_summary(profile_inventory)); status_var=tk.StringVar(value="READY // SAFE MODE"); worker_active=tk.BooleanVar(value=False)
+handle_var=tk.StringVar(value=settings["handle"]); mode_var=tk.StringVar(value=settings["mode"]); dry_var=tk.BooleanVar(value=settings["dry_run"]); until_empty_var=tk.BooleanVar(value=settings.get("run_until_empty",False)); max_actions_var=tk.StringVar(value=str(settings["max_actions"])); delay_var=tk.StringVar(value=str(settings["delay"])); refresh_var=tk.StringVar(value=str(settings["refresh_every"])); topic_var=tk.StringVar(value=TOPIC_LABELS.get(settings.get("topic_filter",ALL_TOPIC),TOPIC_LABELS[ALL_TOPIC])); search_var=tk.StringVar(value=settings.get("search_query","")); search_result_var=tk.StringVar(value="SEARCH // scan the profile to build the local inventory"); selection_summary_var=tk.StringVar(value="TARGET // all matches in current filter"); intel_summary_var=tk.StringVar(value=intelligence_summary(profile_inventory)); status_var=tk.StringVar(value="READY // SAFE MODE"); worker_active=tk.BooleanVar(value=False)
 header=tk.Frame(root,bg=BG); header.pack(fill="x",padx=26,pady=(18,8)); tk.Label(header,text="PULSE",fg=TEXT,bg=BG,font=("Segoe UI",24,"bold")).pack(side="left"); tk.Label(header,text=" SOCIAL",fg=ACCENT,bg=BG,font=("Segoe UI",24,"bold")).pack(side="left"); tk.Label(header,text="X CLEANUP  //  COMMERCE INTELLIGENCE READY",fg=MUTED,bg=BG,font=("Consolas",9)).pack(side="right",pady=10)
 
 workspace=tk.Frame(root,bg=BG); workspace.pack(fill="x",padx=26,pady=(4,6))
@@ -534,15 +662,20 @@ dry_check=tk.Checkbutton(card,text="  DRY RUN / PREVIEW ONLY",variable=dry_var,f
 
 intel_card=tk.Frame(workspace,bg=PANEL,highlightthickness=1,highlightbackground=BORDER); intel_card.grid(row=0,column=1,sticky="nsew",padx=(6,0))
 tk.Label(intel_card,text="PROFILE INTELLIGENCE",fg=TEXT,bg=PANEL,font=("Segoe UI",11,"bold")).grid(row=0,column=0,columnspan=3,sticky="w",padx=16,pady=(14,3))
-tk.Label(intel_card,text="LOCAL // HASHTAGS + KEYWORDS + TEXT TOPICS // NO AI CREDITS",fg=MUTED,bg=PANEL,font=("Consolas",8)).grid(row=1,column=0,columnspan=3,sticky="w",padx=16,pady=(0,12))
-scan_btn=button(intel_card,"SCAN PROFILE",start_profile_scan,bg="#143342",fg=TEXT,width=15); scan_btn.grid(row=2,column=0,sticky="w",padx=16,pady=(0,10))
-topic_menu=tk.OptionMenu(intel_card,topic_var,TOPIC_LABELS[ALL_TOPIC]); topic_menu.config(bg=PANEL_2,fg=TEXT,activebackground=ACCENT,relief="flat",width=24,highlightthickness=0); topic_menu["menu"].config(bg=PANEL_2,fg=TEXT); topic_menu.grid(row=2,column=1,columnspan=2,sticky="ew",padx=(0,16),pady=(0,10))
-tk.Label(intel_card,text="SEARCH",fg=MUTED,bg=PANEL,font=("Consolas",8,"bold")).grid(row=3,column=0,sticky="w",padx=16,pady=(1,7))
-search_entry=field(intel_card,search_var,28); search_entry.grid(row=3,column=1,sticky="ew",padx=(0,8),pady=(1,7))
-search_btn=button(intel_card,"FIND MATCHES",preview_search_matches,width=13); search_btn.grid(row=3,column=2,sticky="e",padx=(0,16),pady=(1,7))
+tk.Label(intel_card,text="LOCAL // HASHTAGS + KEYWORDS + TEXT TOPICS // EXACT STATUS-ID TARGETING",fg=MUTED,bg=PANEL,font=("Consolas",8)).grid(row=1,column=0,columnspan=3,sticky="w",padx=16,pady=(0,8))
+scan_btn=button(intel_card,"SCAN PROFILE",start_profile_scan,bg="#143342",fg=TEXT,width=15); scan_btn.grid(row=2,column=0,sticky="w",padx=16,pady=(0,8))
+tk.Label(intel_card,textvariable=intel_summary_var,fg=MUTED,bg=PANEL,font=("Consolas",8),anchor="w",justify="left",wraplength=480).grid(row=2,column=1,columnspan=2,sticky="ew",padx=(0,16),pady=(0,8))
+tk.Label(intel_card,text="TOPIC CARDS",fg=MUTED,bg=PANEL,font=("Consolas",8,"bold")).grid(row=3,column=0,columnspan=3,sticky="w",padx=16,pady=(1,2))
+topic_cards_frame=tk.Frame(intel_card,bg=PANEL); topic_cards_frame.grid(row=4,column=0,columnspan=3,sticky="ew",padx=16,pady=(0,6))
+tk.Label(intel_card,text="SEARCH",fg=MUTED,bg=PANEL,font=("Consolas",8,"bold")).grid(row=5,column=0,sticky="w",padx=16,pady=(2,6))
+search_entry=field(intel_card,search_var,28); search_entry.grid(row=5,column=1,sticky="ew",padx=(0,8),pady=(2,6))
+search_btn=button(intel_card,"FIND MATCHES",preview_search_matches,width=13); search_btn.grid(row=5,column=2,sticky="e",padx=(0,16),pady=(2,6))
 search_entry.bind("<Return>",lambda _event: preview_search_matches())
-tk.Label(intel_card,textvariable=search_result_var,fg=SUCCESS,bg=PANEL,font=("Consolas",8),anchor="w",justify="left",wraplength=480).grid(row=4,column=0,columnspan=3,sticky="ew",padx=16,pady=(3,7))
-tk.Label(intel_card,textvariable=intel_summary_var,fg=MUTED,bg=PANEL,font=("Consolas",8),anchor="w",justify="left",wraplength=480).grid(row=5,column=0,columnspan=3,sticky="ew",padx=16,pady=(0,13))
+tk.Label(intel_card,textvariable=search_result_var,fg=SUCCESS,bg=PANEL,font=("Consolas",8),anchor="w",justify="left",wraplength=480).grid(row=6,column=0,columnspan=3,sticky="ew",padx=16,pady=(2,4))
+review_row=tk.Frame(intel_card,bg=PANEL); review_row.grid(row=7,column=0,columnspan=3,sticky="ew",padx=16,pady=(0,5))
+review_btn=button(review_row,"REVIEW MATCHES",review_matches,bg="#143342"); review_btn.pack(side="left")
+clear_target_btn=button(review_row,"CLEAR TARGET",lambda: clear_selected_targets(False)); clear_target_btn.pack(side="left",padx=8)
+tk.Label(review_row,textvariable=selection_summary_var,fg=ACCENT,bg=PANEL,font=("Consolas",8,"bold")).pack(side="left",padx=(8,0))
 intel_card.columnconfigure(1,weight=1)
 intel_card.columnconfigure(2,weight=0)
 
@@ -551,7 +684,7 @@ status=tk.Frame(root,bg=PANEL_2); status.pack(fill="x",padx=26,pady=(2,8)); stat
 log_card=tk.Frame(root,bg=PANEL,highlightthickness=1,highlightbackground=BORDER); log_card.pack(fill="both",expand=True,padx=26,pady=(0,18)); log_head=tk.Frame(log_card,bg=PANEL); log_head.pack(fill="x",padx=14,pady=(10,5)); tk.Label(log_head,text="ACTIVITY STREAM",fg=TEXT,bg=PANEL,font=("Segoe UI",11,"bold")).pack(side="left"); button(log_head,"COPY LOG",copy_log).pack(side="right",padx=(6,0)); button(log_head,"CLEAR VIEW",clear_log_view).pack(side="right")
 log_box=tk.Text(log_card,bg="#080c13",fg="#cbd3df",insertbackground=TEXT,relief="flat",bd=0,font=("Consolas",9),padx=12,pady=10,wrap="word"); log_box.pack(fill="both",expand=True,padx=14,pady=(0,8)); tk.Label(log_card,text=f"MASTER LOG  //  {LOG_FILE}",fg=MUTED,bg=PANEL,font=("Consolas",8)).pack(anchor="w",padx=14,pady=(0,9))
 
-locked_controls=[handle_entry,copy_handle_btn,mode_menu,max_actions_entry,delay_entry,refresh_entry,until_empty_check,dry_check,attach_btn,scan_btn,topic_menu,search_entry,search_btn]
+locked_controls=[handle_entry,copy_handle_btn,mode_menu,max_actions_entry,delay_entry,refresh_entry,until_empty_check,dry_check,attach_btn,scan_btn,search_entry,search_btn,review_btn,clear_target_btn]
 def set_controls_locked(locked):
     state="disabled" if locked else "normal"
     for widget in locked_controls:
@@ -561,4 +694,5 @@ def show_run_mode(state,dry_run=None,mode=None,limit_label=None):
     if state=="idle": status_var.set("READY // SAFE MODE"); status_label.config(fg=SUCCESS); return
     label="PREVIEW // NO CHANGES" if dry_run else "LIVE // REAL ACTIONS"; phase={"attaching":"ATTACHING","armed":"ARMED","running":"RUNNING"}.get(state,state.upper()); status_var.set(f"{phase} // {label} // {str(mode).upper()} // {limit_label}"); status_label.config(fg=SUCCESS if dry_run else DANGER)
 
-refresh_topic_menu(profile_inventory); arm_btn.config(state="disabled"); stop_btn.config(state="disabled"); toggle_until_empty(); poll_logs(); root.mainloop()
+mode_var.trace_add("write",on_filter_changed); search_var.trace_add("write",on_filter_changed)
+refresh_topic_cards(profile_inventory); update_match_summary(); arm_btn.config(state="disabled"); stop_btn.config(state="disabled"); toggle_until_empty(); poll_logs(); root.mainloop()
