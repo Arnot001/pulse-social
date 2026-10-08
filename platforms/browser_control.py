@@ -252,6 +252,96 @@ def _kill_browser(spec: BrowserSpec) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _pulse_browser_pids(spec: BrowserSpec) -> list[int]:
+    """Find only the browser root processes launched with Pulse's dedicated profile."""
+    env = os.environ.copy()
+    env["PULSE_PROFILE_MATCH"] = str(_profile_dir(spec))
+    env["PULSE_BROWSER_IMAGE"] = spec.image
+    script = (
+        "$profile=$env:PULSE_PROFILE_MATCH; "
+        "$image=$env:PULSE_BROWSER_IMAGE; "
+        "Get-CimInstance Win32_Process | Where-Object { "
+        "$_.Name -ieq $image -and $_.CommandLine -and "
+        "$_.CommandLine -like '*--remote-debugging-port=9222*' -and "
+        "$_.CommandLine -like ('*--user-data-dir=' + $profile + '*') "
+        "} | ForEach-Object { $_.ProcessId }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+        pids = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.isdigit():
+                pids.append(int(line))
+        return pids
+    except Exception:
+        return []
+
+
+def stop_pulse_browser(browser_name: str | None = None) -> tuple[bool, str]:
+    """Stop only the dedicated Pulse-profile browser, never the user's normal browser."""
+    chosen = browser_name or dedicated_browser_name()
+    spec = browser_spec(chosen)
+    if spec is None:
+        return False, "No dedicated Pulse browser is recorded."
+
+    pids = _pulse_browser_pids(spec)
+    if not pids:
+        if not cdp_responding():
+            return True, "Pulse browser is already stopped."
+        return False, "Pulse browser control is responding, but its dedicated profile process could not be identified safely."
+
+    errors = []
+    for pid in pids:
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=10,
+            )
+            if result.returncode not in (0, 128):
+                detail = (result.stderr or result.stdout or "").strip()
+                errors.append(detail or f"taskkill returned {result.returncode} for PID {pid}")
+        except Exception as exc:
+            errors.append(str(exc))
+
+    if errors:
+        return False, "; ".join(errors)
+
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if not cdp_responding():
+            return True, "Dedicated Pulse browser stopped."
+        time.sleep(0.25)
+    return False, "Dedicated Pulse browser process stopped, but CDP :9222 is still responding."
+
+
+def restart_pulse_browser(
+    browser_name: str | None = None,
+    *,
+    start_url: str | None = None,
+) -> tuple[bool, str]:
+    """Recover a wedged CDP session by restarting only Pulse's dedicated profile."""
+    chosen = browser_name or dedicated_browser_name()
+    if not chosen:
+        return False, "No dedicated Pulse browser is recorded."
+    ok, message = stop_pulse_browser(chosen)
+    if not ok:
+        return False, message
+    return connect_browser(chosen, start_url=start_url)
+
+
 def connect_browser(
     browser_name: str | None = None,
     *,
