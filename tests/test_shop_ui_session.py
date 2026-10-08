@@ -42,30 +42,32 @@ def ui(request, monkeypatch, tmp_path, tk_root):
         def __init__(self, target, args=(), **kwargs): self.target, self.args = target, args
         def start(self): jobs.append(self)
     monkeypatch.setattr(commerce_ui.threading, 'Thread', Thread)
+    monkeypatch.setattr(platform_ui.threading, 'Thread', Thread)
     store = CommerceStore(tmp_path / 'commerce.db')
     monkeypatch.setattr(session, 'CommerceStore', lambda: store)
     monkeypatch.setattr(platform_ui, 'CommerceStore', lambda: store)
     responses = []
     monkeypatch.setattr(session, 'request_category', lambda url: responses.pop(0))
-    monkeypatch.setattr(commerce_ui, 'fetch_categories', lambda: [
+    categories = [
         TikTokCategory('123', 'Phones', 'phones', 1, '0', True),
-        TikTokCategory('456', 'Parts', 'parts', 1, '0', True)])
+        TikTokCategory('456', 'Parts', 'parts', 1, '0', True)]
+    monkeypatch.setattr(commerce_ui, 'fetch_categories', lambda: categories)
+    monkeypatch.setattr(platform_ui, 'fetch_categories', lambda: categories)
     if request.param == 'commerce':
         window = commerce_ui.open_shop_window(root); window.withdraw()
         job = next(j for j in jobs if j.target.__name__ == 'refresh_worker')
         jobs.remove(job); job.target(); root.update()
     else:
         window = platform_ui.TikTokShopView(root)
-        window.category_url.set(URL)
+        job = next(j for j in jobs if j.target.__name__ == '_taxonomy_worker')
+        jobs.remove(job); job.target(); root.update()
 
     def button(text):
         return next(w for w in widgets(window) if isinstance(w, tk.Button) and w.cget('text') == text)
 
     def select(url):
-        if request.param == 'platform': window.category_url.set(url)
-        else:
-            box = next(w for w in widgets(window) if isinstance(w, ttk.Combobox) and 'Phones' in w.cget('values'))
-            box.set('Phones' if url == URL else 'Parts'); box.event_generate('<<ComboboxSelected>>'); root.update()
+        box = next(w for w in widgets(window) if isinstance(w, ttk.Combobox) and 'Phones' in w.cget('values'))
+        box.set('Phones' if url == URL else 'Parts'); box.event_generate('<<ComboboxSelected>>'); root.update()
 
     def mode(value):
         box = next(w for w in widgets(window) if isinstance(w, ttk.Combobox) and 'MIXED LIST' in w.cget('values'))
