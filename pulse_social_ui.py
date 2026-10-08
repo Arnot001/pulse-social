@@ -337,7 +337,7 @@ def unlike_post(page,article,dry_run,delay):
 def cleaner_worker(settings):
     stop_event.clear(); continue_event.clear(); handle=settings["handle"].strip().replace("@",""); mode=settings["mode"]; dry_run=settings["dry_run"]; until_empty=settings.get("run_until_empty",False)
     topic_filter=settings.get("topic_filter",ALL_TOPIC); search_query=str(settings.get("search_query") or "").strip(); target_status_ids=set(settings.get("target_status_ids") or [])
-    smart_target=topic_filter!=ALL_TOPIC or bool(search_query)
+    smart_target=topic_filter!=ALL_TOPIC or bool(search_query) or bool(target_status_ids)
     max_actions=int(settings["max_actions"]); delay=float(settings["delay"]); refresh_every=int(settings["refresh_every"]); limit_label="UNTIL EMPTY" if until_empty else f"MAX {max_actions}"
     if not handle: ui_log("Enter your X handle first."); set_run_state("idle"); return
     set_run_state("attaching",dry_run,mode,limit_label)
@@ -593,25 +593,6 @@ def on_filter_changed(*_args):
     update_match_summary()
 
 def continue_cleanup():
-    query=search_var.get().strip()
-    if not query:
-        messagebox.showinfo("Search profile","Type a word or phrase first."); return
-    handle=handle_var.get().strip().lstrip("@")
-    scanned_handle=str(profile_inventory.get("handle") or "").lstrip("@")
-    if not profile_inventory.get("items") or scanned_handle.casefold()!=handle.casefold():
-        messagebox.showinfo("Scan profile first","Run PROFILE INTELLIGENCE for this X handle before searching."); return
-    mode=mode_var.get() if mode_var.get() in ("posts","replies") else None
-    topic=topic_key_from_label(topic_var.get())
-    matches=filter_inventory(profile_inventory.get("items",[]),mode=mode,topic=topic,query=query)
-    scope=mode.upper() if mode else "POSTS + REPLIES"
-    search_result_var.set(f'SEARCH "{query}" // {len(matches)} MATCHES // {scope}')
-    ui_log(f'PROFILE SEARCH // "{query}" // {len(matches)} match(es) // {scope}')
-    for item in matches[:20]:
-        preview=str(item.get("text") or "").replace("\n"," ")[:180]
-        ui_log(f'[{str(item.get("mode") or "").upper()} {item.get("status_id")}] {preview}')
-    if len(matches)>20: ui_log(f"... {len(matches)-20} more match(es) not shown in the activity stream.")
-
-def continue_cleanup():
     if worker_active.get(): continue_event.set()
 def stop_cleanup():
     if not worker_active.get(): return
@@ -688,6 +669,9 @@ locked_controls=[handle_entry,copy_handle_btn,mode_menu,max_actions_entry,delay_
 def set_controls_locked(locked):
     state="disabled" if locked else "normal"
     for widget in locked_controls:
+        try: widget.config(state=state)
+        except Exception: pass
+    for widget in category_buttons.values():
         try: widget.config(state=state)
         except Exception: pass
 def show_run_mode(state,dry_run=None,mode=None,limit_label=None):
