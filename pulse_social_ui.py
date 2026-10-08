@@ -116,11 +116,23 @@ def connect_cdp(playwright,timeout_seconds=30):
                 if time.time()<deadline: time.sleep(1)
         raise RuntimeError(f"Pulse Browser restarted, but Playwright still could not attach. Last error: {last_error}")
 def find_x_page(context,target_url):
+    target_path=x_path(target_url)
+    x_pages=[]
     for page in context.pages:
         try:
-            if "x.com" in page.url.lower() or "twitter.com" in page.url.lower(): return page
+            url=page.url.lower()
+            if "x.com" in url or "twitter.com" in url:
+                if x_path(page.url)==target_path:
+                    page.bring_to_front()
+                    return page
+                x_pages.append(page)
         except Exception: pass
-    page=context.new_page(); page.goto(target_url,wait_until="domcontentloaded"); return page
+    if x_pages:
+        page=x_pages[-1]
+        try: page.bring_to_front()
+        except Exception: pass
+        return page
+    page=context.new_page(); page.goto(target_url,wait_until="domcontentloaded"); page.bring_to_front(); return page
 
 def x_path(url):
     try: return urlparse(url).path.rstrip("/").lower()
@@ -136,30 +148,53 @@ def reply_tab_locator(page,handle):
 
 def ensure_target_timeline(page,target_url,handle,mode):
     target_path=x_path(target_url)
-    if mode=="replies" and x_path(page.url)!=target_path:
-        try:
+    try: page.bring_to_front()
+    except Exception: pass
+
+    if mode=="replies":
+        clean=handle.strip().lstrip("@")
+        profile_url=f"https://x.com/{clean}"
+        profile_path=x_path(profile_url)
+
+        if x_path(page.url) not in (profile_path,target_path):
+            ui_log("Opening your X profile before Replies...")
+            page.goto(profile_url,wait_until="domcontentloaded")
+            time.sleep(1.0)
+
+        if x_path(page.url)!=target_path:
             tab=reply_tab_locator(page,handle)
-            if tab.count()>0:
-                ui_log("Opening X Replies tab...")
-                tab.first.click(timeout=4000)
-                deadline=time.time()+8
-                while time.time()<deadline and x_path(page.url)!=target_path: time.sleep(.2)
-        except Exception: pass
+            if tab.count()==0:
+                ui_log("Replies tab was not ready yet; reloading profile...")
+                page.goto(profile_url,wait_until="domcontentloaded")
+                time.sleep(1.5)
+                tab=reply_tab_locator(page,handle)
+            if tab.count()==0:
+                raise RuntimeError("Could not find the X Replies tab on your profile.")
+            ui_log("Opening X Replies tab...")
+            tab.first.click(timeout=5000)
+
+        deadline=time.time()+12
+        while time.time()<deadline and x_path(page.url)!=target_path:
+            time.sleep(.2)
+        if x_path(page.url)!=target_path:
+            raise RuntimeError(f"X did not reach the Replies timeline; current route is {x_path(page.url) or '/'}.")
+
+        time.sleep(1.2)
+        if x_path(page.url)!=target_path:
+            raise RuntimeError(f"X left the Replies timeline before cleanup; current route is {x_path(page.url) or '/'}.")
+
+        tab=reply_tab_locator(page,handle)
+        if tab.count()>0:
+            selected=tab.first.get_attribute("aria-selected")
+            if selected not in (None,"true"):
+                raise RuntimeError("X reached /with_replies but the Replies tab is not selected.")
+        ui_log(f"Replies timeline verified: {target_path}")
+        return
+
     if x_path(page.url)!=target_path:
         page.goto(target_url,wait_until="domcontentloaded")
     if x_path(page.url)!=target_path:
         raise RuntimeError(f"X did not open the expected {mode} timeline.")
-    if mode=="replies":
-        try:
-            tab=reply_tab_locator(page,handle)
-            if tab.count()>0 and tab.first.get_attribute("aria-selected")!="true":
-                ui_log("Selecting X Replies tab...")
-                tab.first.click(timeout=4000)
-                deadline=time.time()+8
-                while time.time()<deadline and x_path(page.url)!=target_path: time.sleep(.2)
-        except Exception: pass
-        time.sleep(1.0)
-        ui_log("Replies timeline verified.")
 
 def delete_own_post(page,article,dry_run,delay,handle,mode):
     text=safe_text(article)
@@ -221,7 +256,15 @@ def cleaner_worker(settings):
             if mode=="likes": ui_log("Like safety: private History/Likes page + active unlike control required.")
             if until_empty: ui_log("Run-until-empty enabled: Pulse will stop only after repeated passes find no new matching items.")
             actions=0; stale_rounds=0; seen_items=set(); empty_threshold=8
+            target_path=x_path(url)
             while (until_empty or actions<max_actions) and not stop_event.is_set():
+                if mode=="replies" and x_path(page.url)!=target_path:
+                    ui_log(f"Replies route changed to {x_path(page.url) or '/'}. Restoring Replies before scanning...")
+                    try:
+                        ensure_target_timeline(page,url,handle,mode)
+                    except Exception as e:
+                        ui_log(f"Replies cleanup stopped safely: {e}")
+                        break
                 articles=page.locator("article"); count=articles.count()
                 if count==0:
                     ui_log("No articles found. Scrolling timeline..."); page.mouse.wheel(0,1800); time.sleep(3); stale_rounds+=1
