@@ -4,9 +4,12 @@ from platforms.x.profile_intelligence import (
     ALL_TOPIC,
     OTHER_TOPIC,
     classify_text,
+    filter_inventory,
     inventory_counts,
+    matches_search,
     matches_topic,
     ranked_inventory,
+    search_terms,
 )
 
 
@@ -50,3 +53,22 @@ def test_inventory_counts_and_ranking():
     assert inventory_counts(items) == {"politics": 2, "mufc": 1, OTHER_TOPIC: 1}
     ranked = ranked_inventory(items)
     assert ranked[0] == ("politics", 2)
+
+
+def test_search_supports_phrase_and_comma_separated_or_terms():
+    assert search_terms("Old Trafford") == ["old trafford"]
+    assert search_terms("nft, opensea, mint") == ["nft", "opensea", "mint"]
+    assert matches_search("Watching United at Old Trafford", "old trafford")
+    assert matches_search("Minted this on OpenSea", "nft, opensea, mint")
+    assert not matches_search("Manchester United only", "nft, crypto")
+
+
+def test_filter_inventory_combines_mode_topic_and_search_without_expanding_ids():
+    items = [
+        {"status_id": "1", "mode": "posts", "topic": "mufc", "text": "Glazers out at Old Trafford"},
+        {"status_id": "2", "mode": "replies", "topic": "mufc", "text": "Glazers again"},
+        {"status_id": "3", "mode": "posts", "topic": "politics", "text": "Glazers is not in this one"},
+        {"status_id": "4", "mode": "posts", "topic": "mufc", "text": "Different United post"},
+    ]
+    result = filter_inventory(items, mode="posts", topic="mufc", query="glazers")
+    assert [item["status_id"] for item in result] == ["1"]
