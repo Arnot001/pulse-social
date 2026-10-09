@@ -28,6 +28,7 @@ def article(status_id, *, reply=False, owner="example", text="Manchester United"
 @pytest.fixture
 def worker(cleanup, monkeypatch):
     page = Mock(url="https://x.com/example/with_replies")
+    page.goto.side_effect = lambda url, **_kwargs: setattr(page, "url", url)
     # Existing timeline assertions now exercise the unchanged exact-ID fallback.
     monkeypatch.setitem(cleanup, "try_direct_target", Mock(return_value=False))
     page.locator.return_value = articles()
@@ -456,7 +457,8 @@ def test_exact_search_crosses_unrelated_batches_and_resets_stale_progress(worker
     while not ns["inventory_queue"].empty():
         events.append(ns["inventory_queue"].get_nowait())
     assert events == ([] if dry_run else [("example", str(i)) for i in range(1, 5)])
-    page.goto.assert_not_called()
+    expected_url = "https://x.com/example/with_replies" if mode == "replies" else "https://x.com/example"
+    page.goto.assert_called_once_with(expected_url, wait_until="domcontentloaded", timeout=12000)
 
 
 @pytest.mark.parametrize("empty_timeline", [False, True])
@@ -627,8 +629,16 @@ def test_direct_rejects_inconsistent_or_missing_status_metadata(direct_page, pro
     if problem == "other_response": response_id = "2"
     if problem == "no_record": record = {}
     serve(status_html(), record, response_id=response_id)
-    log = Mock()
-    assert not try_direct_target(page, "example", "1", mode, False, 0, threading.Event(), Mock(), log)
+    log, diagnostics = Mock(), Mock()
+    assert not try_direct_target(page, "example", "1", mode, False, 0, threading.Event(), diagnostics, log)
+    reasons = {
+        "wrong_id": "focal status not found in TweetDetail", "wrong_author": "author mismatch",
+        "post_is_reply": "expected post, got reply", "reply_is_post": "expected reply, got post",
+        "missing_type": "post/reply type unavailable", "wrong_user_id": "author mismatch",
+        "other_response": "status ID mismatch (TweetDetail request)",
+        "no_record": "focal status not found in TweetDetail",
+    }
+    diagnostics.assert_called_once_with("DIRECT VERIFY FAILED // " + reasons[problem])
     assert page.evaluate('window.clicked') == []
     assert page.evaluate('window.deleted') == []
     log.assert_not_called()
@@ -649,7 +659,11 @@ def test_direct_rejects_thread_and_quote_identity_confusion(direct_page, problem
     elif problem == "no_menu": html = status_html(menu=False)
     else: html = status_html(menu=False, extra='<div role="link">' + status_html("90") + '</div>')
     serve(html, tweet_record())
-    assert not try_direct_target(page, "example", "1", "posts", False, 0, threading.Event(), Mock(), Mock())
+    diagnostics = Mock()
+    assert not try_direct_target(page, "example", "1", "posts", False, 0, threading.Event(), diagnostics, Mock())
+    reason = {"wrong_author": "author mismatch (focal article)", "duplicate_target": "focal article ambiguous",
+              "no_menu": "focal menu not safely bound", "quote_menu_only": "focal menu not safely bound"}
+    diagnostics.assert_called_once_with("DIRECT VERIFY FAILED // " + reason.get(problem, "focal status not found"))
     assert page.evaluate('window.clicked') == []
     assert page.evaluate('window.deleted') == []
 
@@ -790,3 +804,121 @@ def test_stop_before_direct_navigation_performs_no_browser_action():
 def test_conflicting_reply_metadata_cannot_authorize_a_direct_action():
     from platforms.x.direct_cleanup import status_mode
     assert status_mode({"items": [tweet_record(), tweet_record(reply=True)]}, "example", "1") is None
+
+
+@pytest.mark.parametrize("problem,reason", [
+    ("missing_id", "status ID unavailable (legacy.id_str)"),
+    ("id_mismatch", "status ID mismatch"),
+    ("missing_author", "author unavailable"),
+    ("conflicting_type", "post/reply type conflicting"),
+    ("invalid_parent", "post/reply type unavailable"),
+    ("invalid_schema", "TweetDetail data unavailable"),
+])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_direct_metadata_diagnostics_preserve_fail_closed(direct_page, problem, reason, dry_run):
+    import threading
+    from platforms.x.direct_cleanup import try_direct_target
+    page, serve = direct_page
+    record = tweet_record()
+    if problem == "missing_id": record["legacy"].pop("id_str")
+    if problem == "id_mismatch": record["legacy"]["id_str"] = "2"
+    if problem == "missing_author": record.pop("core")
+    if problem == "conflicting_type": record = [record, tweet_record(reply=True)]
+    if problem == "invalid_parent": record["legacy"]["in_reply_to_status_id_str"] = "unknown"
+    if problem == "invalid_schema": record["legacy"] = "changed schema"
+    serve(status_html(), record)
+    diagnostics, action = Mock(), Mock()
+    assert not try_direct_target(page, "example", "1", "posts", dry_run, 0, threading.Event(), diagnostics, action)
+    diagnostics.assert_called_once_with("DIRECT VERIFY FAILED // " + reason)
+    assert page.evaluate('window.clicked') == []
+    assert page.evaluate('window.deleted') == []
+    action.assert_not_called()
+
+
+@pytest.mark.parametrize("problem,reason", [
+    ("missing", "TweetDetail response unavailable"),
+    ("http", "TweetDetail HTTP 429"),
+    ("json", "TweetDetail data unavailable"),
+    ("load", "direct page load failed"),
+])
+def test_direct_response_and_load_failure_reasons(monkeypatch, problem, reason):
+    import threading
+    from platforms.x import direct_cleanup
+    monkeypatch.setattr(direct_cleanup, "VERIFY_SECONDS", 0)
+    page = Mock()
+    def navigate(*_args, **_kwargs):
+        if problem == "load": raise RuntimeError("private exception details")
+        if problem == "missing": return
+        response = Mock(url='https://x.com/i/api/graphql/test/TweetDetail?variables=%7B%22focalTweetId%22%3A%221%22%7D',
+                        status=429 if problem == "http" else 200)
+        response.json.side_effect = ValueError("private response body")
+        page.on.call_args.args[1](response)
+    page.goto.side_effect = navigate
+    diagnostics = Mock()
+    assert not direct_cleanup.try_direct_target(page, "example", "1", "posts", False, 0, threading.Event(), diagnostics, Mock())
+    diagnostics.assert_called_once_with("DIRECT VERIFY FAILED // " + reason)
+    page.evaluate_handle.assert_not_called()
+    page.get_by_role.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["posts", "replies"])
+def test_fallback_resets_and_verifies_route_before_crawler(worker, mode):
+    ns, page = worker
+    expected = "https://x.com/example" + ("/with_replies" if mode == "replies" else "")
+    order = []
+    def direct(*_args):
+        page.url = "https://x.com/example/status/1"
+        return False
+    ns["try_direct_target"].side_effect = direct
+    def goto(url, **_kwargs):
+        assert url == expected
+        order.append("navigate")
+        page.url = url
+    page.goto.side_effect = goto
+    def verify(*_args):
+        assert page.url == expected
+        order.append("verify")
+    ns["ensure_target_timeline"].side_effect = verify
+    selected = article("1", reply=mode == "replies")
+    def crawl(_selector):
+        assert order[:2] == ["navigate", "verify"]
+        assert page.url == expected
+        order.append("crawl")
+        return articles(selected)
+    page.locator.side_effect = crawl
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode=mode, target_status_ids=["1"]))
+    assert order == ["navigate", "verify", "crawl"]
+    ns["delete_own_post"].assert_called_once_with(page, selected, True, 3.0, "example", mode)
+    assert f"SMART TARGET FALLBACK // {mode.upper()} route verified" in queued_logs(ns)
+
+
+@pytest.mark.parametrize("mode", ["posts", "replies"])
+@pytest.mark.parametrize("problem", ["load", "status_route", "other_handle", "other_mode", "foreign_host", "tab_unverified", "late_redirect"])
+def test_failed_fallback_route_reset_never_starts_crawler(worker, mode, problem):
+    ns, page = worker
+    expected = "https://x.com/example" + ("/with_replies" if mode == "replies" else "")
+    def goto(_url, **_kwargs):
+        if problem == "load": raise RuntimeError("navigation failed")
+        page.url = {"status_route": "https://x.com/example/status/1", "other_handle": expected.replace("example", "other"),
+                    "other_mode": "https://x.com/example" if mode == "replies" else "https://x.com/example/with_replies",
+                    "foreign_host": expected.replace("x.com", "example.org")}.get(problem, expected)
+    page.goto.side_effect = goto
+    if problem == "tab_unverified": ns["ensure_target_timeline"].side_effect = RuntimeError("Replies tab not selected")
+    if problem == "late_redirect": ns["ensure_target_timeline"].side_effect = lambda *_args: setattr(page, "url", "https://x.com/home")
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode=mode, dry_run=False, target_status_ids=["1"]))
+    page.locator.assert_not_called()
+    page.mouse.wheel.assert_not_called()
+    ns["delete_own_post"].assert_not_called()
+    assert ns["inventory_queue"].empty()
+    assert "SMART TARGET STOPPED // 1 OF 1 REMAINING" in queued_logs(ns)
+
+
+@pytest.mark.parametrize("stage", ["navigation", "verification"])
+def test_stop_during_fallback_reset_prevents_crawler(worker, stage):
+    ns, page = worker
+    if stage == "navigation": page.goto.side_effect = lambda *_args, **_kwargs: ns["stop_event"].set()
+    else: ns["ensure_target_timeline"].side_effect = lambda *_args: ns["stop_event"].set()
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", target_status_ids=["1"]))
+    page.locator.assert_not_called()
+    ns["delete_own_post"].assert_not_called()
+    assert "SMART TARGET STOPPED // 1 OF 1 REMAINING" in queued_logs(ns)

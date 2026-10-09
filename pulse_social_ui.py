@@ -232,6 +232,26 @@ def ensure_target_timeline(page,target_url,handle,mode):
     if x_path(page.url)!=target_path:
         raise RuntimeError(f"X did not open the expected {mode} timeline.")
 
+def reset_smart_target_timeline(page,target_url,handle,mode):
+    """Leave the direct status page and verify the route before exact-ID crawling."""
+    clean=handle.strip().lstrip("@").lower()
+    if mode not in ("posts","replies"):
+        raise RuntimeError("Direct fallback supports only Posts and Replies.")
+    expected=f"/{clean}"+("/with_replies" if mode=="replies" else "")
+    def verify_route():
+        route=urlparse(page.url)
+        if (route.scheme!="https" or route.hostname not in ("x.com","www.x.com","twitter.com","www.twitter.com")
+                or x_path(page.url)!=expected):
+            raise RuntimeError(f"Smart fallback did not reach the expected {mode} timeline.")
+    if stop_event.is_set(): return
+    page.goto(target_url,wait_until="domcontentloaded",timeout=12000)
+    if stop_event.is_set(): return
+    verify_route()
+    ensure_target_timeline(page,target_url,handle,mode)
+    if stop_event.is_set(): return
+    verify_route()
+    ui_log(f"SMART TARGET FALLBACK // {mode.upper()} route verified")
+
 def scan_authored_timeline(page,target_url,handle,mode,seen,items,max_items):
     ensure_target_timeline(page,target_url,handle,mode)
     stale_rounds=0; mode_added=0; empty_threshold=6
@@ -386,14 +406,12 @@ def cleaner_worker(settings):
                         remaining_target_ids.discard(status_id); actions+=1; seen_items.add(f"status:{status_id}")
                         if not dry_run: inventory_queue.put((handle,status_id))
                         ui_log(f"SMART TARGET // {len(remaining_target_ids)} OF {len(target_status_ids)} REMAINING")
-                    elif not stop_event.is_set():
-                        ui_log("DIRECT VERIFY FAILED // falling back to timeline search")
                 if not remaining_target_ids:
                     ui_log(f"SMART DIRECT COMPLETE // {actions}/{len(target_status_ids)} processed")
                 elif not stop_event.is_set():
                     ui_log(f"SMART TARGET FALLBACK // {len(remaining_target_ids)} exact IDs")
                     try:
-                        ensure_target_timeline(page,url,handle,mode)
+                        reset_smart_target_timeline(page,url,handle,mode)
                     except Exception as e:
                         ui_log(f"Could not open target X page: {e}")
                         ui_log(f"SMART TARGET STOPPED // {len(remaining_target_ids)} OF {len(target_status_ids)} REMAINING")
