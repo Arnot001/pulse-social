@@ -184,6 +184,23 @@ def descendants(widget):
         yield from descendants(child)
 
 
+def test_all_x_input_fields_support_paste_and_context_editing(ui):
+    entries=[w for w in descendants(ui["root"]) if isinstance(w,ui["tk"].Entry)]
+    assert len(entries) >= 5
+    for entry in entries:
+        for sequence in ("<Control-v>","<Shift-Insert>","<Control-c>","<Control-x>","<Control-a>","<Button-3>"):
+            assert entry.bind(sequence)
+        menu=getattr(entry,"_pulse_edit_menu")
+        assert [menu.entrycget(i,"label") for i in range(4)] == ["Cut","Copy","Paste","Select All"]
+
+    target=entries[0]
+    target.delete(0,ui["tk"].END)
+    ui["root"].clipboard_clear(); ui["root"].clipboard_append("pulse paste check")
+    target.icursor(0)
+    target._pulse_edit_menu.invoke(2)
+    assert target.get() == "pulse paste check"
+
+
 @pytest.mark.parametrize("all_matches", [False, True])
 @pytest.mark.parametrize("mode,expected", [("posts", ["1"]), ("replies", ["2"])])
 def test_review_passes_exact_filtered_ids_to_worker(ui, all_matches, mode, expected):
