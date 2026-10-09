@@ -25,7 +25,7 @@ PROFILE_SCAN_LIMIT_PER_MODE = 400
 
 BG = "#07090f"; PANEL = "#0d111b"; PANEL_2 = "#121827"; BORDER = "#20283a"; TEXT = "#f5f7fb"; MUTED = "#8993a6"; ACCENT = "#ff008c"; SUCCESS = "#35d07f"; DANGER = "#ff4057"
 DEFAULTS = {"handle":"", "mode":"posts", "dry_run":True, "run_until_empty":False, "max_actions":10, "delay":3, "refresh_every":25, "topic_filter":ALL_TOPIC, "search_query":""}
-log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue(); intel_queue = queue.Queue()
+log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue(); intel_queue = queue.Queue(); inventory_queue = queue.Queue()
 selected_target_ids = set()
 category_buttons = {}
 
@@ -406,6 +406,8 @@ def cleaner_worker(settings):
                             if identity: seen_items.add(identity)
                             actions+=1; acted=True; stale_rounds=0; ui_log(f"{'Previewed' if dry_run else 'Actions'}: {actions}{'' if until_empty else '/'+str(max_actions)}")
                             if not dry_run:
+                                if require_owned and identity and ":" in identity:
+                                    inventory_queue.put((handle,identity.split(":",1)[1]))
                                 requery_after_mutation=True
                                 if actions%refresh_every==0: page.reload(wait_until="domcontentloaded"); time.sleep(4)
                                 break
@@ -623,6 +625,27 @@ def copy_log():
     text=log_box.get("1.0",tk.END).strip(); root.clipboard_clear(); root.clipboard_append(text); root.update(); status_var.set("LOG COPIED TO CLIPBOARD")
 def clear_log_view(): log_box.delete("1.0",tk.END); status_var.set("LOG VIEW CLEARED")
 def toggle_until_empty(): max_actions_entry.config(state="disabled" if until_empty_var.get() else "normal")
+def apply_inventory_deletions():
+    deleted_ids=set()
+    inventory_handle=str(profile_inventory.get("handle") or "").lstrip("@").casefold()
+    while not inventory_queue.empty():
+        handle,status_id=inventory_queue.get()
+        if str(handle or "").lstrip("@").casefold()==inventory_handle:
+            deleted_ids.add(str(status_id))
+    if not deleted_ids: return 0
+    items=profile_inventory.get("items") or []
+    removed={str(item.get("status_id")) for item in items if str(item.get("status_id")) in deleted_ids}
+    if not removed: return 0
+    profile_inventory["items"]=[item for item in items if str(item.get("status_id")) not in removed]
+    save_profile_intelligence(profile_inventory)
+    selected_target_ids.difference_update(removed)
+    if selected_target_ids:
+        selection_summary_var.set(f"TARGET // {len(selected_target_ids)} exact scanned {mode_var.get()} status IDs")
+    else:
+        selection_summary_var.set("TARGET // all matches in current filter")
+    refresh_topic_cards(profile_inventory); update_match_summary()
+    ui_log(f"PROFILE INTELLIGENCE SYNC // removed {len(removed)} deleted status ID(s)")
+    return len(removed)
 def poll_logs():
     changed=False
     while not log_queue.empty(): log_box.insert(tk.END,log_queue.get()+"\n"); changed=True
@@ -637,7 +660,8 @@ def poll_logs():
             status_var.set("PROFILE INTELLIGENCE FAILED"); status_label.config(fg=DANGER)
     while not run_state_queue.empty():
         state,dry_run,mode,limit_label=run_state_queue.get()
-        if state=="idle": worker_active.set(False); set_controls_locked(False); toggle_until_empty(); show_run_mode("idle"); arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
+        if state=="idle":
+            worker_active.set(False); set_controls_locked(False); toggle_until_empty(); apply_inventory_deletions(); show_run_mode("idle"); arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
         else: show_run_mode(state,dry_run,mode,limit_label); arm_btn.config(state="normal" if state=="armed" else "disabled"); stop_btn.config(state="normal")
     root.after(150,poll_logs)
 def button(parent,text,command,bg=PANEL_2,fg=TEXT,width=None): return tk.Button(parent,text=text,command=command,bg=bg,fg=fg,activebackground=ACCENT,activeforeground="white",relief="flat",bd=0,padx=14,pady=8,width=width,font=("Segoe UI",9,"bold"),cursor="hand2")
