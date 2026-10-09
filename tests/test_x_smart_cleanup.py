@@ -183,6 +183,77 @@ def test_review_passes_exact_filtered_ids_to_worker(ui, all_matches, mode, expec
     assert "target_status_ids" not in ui["load_settings"]()
 
 
+def test_review_click_toggle_multiselect_targets_only_chosen_ids(ui):
+    ui["mode_var"].set("posts")
+    ui["select_topic"]("all")
+    ui["search_var"].set("")
+    ui["review_matches"]()
+    widgets = list(descendants(ui["root"]))
+    listing = next(w for w in widgets if isinstance(w, ui["tk"].Listbox))
+    assert listing.cget("selectmode") == "multiple"
+    assert listing.size() == 3
+
+    listing.selection_set(0)
+    listing.selection_set(2)
+    listing.event_generate("<<ListboxSelect>>")
+    ui["root"].update_idletasks()
+
+    selection_labels = [
+        w for w in widgets
+        if isinstance(w, ui["tk"].Label) and w.cget("textvariable")
+        and str(w.getvar(w.cget("textvariable"))).startswith("SELECTED //")
+    ]
+    assert len(selection_labels) == 1
+    assert selection_labels[0].getvar(selection_labels[0].cget("textvariable")) == "SELECTED // 2 OF 3"
+
+    next(w for w in widgets if isinstance(w, ui["tk"].Button)
+         and w.cget("text") == "TARGET SELECTED").invoke()
+    assert ui["selected_target_ids"] == {"1", "4"}
+
+    ui["start_session"]()
+    settings = ui["threading"].Thread.call_args.kwargs["args"][0]
+    assert settings["target_status_ids"] == ["1", "4"]
+
+
+def test_review_can_remove_one_item_from_multiple_selection(ui):
+    ui["mode_var"].set("posts")
+    ui["select_topic"]("all")
+    ui["search_var"].set("")
+    ui["review_matches"]()
+    widgets = list(descendants(ui["root"]))
+    listing = next(w for w in widgets if isinstance(w, ui["tk"].Listbox))
+    listing.selection_set(0)
+    listing.selection_set(1)
+    listing.selection_set(2)
+    listing.selection_clear(1)
+    listing.event_generate("<<ListboxSelect>>")
+    ui["root"].update_idletasks()
+
+    selection_label = next(
+        w for w in widgets
+        if isinstance(w, ui["tk"].Label) and w.cget("textvariable")
+        and str(w.getvar(w.cget("textvariable"))).startswith("SELECTED //")
+    )
+    assert selection_label.getvar(selection_label.cget("textvariable")) == "SELECTED // 2 OF 3"
+
+    next(w for w in widgets if isinstance(w, ui["tk"].Button)
+         and w.cget("text") == "TARGET SELECTED").invoke()
+    assert ui["selected_target_ids"] == {"1", "4"}
+
+
+def test_review_empty_selection_fails_closed(ui):
+    ui["mode_var"].set("posts")
+    ui["select_topic"]("all")
+    ui["search_var"].set("")
+    ui["messagebox"].showinfo.reset_mock()
+    ui["review_matches"]()
+    widgets = list(descendants(ui["root"]))
+    next(w for w in widgets if isinstance(w, ui["tk"].Button)
+         and w.cget("text") == "TARGET SELECTED").invoke()
+    ui["messagebox"].showinfo.assert_called_once()
+    assert not ui["selected_target_ids"]
+
+
 def test_nonmatching_selected_ids_never_fall_back_to_all_matches(ui):
     ui["selected_target_ids"].add("2")  # Reply ID with Posts selected.
     ui["start_session"]()
