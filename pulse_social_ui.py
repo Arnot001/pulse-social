@@ -10,6 +10,7 @@ from tkinter import messagebox
 from playwright.sync_api import sync_playwright, TimeoutError
 from platforms.browser_control import CDP_PORT, CDP_URL, cdp_responding, restart_pulse_browser
 from platforms.x.browser_session import open_x_browser
+from platforms.x.direct_cleanup import try_direct_target
 from platforms.x.profile_intelligence import ALL_TOPIC, TOPIC_LABELS, classify_text, filter_inventory, inventory_counts, ranked_inventory
 
 APP_DIR = os.path.join(os.environ["LOCALAPPDATA"], "Pulse Social")
@@ -360,11 +361,12 @@ def cleaner_worker(settings):
             ui_log("Attached to Pulse Browser. Sign in to X there if needed before continuing."); ui_log(f"RUN LOCKED: {'PREVIEW ONLY' if dry_run else 'LIVE ACTIONS'} | {mode} | {limit_label}"); ui_log("Click ARM / CONTINUE once to begin.")
             set_run_state("armed",dry_run,mode,limit_label); continue_event.wait()
             if stop_event.is_set(): ui_log("Stopped before cleanup."); return
-            try:
-                ensure_target_timeline(page,url,handle,mode)
-            except Exception as e: ui_log(f"Could not open target X page: {e}"); return
+            if not smart_target:
+                try:
+                    ensure_target_timeline(page,url,handle,mode)
+                except Exception as e: ui_log(f"Could not open target X page: {e}"); return
             set_run_state("running",dry_run,mode,limit_label); ui_log(f"Mode: {mode} | Dry run: {dry_run} | {limit_label}"); ui_log("Cleanup started.")
-            if mode=="replies": ui_log("Reply safety: verified /with_replies timeline + exact authored status link required.")
+            if mode=="replies": ui_log("Reply safety: exact focal identity + reply metadata for direct mode; verified /with_replies for timeline search." if smart_target else "Reply safety: verified /with_replies timeline + exact authored status link required.")
             if mode=="reposts": ui_log("Repost safety: dedicated /reposts page + active repost control required.")
             if mode=="likes": ui_log("Like safety: private History/Likes page + active unlike control required.")
             if smart_target:
@@ -375,6 +377,27 @@ def cleaner_worker(settings):
             actions=0; stale_rounds=0; seen_items=set(); empty_threshold=8
             remaining_target_ids=set(target_status_ids); discovered_status_ids=set(); search_exhausted=False
             target_path=x_path(url)
+            if smart_target:
+                ui_log(f"SMART DIRECT // {mode.upper()} // {len(target_status_ids)} exact targets")
+                for index,status_id in enumerate(sorted(target_status_ids),start=1):
+                    if stop_event.is_set(): break
+                    ui_log(f"DIRECT TARGET {index}/{len(target_status_ids)} // {status_id}")
+                    if try_direct_target(page,handle,status_id,mode,dry_run,delay,stop_event,ui_log,log_action):
+                        remaining_target_ids.discard(status_id); actions+=1; seen_items.add(f"status:{status_id}")
+                        if not dry_run: inventory_queue.put((handle,status_id))
+                        ui_log(f"SMART TARGET // {len(remaining_target_ids)} OF {len(target_status_ids)} REMAINING")
+                    elif not stop_event.is_set():
+                        ui_log("DIRECT VERIFY FAILED // falling back to timeline search")
+                if not remaining_target_ids:
+                    ui_log(f"SMART DIRECT COMPLETE // {actions}/{len(target_status_ids)} processed")
+                elif not stop_event.is_set():
+                    ui_log(f"SMART TARGET FALLBACK // {len(remaining_target_ids)} exact IDs")
+                    try:
+                        ensure_target_timeline(page,url,handle,mode)
+                    except Exception as e:
+                        ui_log(f"Could not open target X page: {e}")
+                        ui_log(f"SMART TARGET STOPPED // {len(remaining_target_ids)} OF {len(target_status_ids)} REMAINING")
+                        return
             while (bool(remaining_target_ids) if smart_target else (until_empty or actions<max_actions)) and not stop_event.is_set():
                 if mode=="replies" and x_path(page.url)!=target_path:
                     ui_log(f"Replies route changed to {x_path(page.url) or '/'}. Restoring Replies before scanning...")

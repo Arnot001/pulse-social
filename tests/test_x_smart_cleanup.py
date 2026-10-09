@@ -28,6 +28,8 @@ def article(status_id, *, reply=False, owner="example", text="Manchester United"
 @pytest.fixture
 def worker(cleanup, monkeypatch):
     page = Mock(url="https://x.com/example/with_replies")
+    # Existing timeline assertions now exercise the unchanged exact-ID fallback.
+    monkeypatch.setitem(cleanup, "try_direct_target", Mock(return_value=False))
     page.locator.return_value = articles()
     monkeypatch.setitem(cleanup, "sync_playwright", Mock(return_value=nullcontext(object())))
     monkeypatch.setitem(cleanup, "connect_cdp", Mock(return_value=SimpleNamespace(contexts=[object()])))
@@ -515,3 +517,276 @@ def test_exact_reply_search_stops_when_replies_route_cannot_be_restored(worker):
     logs = queued_logs(ns)
     assert any("Replies cleanup stopped safely" in line for line in logs)
     assert not any("COMPLETE" in line or "EXHAUSTED" in line for line in logs)
+
+
+# Direct-mode tests use a fresh headless browser with every request fulfilled
+# locally. No account, personal profile, CDP session or real X endpoint is used.
+@pytest.fixture(scope="module")
+def direct_browser():
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as playwright:
+        # Use an installed Edge binary if this machine lacks Playwright Chromium.
+        # launch() always creates a temporary isolated profile.
+        executable = playwright.chromium.executable_path
+        options = {"executable_path": executable} if Path(executable).exists() else {"channel": "msedge"}
+        browser = playwright.chromium.launch(headless=True, **options)
+        yield browser
+        browser.close()
+
+
+def tweet_record(status_id="1", owner="example", reply=False):
+    legacy = {"id_str": status_id, "user_id_str": "42",
+              "conversation_id_str": "90" if reply else status_id}
+    if reply:
+        legacy["in_reply_to_status_id_str"] = "90"
+    return {"__typename": "Tweet", "rest_id": status_id, "legacy": legacy,
+            "core": {"user_results": {"result": {"rest_id": "42", "core": {"screen_name": owner}}}}}
+
+
+def status_html(status_id="1", owner="example", extra="", menu=True):
+    caret = f'<button data-testid="caret" data-status="{status_id}">More</button>' if menu else ''
+    return (f'<article data-testid="tweet"><div data-testid="User-Name"><a href="/{owner}">@{owner}</a></div>'
+            f'<a href="/{owner}/status/{status_id}"><time>Today</time></a>'
+            f'<div data-testid="tweetText">Test content</div>{extra}{caret}</article>')
+
+
+@pytest.fixture
+def direct_page(direct_browser, monkeypatch):
+    import json
+    from platforms.x import direct_cleanup
+    monkeypatch.setattr(direct_cleanup, "VERIFY_SECONDS", 1.5)
+    context = direct_browser.new_context()
+    page = context.new_page()
+    def serve(html, payload, *, response_id="1", after_menu=""):
+        script = '''
+        window.clicked = []; window.deleted = [];
+        document.addEventListener('click', event => {
+            const caret = event.target.closest('[data-testid="caret"]');
+            if (!caret) return;
+            const article = caret.closest('article');
+            window.clicked.push(caret.dataset.status);
+            const menu = document.createElement('div'); menu.setAttribute('role', 'menu');
+            const item = document.createElement('button'); item.setAttribute('role', 'menuitem'); item.textContent = 'Delete';
+            menu.append(item); document.body.append(menu);
+            item.onclick = () => {
+                menu.remove();
+                const dialog = document.createElement('div'); dialog.setAttribute('role', 'dialog');
+                const confirm = document.createElement('button'); confirm.dataset.testid = 'confirmationSheetConfirm'; confirm.textContent = 'Delete';
+                dialog.append(confirm); document.body.append(dialog);
+                confirm.onclick = () => { window.deleted.push(caret.dataset.status); article.remove(); dialog.remove(); };
+            };
+            AFTER_MENU
+        });
+        fetch('/i/api/graphql/test/TweetDetail?variables=' + encodeURIComponent(JSON.stringify({focalTweetId: RESPONSE_ID})));
+        '''.replace('AFTER_MENU', after_menu).replace('RESPONSE_ID', json.dumps(response_id))
+        body = '<main>' + html + '</main><script>' + script + '</script>'
+        def route(request):
+            if '/graphql/' in request.request.url:
+                request.fulfill(status=200, content_type='application/json', body=json.dumps(payload))
+            else:
+                request.fulfill(status=200, content_type='text/html', body=body)
+        page.route('**/*', route)
+    yield page, serve
+    context.close()
+
+
+@pytest.mark.parametrize("mode", ["posts", "replies"])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_direct_navigation_verifies_and_acts_only_on_focal_article(direct_page, mode, dry_run):
+    import threading
+    from platforms.x.direct_cleanup import try_direct_target
+    page, serve = direct_page
+    # Parent, recommended post, foreign reply and an owned quoted post are decoys.
+    quote = '<div role="link" data-testid="quoteTweet">' + status_html("5") + '</div>'
+    serve(status_html("90") + status_html(extra=quote) + status_html("8", "stranger") + status_html("9"),
+          {"items": [tweet_record("90"), tweet_record(reply=mode == "replies"), tweet_record("8", "stranger", True)]})
+    log, action_log = Mock(), Mock()
+    assert try_direct_target(page, "@Example", "1", mode, dry_run, 0, threading.Event(), log, action_log)
+    assert page.url == "https://x.com/example/status/1"
+    assert page.evaluate('window.clicked') == ([] if dry_run else ["1"])
+    assert page.evaluate('window.deleted') == ([] if dry_run else ["1"])
+    assert action_log.call_count == int(not dry_run)
+    assert page.locator('a[href="/example/status/90"]').count() == 1
+    assert page.locator('a[href="/stranger/status/8"]').count() == 1
+
+
+@pytest.mark.parametrize("problem", ["wrong_id", "wrong_author", "post_is_reply", "reply_is_post",
+                                     "missing_type", "wrong_user_id", "other_response", "no_record"])
+def test_direct_rejects_inconsistent_or_missing_status_metadata(direct_page, problem):
+    import threading
+    from platforms.x.direct_cleanup import try_direct_target
+    page, serve = direct_page
+    record = tweet_record()
+    mode, response_id = "posts", "1"
+    if problem == "wrong_id": record = tweet_record("2")
+    if problem == "wrong_author": record = tweet_record(owner="stranger")
+    if problem == "post_is_reply": record = tweet_record(reply=True)
+    if problem == "reply_is_post": mode = "replies"
+    if problem == "missing_type": record["legacy"].pop("conversation_id_str")
+    if problem == "wrong_user_id": record["legacy"]["user_id_str"] = "99"
+    if problem == "other_response": response_id = "2"
+    if problem == "no_record": record = {}
+    serve(status_html(), record, response_id=response_id)
+    log = Mock()
+    assert not try_direct_target(page, "example", "1", mode, False, 0, threading.Event(), Mock(), log)
+    assert page.evaluate('window.clicked') == []
+    assert page.evaluate('window.deleted') == []
+    log.assert_not_called()
+
+
+@pytest.mark.parametrize("problem", ["wrong_id", "wrong_author", "quoted_target", "nested_target",
+                                     "duplicate_target", "parent_only", "no_menu", "quote_menu_only"])
+def test_direct_rejects_thread_and_quote_identity_confusion(direct_page, problem):
+    import threading
+    from platforms.x.direct_cleanup import try_direct_target
+    page, serve = direct_page
+    if problem in ("wrong_id", "parent_only"): html = status_html("90")
+    elif problem == "wrong_author": html = status_html(owner="stranger")
+    elif problem == "quoted_target":
+        html = status_html("90", extra='<div role="link">' + status_html() + '</div>')
+    elif problem == "nested_target": html = status_html("90", extra=status_html())
+    elif problem == "duplicate_target": html = status_html() + status_html()
+    elif problem == "no_menu": html = status_html(menu=False)
+    else: html = status_html(menu=False, extra='<div role="link">' + status_html("90") + '</div>')
+    serve(html, tweet_record())
+    assert not try_direct_target(page, "example", "1", "posts", False, 0, threading.Event(), Mock(), Mock())
+    assert page.evaluate('window.clicked') == []
+    assert page.evaluate('window.deleted') == []
+
+
+@pytest.mark.parametrize("change", ["identity", "replace_button", "stop"])
+def test_direct_rechecks_pinned_focal_identity_and_stop_before_delete(direct_page, change):
+    import threading
+    from platforms.x.direct_cleanup import try_direct_target
+    page, serve = direct_page
+    stop = threading.Event()
+    scripts = {"identity": "article.querySelector('a:has(time)').href = '/example/status/2';",
+               "replace_button": "caret.replaceWith(caret.cloneNode(true));",
+               "stop": "console.log('stop-requested');"}
+    page.on('console', lambda msg: stop.set() if msg.text == 'stop-requested' else None)
+    serve(status_html(), tweet_record(), after_menu=scripts[change])
+    assert not try_direct_target(page, "example", "1", "posts", False, 0, stop, Mock(), Mock())
+    assert page.evaluate('window.deleted') == []
+
+
+@pytest.mark.parametrize("mode", ["posts", "replies"])
+def test_one_direct_fallback_does_not_block_other_targets_or_repeat_completed_ids(worker, mode):
+    ns, page = worker
+    ns["try_direct_target"].side_effect = [False, True, True]
+    missing = article("1", reply=mode == "replies")
+    already_done = article("2", reply=mode == "replies")
+    page.locator.return_value = articles(already_done, missing)
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode=mode, dry_run=False,
+                              target_status_ids=["1", "2", "3"], max_actions=1))
+    assert [call.args[2] for call in ns["try_direct_target"].call_args_list] == ["1", "2", "3"]
+    ns["delete_own_post"].assert_called_once_with(page, missing, False, 3.0, "example", mode)
+    expected_url = "https://x.com/example/with_replies" if mode == "replies" else "https://x.com/example"
+    ns["ensure_target_timeline"].assert_called_once_with(page, expected_url, "example", mode)
+    assert [ns["inventory_queue"].get_nowait() for _ in range(3)] == [("example", "2"), ("example", "3"), ("example", "1")]
+    assert ns["inventory_queue"].empty()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_all_direct_targets_finish_without_timeline_navigation_and_sync_only_live(worker, dry_run):
+    ns, page = worker
+    ns["try_direct_target"].return_value = True
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", dry_run=dry_run, target_status_ids=["1", "2"]))
+    assert ns["try_direct_target"].call_count == 2
+    ns["ensure_target_timeline"].assert_not_called()
+    ns["delete_own_post"].assert_not_called()
+    page.locator.assert_not_called()
+    assert ns["inventory_queue"].qsize() == (0 if dry_run else 2)
+    assert "SMART DIRECT COMPLETE // 2/2 processed" in queued_logs(ns)
+
+
+def test_stop_prevents_next_direct_target_and_fallback(worker):
+    ns, page = worker
+    def stop_after_first(*_args):
+        ns["stop_event"].set()
+        return True
+    ns["try_direct_target"].side_effect = stop_after_first
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", dry_run=False, target_status_ids=["1", "2"]))
+    assert ns["try_direct_target"].call_count == 1
+    ns["ensure_target_timeline"].assert_not_called()
+    assert ns["inventory_queue"].get_nowait() == ("example", "1")
+    assert "SMART TARGET STOPPED // 1 OF 2 REMAINING" in queued_logs(ns)
+
+
+@pytest.mark.parametrize("mode", ["posts", "replies", "reposts", "likes"])
+def test_normal_cleanup_never_enters_direct_mode(worker, mode):
+    ns, page = worker
+    page.locator.return_value = articles(article("1", reply=mode == "replies"))
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode=mode, max_actions=1))
+    ns["try_direct_target"].assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["reposts", "likes"])
+def test_reposts_and_likes_reject_direct_targets_before_navigation(worker, mode):
+    ns, page = worker
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode=mode, target_status_ids=["1"]))
+    ns["try_direct_target"].assert_not_called()
+    ns["connect_cdp"].assert_not_called()
+    page.goto.assert_not_called()
+
+
+@pytest.mark.parametrize("stale_control", [
+    '<div role="menu"><button role="menuitem">Delete</button></div>',
+    '<button role="menuitem">Delete</button>',
+    '<button data-testid="confirmationSheetConfirm">Delete</button>',
+])
+def test_direct_never_reuses_another_articles_open_delete_controls(direct_page, stale_control):
+    import threading
+    from platforms.x.direct_cleanup import try_direct_target
+    page, serve = direct_page
+    serve(status_html() + stale_control, tweet_record())
+    assert not try_direct_target(page, "example", "1", "posts", False, 0, threading.Event(), Mock(), Mock())
+    assert page.evaluate('window.clicked') == []
+    assert page.evaluate('window.deleted') == []
+
+
+@pytest.mark.parametrize("mode", ["posts", "replies"])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_real_direct_worker_preserves_inventory_in_preview_and_queues_only_live(direct_page, worker, monkeypatch, mode, dry_run):
+    from platforms.x.direct_cleanup import try_direct_target
+    ns, _ = worker
+    page, serve = direct_page
+    serve(status_html(), tweet_record(reply=mode == "replies"))
+    monkeypatch.setitem(ns, "try_direct_target", try_direct_target)
+    monkeypatch.setitem(ns, "find_x_page", lambda *_args: page)
+    payload = {"handle": "example", "items": [{"status_id": "1", "mode": mode}]}
+    ns["save_profile_intelligence"](payload)
+    before = Path(ns["PROFILE_INTELLIGENCE_FILE"]).read_bytes()
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode=mode, dry_run=dry_run,
+                              target_status_ids=["1"], delay=0))
+    ns["ensure_target_timeline"].assert_not_called()
+    assert page.evaluate('window.deleted') == ([] if dry_run else ["1"])
+    assert ns["inventory_queue"].qsize() == int(not dry_run)
+    if not dry_run:
+        assert ns["inventory_queue"].get_nowait() == ("example", "1")
+    assert Path(ns["PROFILE_INTELLIGENCE_FILE"]).read_bytes() == before
+    assert "SMART DIRECT COMPLETE // 1/1 processed" in queued_logs(ns)
+
+
+def test_direct_load_failure_fails_closed_and_releases_response_listener():
+    import threading
+    from platforms.x.direct_cleanup import try_direct_target
+    page = Mock()
+    page.goto.side_effect = RuntimeError("navigation failed")
+    assert not try_direct_target(page, "example", "1", "replies", False, 0, threading.Event(), Mock(), Mock())
+    page.evaluate_handle.assert_not_called()
+    page.remove_listener.assert_called_once_with("response", page.on.call_args.args[1])
+
+
+def test_stop_before_direct_navigation_performs_no_browser_action():
+    import threading
+    from platforms.x.direct_cleanup import try_direct_target
+    stop = threading.Event()
+    stop.set()
+    page = Mock()
+    assert not try_direct_target(page, "example", "1", "posts", False, 0, stop, Mock(), Mock())
+    assert page.mock_calls == []
+
+
+def test_conflicting_reply_metadata_cannot_authorize_a_direct_action():
+    from platforms.x.direct_cleanup import status_mode
+    assert status_mode({"items": [tweet_record(), tweet_record(reply=True)]}, "example", "1") is None
