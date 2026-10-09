@@ -370,3 +370,148 @@ def test_topic_cards_lock_through_scan_or_live_cleanup_until_completion(ui, task
     ui["poll_logs"]()
     assert not ui["worker_active"].get()
     assert all(w.cget("state") == "normal" for w in ui["category_buttons"].values())
+
+
+def queued_logs(ns):
+    lines = []
+    while not ns["log_queue"].empty():
+        lines.append(ns["log_queue"].get_nowait())
+    return lines
+
+
+def scrolling_timeline(page, batches):
+    """Advance only on scrolling, leaving live-delete requeries on the same batch."""
+    state = {"index": 0}
+    page.locator.side_effect = lambda _selector: articles(*batches[state["index"]])
+    def advance(*_args):
+        state["index"] = min(state["index"] + 1, len(batches) - 1)
+    page.evaluate.side_effect = advance
+    page.mouse.wheel.side_effect = advance
+    return state
+
+
+@pytest.mark.parametrize("all_matches", [False, True])
+@pytest.mark.parametrize("previous_max", [1, 99])
+def test_four_locked_ids_set_visible_and_effective_limit(ui, all_matches, previous_max):
+    ui["profile_inventory"]["items"] = [
+        {"status_id": str(i), "mode": "posts", "topic": "mufc", "text": "United"}
+        for i in range(1, 6 if not all_matches else 5)
+    ]
+    ui["max_actions_var"].set(str(previous_max))
+    ui["until_empty_var"].set(True)
+    ui["review_matches"]()
+    widgets = list(descendants(ui["root"]))
+    listing = next(w for w in widgets if isinstance(w, ui["tk"].Listbox))
+    if not all_matches:
+        listing.selection_set(0, 3)
+    label = "TARGET ALL MATCHES" if all_matches else "TARGET SELECTED"
+    next(w for w in widgets if isinstance(w, ui["tk"].Button) and w.cget("text") == label).invoke()
+    assert ui["selected_target_ids"] == {"1", "2", "3", "4"}
+    assert ui["max_actions_var"].get() == "4"
+    assert not ui["until_empty_var"].get()
+    # Editing an old limit after review must not override the locked IDs.
+    ui["max_actions_var"].set(str(previous_max))
+    ui["until_empty_var"].set(True)
+    ui["start_session"]()
+    settings = ui["threading"].Thread.call_args.kwargs["args"][0]
+    assert settings["max_actions"] == 4
+    assert not settings["run_until_empty"]
+    assert ui["max_actions_var"].get() == "4"
+    assert "MAX 4" in ui["status_var"].get()
+
+
+@pytest.mark.parametrize("mode", ["posts", "replies"])
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("previous_max", [1, 99])
+def test_exact_search_crosses_unrelated_batches_and_resets_stale_progress(worker, mode, dry_run, previous_max):
+    ns, page = worker
+    targets = [article(str(i), reply=mode == "replies") for i in range(1, 5)]
+    # Seven stale passes, fresh authored content, then seven more stale passes:
+    # discovery must reset the counter, even when none of that content is selected.
+    first_unrelated = article("100")
+    second_unrelated = article("101")
+    batches = [[targets[0]], *[[first_unrelated]] * 8, *[[second_unrelated]] * 8]
+    batches += [[article(str(i))] for i in range(102, 115)]
+    batches += [[target] for target in targets[1:]]
+    state = scrolling_timeline(page, batches)
+    payload = {"handle": "example", "items": [{"status_id": str(i)} for i in range(1, 5)]}
+    ns["save_profile_intelligence"](payload)
+    before = Path(ns["PROFILE_INTELLIGENCE_FILE"]).read_bytes()
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode=mode, dry_run=dry_run,
+                              target_status_ids=["1", "2", "3", "4", "4"],
+                              max_actions=previous_max, run_until_empty=True))
+    assert [call.args[1] for call in ns["delete_own_post"].call_args_list] == targets
+    assert state["index"] == len(batches) - 1
+    # All targets complete: do not keep scrolling the final repeated batch.
+    assert page.evaluate.call_count == len(batches) - 1
+    logs = queued_logs(ns)
+    assert "SMART TARGET // 3 OF 4 REMAINING" in logs
+    assert "SMART TARGET COMPLETE // 4 OF 4 exact statuses processed" in logs
+    assert not any("SEARCH EXHAUSTED" in line for line in logs)
+    assert any("RUN LOCKED:" in line and "MAX 4" in line for line in logs)
+    assert Path(ns["PROFILE_INTELLIGENCE_FILE"]).read_bytes() == before
+    events = []
+    while not ns["inventory_queue"].empty():
+        events.append(ns["inventory_queue"].get_nowait())
+    assert events == ([] if dry_run else [("example", str(i)) for i in range(1, 5)])
+    page.goto.assert_not_called()
+
+
+@pytest.mark.parametrize("empty_timeline", [False, True])
+def test_true_exhaustion_reports_unresolved_ids_without_claiming_complete(worker, empty_timeline):
+    ns, page = worker
+    scrolling_timeline(page, [[article("1")], [] if empty_timeline else [article("100")]])
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", target_status_ids=["1", "2", "3", "4"]))
+    assert ns["delete_own_post"].call_count == 1
+    logs = queued_logs(ns)
+    assert "SMART TARGET SEARCH EXHAUSTED // 3 of 4 selected IDs remain unresolved" in logs
+    assert not any("COMPLETE" in line for line in logs)
+    assert page.locator.call_count < 50
+
+
+def test_repeated_target_errors_do_not_count_as_new_timeline_progress(worker):
+    ns, page = worker
+    page.locator.return_value = articles(article("1"))
+    ns["delete_own_post"].side_effect = RuntimeError("temporarily unavailable")
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", target_status_ids=["1"]))
+    assert ns["delete_own_post"].call_count <= 9
+    assert ns["inventory_queue"].empty()
+    assert "SMART TARGET SEARCH EXHAUSTED // 1 of 1 selected IDs remain unresolved" in queued_logs(ns)
+
+
+@pytest.mark.parametrize("mode", ["posts", "replies"])
+def test_stop_aborts_exact_search_before_later_selected_items(worker, mode):
+    ns, page = worker
+    scrolling_timeline(page, [[article("100")], [article("1", reply=mode == "replies")]])
+    page.evaluate.side_effect = lambda *_args: ns["stop_event"].set()
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode=mode, target_status_ids=["1"]))
+    ns["delete_own_post"].assert_not_called()
+    assert ns["inventory_queue"].empty()
+    logs = queued_logs(ns)
+    assert "SMART TARGET STOPPED // 1 OF 1 REMAINING" in logs
+    assert not any("EXHAUSTED" in line or "COMPLETE" in line for line in logs)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_replies_deletion_rejects_unverified_status_route(cleanup, dry_run):
+    candidate = article("1", reply=True)
+    page = Mock(url="https://x.com/example/status/1")
+    assert not cleanup["delete_own_post"](page, candidate, dry_run, 0, "example", "replies")
+    page.get_by_role.assert_not_called()
+    page.locator.assert_not_called()
+    candidate.locator.assert_called_once_with('a[href*="/status/"]')
+
+
+def test_exact_reply_search_stops_when_replies_route_cannot_be_restored(worker):
+    ns, page = worker
+    page.locator.return_value = articles(article("100"))
+    page.evaluate.side_effect = lambda *_args: setattr(page, "url", "https://x.com/example/status/2")
+    ns["ensure_target_timeline"].side_effect = [None, RuntimeError("Replies route unavailable")]
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode="replies", target_status_ids=["1"]))
+    ns["delete_own_post"].assert_not_called()
+    assert ns["ensure_target_timeline"].call_count == 2
+    assert all(call.args[1] == "https://x.com/example/with_replies"
+               for call in ns["ensure_target_timeline"].call_args_list)
+    logs = queued_logs(ns)
+    assert any("Replies cleanup stopped safely" in line for line in logs)
+    assert not any("COMPLETE" in line or "EXHAUSTED" in line for line in logs)

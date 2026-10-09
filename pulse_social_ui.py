@@ -344,6 +344,8 @@ def cleaner_worker(settings):
     # Exact targeting must fail closed, including an explicitly empty selection.
     if smart_target and (mode not in ("posts","replies") or not target_status_ids):
         ui_log("Smart cleanup stopped: select scanned Posts or Replies IDs before starting."); set_run_state("idle"); return
+    if smart_target:
+        max_actions=len(target_status_ids); until_empty=False; limit_label=f"MAX {max_actions}"
     set_run_state("attaching",dry_run,mode,limit_label)
     url="https://x.com/i/history/likes" if mode=="likes" else f"https://x.com/{handle}/with_replies" if mode=="replies" else f"https://x.com/{handle}/reposts" if mode=="reposts" else f"https://x.com/{handle}"
     ui_log(f"Connecting to Pulse Browser on port {CDP_PORT}...")
@@ -371,8 +373,9 @@ def cleaner_worker(settings):
                 ui_log(f"SMART TARGET // {topic_label}{search_label} // {len(target_status_ids)} scanned {mode} IDs")
             if until_empty: ui_log("Run-until-empty enabled: Pulse will stop only after repeated passes find no new matching items.")
             actions=0; stale_rounds=0; seen_items=set(); empty_threshold=8
+            remaining_target_ids=set(target_status_ids); discovered_status_ids=set(); search_exhausted=False
             target_path=x_path(url)
-            while (until_empty or actions<max_actions) and not stop_event.is_set():
+            while (bool(remaining_target_ids) if smart_target else (until_empty or actions<max_actions)) and not stop_event.is_set():
                 if mode=="replies" and x_path(page.url)!=target_path:
                     ui_log(f"Replies route changed to {x_path(page.url) or '/'}. Restoring Replies before scanning...")
                     try:
@@ -384,32 +387,40 @@ def cleaner_worker(settings):
                 if count==0:
                     ui_log("No articles found. Scrolling timeline..."); page.mouse.wheel(0,1800); time.sleep(3); stale_rounds+=1
                     if stale_rounds>=empty_threshold:
+                        search_exhausted=True
                         ui_log(f"No new {mode} found after repeated loading attempts."); break
                     if stale_rounds==3: page.reload(wait_until="domcontentloaded"); time.sleep(5)
                     continue
-                acted=False; requery_after_mutation=False
+                acted=False; requery_after_mutation=False; timeline_progress=False
                 for i in range(count):
                     if (not until_empty and actions>=max_actions) or stop_event.is_set(): break
                     article=articles.nth(i)
                     try:
                         require_owned=mode in ("posts","replies"); identity=article_identity(article,handle=handle if require_owned else None,require_owned=require_owned)
                         if require_owned and not identity: continue
+                        # Unrelated authored statuses still prove the exact-ID search is progressing.
+                        # Keep discovery separate from attempted actions, including failed attempts.
+                        if smart_target and identity not in discovered_status_ids:
+                            discovered_status_ids.add(identity); timeline_progress=True; stale_rounds=0
                         if identity and identity in seen_items: continue
                         if require_owned and smart_target:
                             status_id=identity.split(":",1)[1] if identity and ":" in identity else ""
                             # Recheck type so older scan inventories cannot cross Posts/Replies.
-                            if status_id not in target_status_ids or is_reply_article(article)!=(mode=="replies"):
+                            if status_id not in remaining_target_ids or is_reply_article(article)!=(mode=="replies"):
                                 if identity: seen_items.add(identity)
                                 continue
                         did=delete_own_post(page,article,dry_run,delay,handle,mode) if require_owned else undo_repost(page,article,dry_run,delay) if mode=="reposts" else unlike_post(page,article,dry_run,delay)
                         if did:
                             if identity: seen_items.add(identity)
                             actions+=1; acted=True; stale_rounds=0; ui_log(f"{'Previewed' if dry_run else 'Actions'}: {actions}{'' if until_empty else '/'+str(max_actions)}")
+                            if smart_target:
+                                remaining_target_ids.discard(status_id)
+                                ui_log(f"SMART TARGET // {len(remaining_target_ids)} OF {len(target_status_ids)} REMAINING")
                             if not dry_run:
                                 if require_owned and identity and ":" in identity:
                                     inventory_queue.put((handle,identity.split(":",1)[1]))
                                 requery_after_mutation=True
-                                if actions%refresh_every==0: page.reload(wait_until="domcontentloaded"); time.sleep(4)
+                                if actions%refresh_every==0 and (not smart_target or remaining_target_ids): page.reload(wait_until="domcontentloaded"); time.sleep(4)
                                 break
                         elif identity: seen_items.add(identity)
                     except TimeoutError: ui_log("Skipped one: X did not respond in time; it can be retried on a later pass"); close_menu(page)
@@ -422,11 +433,25 @@ def cleaner_worker(settings):
                     else: page.mouse.wheel(0,1800)
                 except Exception: page.mouse.wheel(0,1600)
                 time.sleep(2)
-                if not acted:
-                    stale_rounds+=1; ui_log(f"No new matching actions. Scrolling... | unique seen {len(seen_items)} | empty check {stale_rounds}/{empty_threshold}")
+                if not acted and not (smart_target and timeline_progress):
+                    stale_rounds+=1
+                    if smart_target:
+                        ui_log(f"No new authored statuses. Scrolling... | unique discovered {len(discovered_status_ids)} | empty check {stale_rounds}/{empty_threshold}")
+                    else:
+                        ui_log(f"No new matching actions. Scrolling... | unique seen {len(seen_items)} | empty check {stale_rounds}/{empty_threshold}")
                     if stale_rounds>=empty_threshold:
-                        ui_log(f"{mode.upper()} CLEANUP COMPLETE — no new matching items found after repeated scrolling."); break
-            ui_log(f"Done. {'Previewed' if dry_run else 'Completed'} {actions} unique action(s).")
+                        search_exhausted=True
+                        if not smart_target: ui_log(f"{mode.upper()} CLEANUP COMPLETE — no new matching items found after repeated scrolling.")
+                        break
+            if smart_target:
+                if not remaining_target_ids:
+                    ui_log(f"SMART TARGET COMPLETE // {len(target_status_ids)} OF {len(target_status_ids)} exact statuses processed")
+                elif search_exhausted and not stop_event.is_set():
+                    ui_log(f"SMART TARGET SEARCH EXHAUSTED // {len(remaining_target_ids)} of {len(target_status_ids)} selected IDs remain unresolved")
+                else:
+                    ui_log(f"SMART TARGET STOPPED // {len(remaining_target_ids)} OF {len(target_status_ids)} REMAINING")
+            else:
+                ui_log(f"Done. {'Previewed' if dry_run else 'Completed'} {actions} unique action(s).")
     finally: set_run_state("idle")
 
 def start_session():
@@ -452,6 +477,8 @@ def start_session():
         if not target_ids:
             messagebox.showinfo("No matching items","No scanned items match the current topic/search/selection for this mode."); return
         s["target_status_ids"]=target_ids
+        s["max_actions"]=len(set(target_ids)); s["run_until_empty"]=False
+        max_actions_var.set(str(s["max_actions"])); until_empty_var.set(False); toggle_until_empty()
     save_settings({key:value for key,value in s.items() if key!="target_status_ids"}); limit_text="UNTIL EMPTY" if s["run_until_empty"] else f"MAX {s['max_actions']}"
     target_bits=[]
     if s["topic_filter"]!=ALL_TOPIC: target_bits.append(TOPIC_LABELS.get(s["topic_filter"],s["topic_filter"]))
@@ -602,6 +629,7 @@ def review_matches():
         if not ids:
             messagebox.showinfo("Nothing selected","Select one or more statuses first.",parent=win); return
         selected_target_ids.clear(); selected_target_ids.update(ids)
+        max_actions_var.set(str(len(ids))); until_empty_var.set(False); toggle_until_empty()
         selection_summary_var.set(f"TARGET // {len(ids)} exact scanned {mode_var.get()} status IDs")
         ui_log(f"SMART TARGET // {len(ids)} exact scanned {mode_var.get()} status IDs selected")
         win.destroy()
