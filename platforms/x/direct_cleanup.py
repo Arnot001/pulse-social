@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 VERIFY_SECONDS = 5
+DIRECT_UNAVAILABLE = "unavailable"
 X_HOSTS = {"x.com", "www.x.com", "twitter.com", "www.twitter.com", "api.x.com", "api.twitter.com"}
 
 
@@ -110,9 +111,24 @@ FOCAL_EVIDENCE = r"""({handle, statusId}) => {
 FOCAL_MENU = f"args => ({FOCAL_EVIDENCE})(args).menu"
 FOCAL_REASON = f"args => ({FOCAL_EVIDENCE})(args).reason"
 
+UNAVAILABLE_EVIDENCE = r"""({handle, statusId}) => {
+    const host = location.hostname.toLowerCase();
+    if (!['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'].includes(host)) return false;
+    const path = location.pathname.replace(/\/$/, '').toLowerCase();
+    const ownedPath = `/${handle}/status/${statusId}`;
+    const genericPath = `/i/web/status/${statusId}`;
+    if (path !== ownedPath && path !== genericPath) return false;
+    const visibleTweet = [...document.querySelectorAll('main article[data-testid="tweet"]')]
+        .some(article => article.getClientRects().length);
+    if (visibleTweet) return false;
+    const text = (document.body ? document.body.innerText : '')
+        .replace(/\s+/g, ' ').toLowerCase();
+    return text.includes("this page doesn't exist") || text.includes("this page doesn?t exist");
+}"""
+
 
 def try_direct_target(page, handle, status_id, mode, dry_run, delay, stop_event, ui_log, log_action):
-    """Return True only after an exact preview or confirmed delete; False falls back."""
+    """Resolve an exact action/unavailable status; return False only for safe fallback."""
     handle = handle.strip().lstrip("@").lower()
     if (mode not in ("posts", "replies") or not re.fullmatch(r"[a-z0-9_]{1,15}", handle)
             or not isinstance(status_id, str) or not re.fullmatch(r"[0-9]+", status_id)
@@ -125,11 +141,23 @@ def try_direct_target(page, handle, status_id, mode, dry_run, delay, stop_event,
     opened_menu = False
     completed = False
     menu_handle = None
+    unavailable_retried = False
 
     def fail(reason):
         if not stop_event.is_set():
             ui_log(f"DIRECT VERIFY FAILED // {reason}")
         return False
+
+    def unavailable():
+        if not stop_event.is_set():
+            ui_log(f"DIRECT UNAVAILABLE // {status_id} no longer exists on X")
+        return DIRECT_UNAVAILABLE
+
+    def explicitly_unavailable():
+        try:
+            return page.evaluate(UNAVAILABLE_EVIDENCE, args) is True
+        except Exception:
+            return False
 
     def capture(response):
         nonlocal response_reason
@@ -178,17 +206,40 @@ def try_direct_target(page, handle, status_id, mode, dry_run, delay, stop_event,
         stage = "focal article verification unavailable"
         deadline = time.monotonic() + VERIFY_SECONDS
         while not stop_event.is_set():
+            if explicitly_unavailable():
+                if not unavailable_retried:
+                    unavailable_retried = True
+                    proof.clear()
+                    response_reason = "TweetDetail response unavailable"
+                    try:
+                        page.reload(wait_until="domcontentloaded", timeout=12000)
+                    except Exception:
+                        return fail("unavailable confirmation reload failed")
+                    deadline = time.monotonic() + VERIFY_SECONDS
+                    continue
+                return unavailable()
             if proof:
                 reason = proof_failure()
                 if reason:
-                    return fail(reason)
-                candidate = page.evaluate_handle(FOCAL_MENU, args)
-                menu_handle = candidate.as_element()
-                if menu_handle is not None:
-                    break
-                candidate.dispose()
+                    # A missing Tweet record can accompany X's explicit dead-status page.
+                    # Wait for that positive DOM evidence; all other failures stay fail-closed.
+                    if reason != "focal status not found in TweetDetail":
+                        return fail(reason)
+                else:
+                    candidate = page.evaluate_handle(FOCAL_MENU, args)
+                    menu_handle = candidate.as_element()
+                    if menu_handle is not None:
+                        break
+                    candidate.dispose()
             if time.monotonic() >= deadline:
-                return fail(page.evaluate(FOCAL_REASON, args) if proof else response_reason)
+                if explicitly_unavailable():
+                    continue
+                if proof:
+                    reason = proof_failure()
+                    if reason:
+                        return fail(reason)
+                    return fail(page.evaluate(FOCAL_REASON, args))
+                return fail(response_reason)
             page.wait_for_timeout(100)  # Pump Playwright responses; bounded STOP check.
         if menu_handle is None or not still_verified():
             return False

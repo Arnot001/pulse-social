@@ -10,7 +10,7 @@ from tkinter import messagebox
 from playwright.sync_api import sync_playwright, TimeoutError
 from platforms.browser_control import CDP_PORT, CDP_URL, cdp_responding, restart_pulse_browser
 from platforms.x.browser_session import open_x_browser
-from platforms.x.direct_cleanup import try_direct_target
+from platforms.x.direct_cleanup import DIRECT_UNAVAILABLE, try_direct_target
 from platforms.x.profile_intelligence import ALL_TOPIC, TOPIC_LABELS, classify_text, filter_inventory, inventory_counts, ranked_inventory
 
 APP_DIR = os.path.join(os.environ["LOCALAPPDATA"], "Pulse Social")
@@ -26,7 +26,7 @@ PROFILE_SCAN_LIMIT_PER_MODE = 400
 
 BG = "#07090f"; PANEL = "#0d111b"; PANEL_2 = "#121827"; BORDER = "#20283a"; TEXT = "#f5f7fb"; MUTED = "#8993a6"; ACCENT = "#ff008c"; SUCCESS = "#35d07f"; DANGER = "#ff4057"
 DEFAULTS = {"handle":"", "mode":"posts", "dry_run":True, "run_until_empty":False, "max_actions":10, "delay":3, "refresh_every":25, "topic_filter":ALL_TOPIC, "search_query":""}
-log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue(); intel_queue = queue.Queue(); inventory_queue = queue.Queue()
+log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue(); intel_queue = queue.Queue(); inventory_queue = queue.Queue(); unavailable_inventory_queue = queue.Queue()
 selected_target_ids = set()
 category_buttons = {}
 
@@ -395,19 +395,28 @@ def cleaner_worker(settings):
                 ui_log(f"SMART TARGET // {topic_label}{search_label} // {len(target_status_ids)} scanned {mode} IDs")
             if until_empty: ui_log("Run-until-empty enabled: Pulse will stop only after repeated passes find no new matching items.")
             actions=0; stale_rounds=0; seen_items=set(); empty_threshold=8
-            remaining_target_ids=set(target_status_ids); discovered_status_ids=set(); search_exhausted=False
+            remaining_target_ids=set(target_status_ids); discovered_status_ids=set(); search_exhausted=False; direct_unavailable=0
             target_path=x_path(url)
             if smart_target:
                 ui_log(f"SMART DIRECT // {mode.upper()} // {len(target_status_ids)} exact targets")
                 for index,status_id in enumerate(sorted(target_status_ids),start=1):
                     if stop_event.is_set(): break
                     ui_log(f"DIRECT TARGET {index}/{len(target_status_ids)} // {status_id}")
-                    if try_direct_target(page,handle,status_id,mode,dry_run,delay,stop_event,ui_log,log_action):
-                        remaining_target_ids.discard(status_id); actions+=1; seen_items.add(f"status:{status_id}")
-                        if not dry_run: inventory_queue.put((handle,status_id))
+                    direct_result=try_direct_target(page,handle,status_id,mode,dry_run,delay,stop_event,ui_log,log_action)
+                    if direct_result:
+                        remaining_target_ids.discard(status_id); seen_items.add(f"status:{status_id}")
+                        if direct_result==DIRECT_UNAVAILABLE:
+                            direct_unavailable+=1
+                            if not dry_run: unavailable_inventory_queue.put((handle,status_id))
+                        else:
+                            actions+=1
+                            if not dry_run: inventory_queue.put((handle,status_id))
                         ui_log(f"SMART TARGET // {len(remaining_target_ids)} OF {len(target_status_ids)} REMAINING")
                 if not remaining_target_ids:
-                    ui_log(f"SMART DIRECT COMPLETE // {actions}/{len(target_status_ids)} processed")
+                    if direct_unavailable:
+                        ui_log(f"SMART DIRECT COMPLETE // {len(target_status_ids)}/{len(target_status_ids)} resolved // {direct_unavailable} unavailable")
+                    else:
+                        ui_log(f"SMART DIRECT COMPLETE // {actions}/{len(target_status_ids)} processed")
                 elif not stop_event.is_set():
                     ui_log(f"SMART TARGET FALLBACK // {len(remaining_target_ids)} exact IDs")
                     try:
@@ -486,7 +495,8 @@ def cleaner_worker(settings):
                         break
             if smart_target:
                 if not remaining_target_ids:
-                    ui_log(f"SMART TARGET COMPLETE // {len(target_status_ids)} OF {len(target_status_ids)} exact statuses processed")
+                    result_word="resolved" if direct_unavailable else "processed"
+                    ui_log(f"SMART TARGET COMPLETE // {len(target_status_ids)} OF {len(target_status_ids)} exact statuses {result_word}")
                 elif search_exhausted and not stop_event.is_set():
                     ui_log(f"SMART TARGET SEARCH EXHAUSTED // {len(remaining_target_ids)} of {len(target_status_ids)} selected IDs remain unresolved")
                 else:
@@ -695,15 +705,21 @@ def copy_log():
 def clear_log_view(): log_box.delete("1.0",tk.END); status_var.set("LOG VIEW CLEARED")
 def toggle_until_empty(): max_actions_entry.config(state="disabled" if until_empty_var.get() else "normal")
 def apply_inventory_deletions():
-    deleted_ids=set()
+    deleted_ids=set(); unavailable_ids=set()
     inventory_handle=str(profile_inventory.get("handle") or "").lstrip("@").casefold()
     while not inventory_queue.empty():
         handle,status_id=inventory_queue.get()
         if str(handle or "").lstrip("@").casefold()==inventory_handle:
             deleted_ids.add(str(status_id))
-    if not deleted_ids: return 0
+    while not unavailable_inventory_queue.empty():
+        handle,status_id=unavailable_inventory_queue.get()
+        if str(handle or "").lstrip("@").casefold()==inventory_handle:
+            unavailable_ids.add(str(status_id))
+    unavailable_ids.difference_update(deleted_ids)
+    removable_ids=deleted_ids | unavailable_ids
+    if not removable_ids: return 0
     items=profile_inventory.get("items") or []
-    removed={str(item.get("status_id")) for item in items if str(item.get("status_id")) in deleted_ids}
+    removed={str(item.get("status_id")) for item in items if str(item.get("status_id")) in removable_ids}
     if not removed: return 0
     profile_inventory["items"]=[item for item in items if str(item.get("status_id")) not in removed]
     save_profile_intelligence(profile_inventory)
@@ -713,7 +729,12 @@ def apply_inventory_deletions():
     else:
         selection_summary_var.set("TARGET // all matches in current filter")
     refresh_topic_cards(profile_inventory); update_match_summary()
-    ui_log(f"PROFILE INTELLIGENCE SYNC // removed {len(removed)} deleted status ID(s)")
+    removed_deleted=removed & deleted_ids
+    removed_unavailable=removed & unavailable_ids
+    if removed_deleted:
+        ui_log(f"PROFILE INTELLIGENCE SYNC // removed {len(removed_deleted)} deleted status ID(s)")
+    if removed_unavailable:
+        ui_log(f"PROFILE INTELLIGENCE SYNC // pruned {len(removed_unavailable)} unavailable status ID(s)")
     return len(removed)
 def poll_logs():
     changed=False

@@ -922,3 +922,83 @@ def test_stop_during_fallback_reset_prevents_crawler(worker, stage):
     page.locator.assert_not_called()
     ns["delete_own_post"].assert_not_called()
     assert "SMART TARGET STOPPED // 1 OF 1 REMAINING" in queued_logs(ns)
+
+
+def test_explicit_unavailable_direct_status_is_resolved_without_delete(direct_page):
+    import threading
+    from platforms.x.direct_cleanup import DIRECT_UNAVAILABLE, try_direct_target
+    page, serve = direct_page
+    serve('<div>Hmm...this page doesn?t exist. Try searching for something else.</div>', {})
+    diagnostics, action = Mock(), Mock()
+
+    result = try_direct_target(
+        page, "example", "1", "posts", False, 0,
+        threading.Event(), diagnostics, action,
+    )
+
+    assert result == DIRECT_UNAVAILABLE
+    diagnostics.assert_called_once_with("DIRECT UNAVAILABLE // 1 no longer exists on X")
+    action.assert_not_called()
+    assert page.evaluate("window.clicked") == []
+    assert page.evaluate("window.deleted") == []
+
+
+def test_unavailable_words_cannot_prune_when_a_visible_tweet_exists(direct_page):
+    import threading
+    from platforms.x.direct_cleanup import try_direct_target
+    page, serve = direct_page
+    serve(
+        status_html(extra="<div>Hmm...this page doesn?t exist. Try searching for something else.</div>"),
+        {},
+    )
+    diagnostics = Mock()
+
+    assert not try_direct_target(
+        page, "example", "1", "posts", False, 0,
+        threading.Event(), diagnostics, Mock(),
+    )
+
+    diagnostics.assert_called_once_with(
+        "DIRECT VERIFY FAILED // focal status not found in TweetDetail"
+    )
+    assert page.evaluate("window.clicked") == []
+    assert page.evaluate("window.deleted") == []
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_explicit_unavailable_target_skips_fallback_and_prunes_only_live(worker, dry_run):
+    ns, page = worker
+    ns["try_direct_target"].return_value = ns["DIRECT_UNAVAILABLE"]
+
+    ns["cleaner_worker"](
+        dict(
+            ns["DEFAULTS"],
+            handle="example",
+            mode="posts",
+            dry_run=dry_run,
+            target_status_ids=["1"],
+        )
+    )
+
+    ns["ensure_target_timeline"].assert_not_called()
+    ns["delete_own_post"].assert_not_called()
+    page.locator.assert_not_called()
+    assert ns["inventory_queue"].empty()
+    if dry_run:
+        assert ns["unavailable_inventory_queue"].empty()
+    else:
+        assert ns["unavailable_inventory_queue"].get_nowait() == ("example", "1")
+        assert ns["unavailable_inventory_queue"].empty()
+    assert "SMART DIRECT COMPLETE // 1/1 resolved // 1 unavailable" in queued_logs(ns)
+
+
+def test_inventory_sync_prunes_confirmed_unavailable_ids_separately(ui):
+    ui["selected_target_ids"].update({"1", "4"})
+    ui["unavailable_inventory_queue"].put(("example", "1"))
+    ui["unavailable_inventory_queue"].put(("different_handle", "2"))
+
+    assert ui["apply_inventory_deletions"]() == 1
+    assert {item["status_id"] for item in ui["profile_inventory"]["items"]} == {"2", "3", "4"}
+    assert ui["selected_target_ids"] == {"4"}
+    assert {item["status_id"] for item in ui["load_profile_intelligence"]()["items"]} == {"2", "3", "4"}
+    assert "PROFILE INTELLIGENCE SYNC // pruned 1 unavailable status ID(s)" in queued_logs(ui)
