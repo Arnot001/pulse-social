@@ -195,16 +195,6 @@ def test_review_click_toggle_multiselect_targets_only_chosen_ids(ui):
 
     listing.selection_set(0)
     listing.selection_set(2)
-    listing.event_generate("<<ListboxSelect>>")
-    ui["root"].update_idletasks()
-
-    selection_labels = [
-        w for w in widgets
-        if isinstance(w, ui["tk"].Label) and w.cget("textvariable")
-        and str(w.getvar(w.cget("textvariable"))).startswith("SELECTED //")
-    ]
-    assert len(selection_labels) == 1
-    assert selection_labels[0].getvar(selection_labels[0].cget("textvariable")) == "SELECTED // 2 OF 3"
 
     next(w for w in widgets if isinstance(w, ui["tk"].Button)
          and w.cget("text") == "TARGET SELECTED").invoke()
@@ -226,19 +216,36 @@ def test_review_can_remove_one_item_from_multiple_selection(ui):
     listing.selection_set(1)
     listing.selection_set(2)
     listing.selection_clear(1)
-    listing.event_generate("<<ListboxSelect>>")
-    ui["root"].update_idletasks()
 
+    next(w for w in widgets if isinstance(w, ui["tk"].Button)
+         and w.cget("text") == "TARGET SELECTED").invoke()
+    assert ui["selected_target_ids"] == {"1", "4"}
+
+
+def test_review_selection_controls_update_live_count(ui):
+    ui["mode_var"].set("posts")
+    ui["select_topic"]("all")
+    ui["search_var"].set("")
+    ui["review_matches"]()
+    widgets = list(descendants(ui["root"]))
+    listing = next(w for w in widgets if isinstance(w, ui["tk"].Listbox))
     selection_label = next(
         w for w in widgets
         if isinstance(w, ui["tk"].Label) and w.cget("textvariable")
         and str(w.getvar(w.cget("textvariable"))).startswith("SELECTED //")
     )
-    assert selection_label.getvar(selection_label.cget("textvariable")) == "SELECTED // 2 OF 3"
+    select_all = next(w for w in widgets if isinstance(w, ui["tk"].Button)
+                      and w.cget("text") == "SELECT ALL")
+    clear_selection = next(w for w in widgets if isinstance(w, ui["tk"].Button)
+                           and w.cget("text") == "CLEAR SELECTION")
 
-    next(w for w in widgets if isinstance(w, ui["tk"].Button)
-         and w.cget("text") == "TARGET SELECTED").invoke()
-    assert ui["selected_target_ids"] == {"1", "4"}
+    assert selection_label.getvar(selection_label.cget("textvariable")) == "SELECTED // 0 OF 3"
+    select_all.invoke()
+    assert listing.curselection() == (0, 1, 2)
+    assert selection_label.getvar(selection_label.cget("textvariable")) == "SELECTED // 3 OF 3"
+    clear_selection.invoke()
+    assert listing.curselection() == ()
+    assert selection_label.getvar(selection_label.cget("textvariable")) == "SELECTED // 0 OF 3"
 
 
 def test_review_empty_selection_fails_closed(ui):
