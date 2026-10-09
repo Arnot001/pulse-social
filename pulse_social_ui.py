@@ -665,7 +665,47 @@ def poll_logs():
         else: show_run_mode(state,dry_run,mode,limit_label); arm_btn.config(state="normal" if state=="armed" else "disabled"); stop_btn.config(state="normal")
     root.after(150,poll_logs)
 def button(parent,text,command,bg=PANEL_2,fg=TEXT,width=None): return tk.Button(parent,text=text,command=command,bg=bg,fg=fg,activebackground=ACCENT,activeforeground="white",relief="flat",bd=0,padx=14,pady=8,width=width,font=("Segoe UI",9,"bold"),cursor="hand2")
-def field(parent,var,width=12): return tk.Entry(parent,textvariable=var,width=width,bg="#090d15",fg=TEXT,insertbackground=TEXT,relief="flat",highlightthickness=1,highlightbackground=BORDER,highlightcolor=ACCENT,font=("Segoe UI",10))
+def enable_entry_editing(widget):
+    menu=tk.Menu(widget,tearoff=0,bg=PANEL_2,fg=TEXT,activebackground=ACCENT,activeforeground="white")
+    def edit_action(sequence):
+        try:
+            if str(widget.cget("state"))!="disabled": widget.event_generate(sequence)
+        except Exception: pass
+        return "break"
+    def select_all(_event=None):
+        try:
+            if str(widget.cget("state"))!="disabled":
+                widget.selection_range(0,tk.END); widget.icursor(tk.END)
+        except Exception: pass
+        return "break"
+    def show_menu(event):
+        try:
+            widget.focus_set()
+            enabled="normal" if str(widget.cget("state"))!="disabled" else "disabled"
+            for index in range(4): menu.entryconfig(index,state=enabled)
+            menu.tk_popup(event.x_root,event.y_root)
+        finally:
+            try: menu.grab_release()
+            except Exception: pass
+        return "break"
+    menu.add_command(label="Cut",command=lambda: edit_action("<<Cut>>"))
+    menu.add_command(label="Copy",command=lambda: edit_action("<<Copy>>"))
+    menu.add_command(label="Paste",command=lambda: edit_action("<<Paste>>"))
+    menu.add_command(label="Select All",command=select_all)
+    widget.bind("<Control-v>",lambda _event: edit_action("<<Paste>>"))
+    widget.bind("<Control-V>",lambda _event: edit_action("<<Paste>>"))
+    widget.bind("<Shift-Insert>",lambda _event: edit_action("<<Paste>>"))
+    widget.bind("<Control-c>",lambda _event: edit_action("<<Copy>>"))
+    widget.bind("<Control-C>",lambda _event: edit_action("<<Copy>>"))
+    widget.bind("<Control-x>",lambda _event: edit_action("<<Cut>>"))
+    widget.bind("<Control-X>",lambda _event: edit_action("<<Cut>>"))
+    widget.bind("<Control-a>",select_all)
+    widget.bind("<Control-A>",select_all)
+    widget.bind("<Button-3>",show_menu)
+    widget._pulse_edit_menu=menu
+    return widget
+def field(parent,var,width=12):
+    return enable_entry_editing(tk.Entry(parent,textvariable=var,width=width,bg="#090d15",fg=TEXT,insertbackground=TEXT,relief="flat",highlightthickness=1,highlightbackground=BORDER,highlightcolor=ACCENT,font=("Segoe UI",10)))
 
 settings=load_settings(); profile_inventory=load_profile_intelligence(); root=tk.Tk(); root.title("Pulse Social — X Cleanup"); root.geometry("1180x820"); root.minsize(1040,720); root.configure(bg=BG)
 handle_var=tk.StringVar(value=settings["handle"]); mode_var=tk.StringVar(value=settings["mode"]); dry_var=tk.BooleanVar(value=settings["dry_run"]); until_empty_var=tk.BooleanVar(value=settings.get("run_until_empty",False)); max_actions_var=tk.StringVar(value=str(settings["max_actions"])); delay_var=tk.StringVar(value=str(settings["delay"])); refresh_var=tk.StringVar(value=str(settings["refresh_every"])); topic_var=tk.StringVar(value=TOPIC_LABELS.get(settings.get("topic_filter",ALL_TOPIC),TOPIC_LABELS[ALL_TOPIC])); search_var=tk.StringVar(value=settings.get("search_query","")); search_result_var=tk.StringVar(value="SEARCH // scan the profile to build the local inventory"); selection_summary_var=tk.StringVar(value="TARGET // all matches in current filter"); intel_summary_var=tk.StringVar(value=intelligence_summary(profile_inventory)); status_var=tk.StringVar(value="READY // SAFE MODE"); worker_active=tk.BooleanVar(value=False)
