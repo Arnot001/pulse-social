@@ -247,7 +247,8 @@ def scan_authored_timeline(page,target_url,handle,mode,seen,items,max_items):
             seen.add(owned[1]); added+=1; mode_added+=1
             items.append({
                 "status_id":owned[1],
-                "mode":mode,
+                # Replies timelines also contain original posts. Classify the article, not its route.
+                "mode":"replies" if is_reply_article(article) else "posts",
                 "topic":result["topic"],
                 "topics":result["topics"],
                 "confidence":result["confidence"],
@@ -337,9 +338,12 @@ def unlike_post(page,article,dry_run,delay):
 def cleaner_worker(settings):
     stop_event.clear(); continue_event.clear(); handle=settings["handle"].strip().replace("@",""); mode=settings["mode"]; dry_run=settings["dry_run"]; until_empty=settings.get("run_until_empty",False)
     topic_filter=settings.get("topic_filter",ALL_TOPIC); search_query=str(settings.get("search_query") or "").strip(); target_status_ids=set(settings.get("target_status_ids") or [])
-    smart_target=topic_filter!=ALL_TOPIC or bool(search_query) or bool(target_status_ids)
+    smart_target=topic_filter!=ALL_TOPIC or bool(search_query) or "target_status_ids" in settings
     max_actions=int(settings["max_actions"]); delay=float(settings["delay"]); refresh_every=int(settings["refresh_every"]); limit_label="UNTIL EMPTY" if until_empty else f"MAX {max_actions}"
     if not handle: ui_log("Enter your X handle first."); set_run_state("idle"); return
+    # Exact targeting must fail closed, including an explicitly empty selection.
+    if smart_target and (mode not in ("posts","replies") or not target_status_ids):
+        ui_log("Smart cleanup stopped: select scanned Posts or Replies IDs before starting."); set_run_state("idle"); return
     set_run_state("attaching",dry_run,mode,limit_label)
     url="https://x.com/i/history/likes" if mode=="likes" else f"https://x.com/{handle}/with_replies" if mode=="replies" else f"https://x.com/{handle}/reposts" if mode=="reposts" else f"https://x.com/{handle}"
     ui_log(f"Connecting to Pulse Browser on port {CDP_PORT}...")
@@ -393,7 +397,8 @@ def cleaner_worker(settings):
                         if identity and identity in seen_items: continue
                         if require_owned and smart_target:
                             status_id=identity.split(":",1)[1] if identity and ":" in identity else ""
-                            if status_id not in target_status_ids:
+                            # Recheck type so older scan inventories cannot cross Posts/Replies.
+                            if status_id not in target_status_ids or is_reply_article(article)!=(mode=="replies"):
                                 if identity: seen_items.add(identity)
                                 continue
                         did=delete_own_post(page,article,dry_run,delay,handle,mode) if require_owned else undo_repost(page,article,dry_run,delay) if mode=="reposts" else unlike_post(page,article,dry_run,delay)
