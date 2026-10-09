@@ -80,6 +80,27 @@ def test_only_selected_owned_ids_of_correct_type_reach_delete(worker, mode, dry_
     ns["unlike_post"].assert_not_called()
 
 
+@pytest.mark.parametrize("mode", ["posts", "replies"])
+def test_live_owned_delete_queues_profile_inventory_sync(worker, mode):
+    ns, page = worker
+    selected = article("1", reply=mode == "replies")
+    page.locator.return_value = articles(selected)
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode=mode,
+                              dry_run=False, max_actions=1))
+    assert ns["inventory_queue"].get_nowait() == ("example", "1")
+    assert ns["inventory_queue"].empty()
+
+
+@pytest.mark.parametrize("mode", ["posts", "replies"])
+def test_dry_run_never_queues_profile_inventory_sync(worker, mode):
+    ns, page = worker
+    selected = article("1", reply=mode == "replies")
+    page.locator.return_value = articles(selected)
+    ns["cleaner_worker"](dict(ns["DEFAULTS"], handle="example", mode=mode,
+                              dry_run=True, max_actions=1))
+    assert ns["inventory_queue"].empty()
+
+
 def test_missing_selected_id_does_not_expand_to_other_matching_text(worker):
     ns, page = worker
     page.locator.return_value = articles(article("2"))
@@ -259,6 +280,32 @@ def test_review_empty_selection_fails_closed(ui):
          and w.cget("text") == "TARGET SELECTED").invoke()
     ui["messagebox"].showinfo.assert_called_once()
     assert not ui["selected_target_ids"]
+
+
+def test_inventory_sync_removes_only_confirmed_deleted_ids_and_persists(ui):
+    ui["mode_var"].set("posts")
+    ui["search_var"].set("United")
+    ui["selected_target_ids"].update({"1", "4"})
+    ui["selection_summary_var"].set("TARGET // 2 exact scanned posts status IDs")
+    ui["inventory_queue"].put(("example", "1"))
+    ui["inventory_queue"].put(("example", "4"))
+    ui["inventory_queue"].put(("different_handle", "3"))
+
+    assert ui["apply_inventory_deletions"]() == 2
+    assert {item["status_id"] for item in ui["profile_inventory"]["items"]} == {"2", "3"}
+    assert not ui["selected_target_ids"]
+    assert ui["selection_summary_var"].get() == "TARGET // all matches in current filter"
+    assert ui["search_result_var"].get() == 'MATCHES // 1 // POSTS // "United"'
+    assert {item["status_id"] for item in ui["load_profile_intelligence"]()["items"]} == {"2", "3"}
+
+
+def test_inventory_sync_ignores_unknown_or_already_missing_ids(ui):
+    before=list(ui["profile_inventory"]["items"])
+    ui["inventory_queue"].put(("different_handle", "1"))
+    ui["inventory_queue"].put(("example", "999"))
+
+    assert ui["apply_inventory_deletions"]() == 0
+    assert ui["profile_inventory"]["items"] == before
 
 
 def test_nonmatching_selected_ids_never_fall_back_to_all_matches(ui):
