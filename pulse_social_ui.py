@@ -667,38 +667,69 @@ def poll_logs():
 def button(parent,text,command,bg=PANEL_2,fg=TEXT,width=None): return tk.Button(parent,text=text,command=command,bg=bg,fg=fg,activebackground=ACCENT,activeforeground="white",relief="flat",bd=0,padx=14,pady=8,width=width,font=("Segoe UI",9,"bold"),cursor="hand2")
 def enable_entry_editing(widget):
     menu=tk.Menu(widget,tearoff=0,bg=PANEL_2,fg=TEXT,activebackground=ACCENT,activeforeground="white")
-    def edit_action(sequence):
+    def editable():
+        try: return str(widget.cget("state"))!="disabled"
+        except Exception: return False
+    def selected_text():
         try:
-            if str(widget.cget("state"))!="disabled": widget.event_generate(sequence)
+            if widget.selection_present():
+                return widget.get()[widget.index(tk.SEL_FIRST):widget.index(tk.SEL_LAST)]
+        except Exception: pass
+        return ""
+    def copy_selection(_event=None):
+        text=selected_text()
+        if text:
+            try:
+                widget.clipboard_clear(); widget.clipboard_append(text)
+            except Exception: pass
+        return "break"
+    def cut_selection(_event=None):
+        if not editable(): return "break"
+        text=selected_text()
+        if text:
+            try:
+                widget.clipboard_clear(); widget.clipboard_append(text)
+                widget.delete(tk.SEL_FIRST,tk.SEL_LAST)
+            except Exception: pass
+        return "break"
+    def paste_clipboard(_event=None):
+        if not editable(): return "break"
+        try:
+            text=widget.clipboard_get()
+            if widget.selection_present(): widget.delete(tk.SEL_FIRST,tk.SEL_LAST)
+            widget.insert(tk.INSERT,text)
         except Exception: pass
         return "break"
     def select_all(_event=None):
         try:
-            if str(widget.cget("state"))!="disabled":
+            if editable():
                 widget.selection_range(0,tk.END); widget.icursor(tk.END)
         except Exception: pass
         return "break"
     def show_menu(event):
         try:
             widget.focus_set()
-            enabled="normal" if str(widget.cget("state"))!="disabled" else "disabled"
-            for index in range(4): menu.entryconfig(index,state=enabled)
+            enabled="normal" if editable() else "disabled"
+            menu.entryconfig(0,state=enabled)
+            menu.entryconfig(2,state=enabled)
+            menu.entryconfig(3,state=enabled)
+            menu.entryconfig(1,state="normal")
             menu.tk_popup(event.x_root,event.y_root)
         finally:
             try: menu.grab_release()
             except Exception: pass
         return "break"
-    menu.add_command(label="Cut",command=lambda: edit_action("<<Cut>>"))
-    menu.add_command(label="Copy",command=lambda: edit_action("<<Copy>>"))
-    menu.add_command(label="Paste",command=lambda: edit_action("<<Paste>>"))
+    menu.add_command(label="Cut",command=cut_selection)
+    menu.add_command(label="Copy",command=copy_selection)
+    menu.add_command(label="Paste",command=paste_clipboard)
     menu.add_command(label="Select All",command=select_all)
-    widget.bind("<Control-v>",lambda _event: edit_action("<<Paste>>"))
-    widget.bind("<Control-V>",lambda _event: edit_action("<<Paste>>"))
-    widget.bind("<Shift-Insert>",lambda _event: edit_action("<<Paste>>"))
-    widget.bind("<Control-c>",lambda _event: edit_action("<<Copy>>"))
-    widget.bind("<Control-C>",lambda _event: edit_action("<<Copy>>"))
-    widget.bind("<Control-x>",lambda _event: edit_action("<<Cut>>"))
-    widget.bind("<Control-X>",lambda _event: edit_action("<<Cut>>"))
+    widget.bind("<Control-v>",paste_clipboard)
+    widget.bind("<Control-V>",paste_clipboard)
+    widget.bind("<Shift-Insert>",paste_clipboard)
+    widget.bind("<Control-c>",copy_selection)
+    widget.bind("<Control-C>",copy_selection)
+    widget.bind("<Control-x>",cut_selection)
+    widget.bind("<Control-X>",cut_selection)
     widget.bind("<Control-a>",select_all)
     widget.bind("<Control-A>",select_all)
     widget.bind("<Button-3>",show_menu)
