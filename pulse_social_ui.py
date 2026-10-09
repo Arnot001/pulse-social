@@ -560,23 +560,38 @@ def review_matches():
     if search_var.get().strip(): filter_text+=f'  //  SEARCH "{search_var.get().strip()}"'
     tk.Label(win,text=f"{filter_text}  //  {len(matches)} EXACT SCANNED STATUS IDs",fg=MUTED,bg=BG,font=("Consolas",9)).pack(anchor="w",padx=22,pady=(0,12))
 
+    tk.Label(win,text="CLICK ROWS TO TOGGLE SELECTION  //  NO CTRL KEY REQUIRED",fg=SUCCESS,bg=BG,font=("Consolas",8,"bold")).pack(anchor="w",padx=22,pady=(0,8))
     body=tk.Frame(win,bg=BG); body.pack(fill="both",expand=True,padx=22,pady=(0,10))
-    listbox=tk.Listbox(body,selectmode=tk.EXTENDED,bg="#080c13",fg=TEXT,selectbackground="#39152b",selectforeground=TEXT,relief="flat",bd=0,font=("Consolas",9),activestyle="none",exportselection=False)
+    listbox=tk.Listbox(body,selectmode=tk.MULTIPLE,bg="#080c13",fg=TEXT,selectbackground="#39152b",selectforeground=TEXT,relief="flat",bd=0,font=("Consolas",9),activestyle="none",exportselection=False)
     scroll=tk.Scrollbar(body,command=listbox.yview); listbox.configure(yscrollcommand=scroll.set)
     listbox.pack(side="left",fill="both",expand=True); scroll.pack(side="right",fill="y")
     for item in matches:
         preview=" ".join(str(item.get("text") or "").split())[:145]
         listbox.insert(tk.END,f'{item.get("status_id")}  |  {preview}')
 
-    preview_var=tk.StringVar(value="Select a row to inspect its full scanned text.")
+    preview_var=tk.StringVar(value="Select one or more rows. Click a selected row again to remove it.")
+    review_selection_var=tk.StringVar(value=f"SELECTED // 0 OF {len(matches)}")
     preview_label=tk.Label(win,textvariable=preview_var,fg="#cbd3df",bg=PANEL,justify="left",anchor="nw",wraplength=970,font=("Segoe UI",9),padx=12,pady=10)
     preview_label.pack(fill="x",padx=22,pady=(0,10))
-    def show_review_preview(_event=None):
+    def sync_review_selection(_event=None):
         chosen=listbox.curselection()
-        if not chosen: preview_var.set("Select a row to inspect its full scanned text."); return
-        item=matches[chosen[0]]
-        preview_var.set(str(item.get("text") or ""))
-    listbox.bind("<<ListboxSelect>>",show_review_preview)
+        review_selection_var.set(f"SELECTED // {len(chosen)} OF {len(matches)}")
+        if not chosen:
+            preview_var.set("Select one or more rows. Click a selected row again to remove it."); return
+        try:
+            active=listbox.index(tk.ACTIVE)
+        except Exception:
+            active=chosen[-1]
+        index=active if active in chosen else chosen[-1]
+        preview_var.set(str(matches[index].get("text") or ""))
+    def select_all_review():
+        listbox.selection_set(0,tk.END)
+        if matches: listbox.activate(0)
+        sync_review_selection()
+    def clear_review_selection():
+        listbox.selection_clear(0,tk.END)
+        sync_review_selection()
+    listbox.bind("<<ListboxSelect>>",sync_review_selection)
 
     footer=tk.Frame(win,bg=BG); footer.pack(fill="x",padx=22,pady=(0,18))
     def target_selected(use_all=False):
@@ -588,8 +603,9 @@ def review_matches():
         selection_summary_var.set(f"TARGET // {len(ids)} exact scanned {mode_var.get()} status IDs")
         ui_log(f"SMART TARGET // {len(ids)} exact scanned {mode_var.get()} status IDs selected")
         win.destroy()
-    button(footer,"SELECT ALL",lambda: listbox.selection_set(0,tk.END)).pack(side="left")
-    button(footer,"CLEAR",lambda: listbox.selection_clear(0,tk.END)).pack(side="left",padx=8)
+    button(footer,"SELECT ALL",select_all_review).pack(side="left")
+    button(footer,"CLEAR SELECTION",clear_review_selection).pack(side="left",padx=8)
+    tk.Label(footer,textvariable=review_selection_var,fg=ACCENT,bg=BG,font=("Consolas",9,"bold")).pack(side="left",padx=(8,0))
     button(footer,"TARGET ALL MATCHES",lambda: target_selected(True),bg="#143342").pack(side="right")
     button(footer,"TARGET SELECTED",lambda: target_selected(False),bg=ACCENT).pack(side="right",padx=8)
 
