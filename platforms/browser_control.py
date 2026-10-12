@@ -195,19 +195,34 @@ def dedicated_browser_name() -> str | None:
 
 
 def choose_browser_name(preferred: str | None = None) -> str | None:
-    if browser_spec(preferred) is not None:
-        return browser_spec(preferred).name
+    pdh_extension = bundled_pdh_extension_dir()
 
-    # What the user is actually running now wins over an old saved choice.
-    running = running_browser_names()
+    def eligible(name: str | None) -> bool:
+        spec = browser_spec(name)
+        if spec is None:
+            return False
+        # Official Chrome 137+ ignores --load-extension. When Pulse ships PDH,
+        # choose another supported Chromium brand so the extension can start.
+        return not (
+            pdh_extension is not None
+            and spec.name.casefold() == "chrome"
+        )
+
+    preferred_spec = browser_spec(preferred)
+    if preferred_spec is not None and eligible(preferred_spec.name):
+        return preferred_spec.name
+
+    # What the user is actually running now wins over an old saved choice,
+    # provided that browser can load the bundled PDH extension.
+    running = [name for name in running_browser_names() if eligible(name)]
     if running:
         return running[0]
 
     saved = dedicated_browser_name()
-    if saved:
+    if saved and eligible(saved):
         return saved
 
-    installed = installed_browser_names()
+    installed = [name for name in installed_browser_names() if eligible(name)]
     return installed[0] if installed else None
 
 
@@ -287,6 +302,16 @@ def _pulse_browser_pids(spec: BrowserSpec) -> list[int]:
         return []
 
 
+def _active_pulse_browser_name() -> str | None:
+    """Return the Pulse-owned browser currently exposing CDP, if identifiable."""
+    for spec in _browser_specs():
+        if _installed_exe(spec) is None:
+            continue
+        if _pulse_browser_pids(spec):
+            return spec.name
+    return None
+
+
 def stop_pulse_browser(browser_name: str | None = None) -> tuple[bool, str]:
     """Stop only the dedicated Pulse-profile browser, never the user's normal browser."""
     chosen = browser_name or dedicated_browser_name()
@@ -361,10 +386,26 @@ def connect_browser(
     chosen = choose_browser_name(browser_name)
 
     if cdp_responding():
+        active = _active_pulse_browser_name()
+
+        if active is None:
+            return (
+                False,
+                f"CDP :{CDP_PORT} is already in use by a browser Pulse cannot "
+                "identify safely. Pulse will not stop or adopt it.",
+            )
+
+        if chosen and active.casefold() == chosen.casefold():
+            _save_state(active)
+            return True, f"{active.upper()} // CONNECTED // CDP :{CDP_PORT}"
+
         if chosen:
-            _save_state(chosen)
-            return True, f"{chosen.upper()} // CONNECTED // CDP :{CDP_PORT}"
-        return True, f"CONNECTED // CDP :{CDP_PORT}"
+            ok, message = stop_pulse_browser(active)
+            if not ok:
+                return False, message
+        else:
+            _save_state(active)
+            return True, f"{active.upper()} // CONNECTED // CDP :{CDP_PORT}"
 
     if not chosen:
         return False, "No supported Brave, Chrome or Edge installation was found."

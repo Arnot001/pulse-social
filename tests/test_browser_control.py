@@ -137,3 +137,94 @@ def test_stop_pulse_browser_kills_profile_pid_not_browser_image(monkeypatch):
     assert ok is True
     assert "stopped" in message.lower()
     assert calls == [["taskkill", "/PID", "4321", "/T", "/F"]]
+
+
+
+def test_packaged_pdh_skips_official_chrome_and_chooses_brave(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        browser_control,
+        "bundled_pdh_extension_dir",
+        lambda: tmp_path / "pdh_extension",
+    )
+    monkeypatch.setattr(browser_control, "running_browser_names", lambda: ["Chrome"])
+    monkeypatch.setattr(browser_control, "dedicated_browser_name", lambda: "Chrome")
+    monkeypatch.setattr(
+        browser_control,
+        "installed_browser_names",
+        lambda: ["Brave", "Chrome", "Edge"],
+    )
+
+    assert browser_control.choose_browser_name() == "Brave"
+
+
+def test_without_bundled_pdh_preserves_existing_chrome_choice(monkeypatch):
+    monkeypatch.setattr(browser_control, "bundled_pdh_extension_dir", lambda: None)
+    monkeypatch.setattr(browser_control, "running_browser_names", lambda: ["Chrome"])
+    monkeypatch.setattr(browser_control, "dedicated_browser_name", lambda: "Brave")
+    monkeypatch.setattr(
+        browser_control,
+        "installed_browser_names",
+        lambda: ["Brave", "Chrome", "Edge"],
+    )
+
+    assert browser_control.choose_browser_name() == "Chrome"
+
+
+
+def test_connect_browser_replaces_stale_pulse_chrome_with_brave(monkeypatch, tmp_path):
+    brave = browser_control.BrowserSpec(
+        "Brave", "brave.exe", (tmp_path / "brave.exe",)
+    )
+    chrome = browser_control.BrowserSpec(
+        "Chrome", "chrome.exe", (tmp_path / "chrome.exe",)
+    )
+    launched = []
+    stopped = []
+
+    monkeypatch.setattr(browser_control, "choose_browser_name", lambda preferred=None: "Brave")
+    monkeypatch.setattr(
+        browser_control,
+        "browser_spec",
+        lambda name: {"Brave": brave, "Chrome": chrome}.get(name),
+    )
+    monkeypatch.setattr(browser_control, "_installed_exe", lambda spec: spec.paths[0])
+    monkeypatch.setattr(browser_control, "_active_pulse_browser_name", lambda: "Chrome")
+    responding = iter([True, False, True])
+    monkeypatch.setattr(browser_control, "cdp_responding", lambda: next(responding))
+    monkeypatch.setattr(
+        browser_control,
+        "stop_pulse_browser",
+        lambda name=None: stopped.append(name) or (True, "stopped"),
+    )
+    monkeypatch.setattr(browser_control, "_save_state", lambda name: None)
+    monkeypatch.setattr(browser_control.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        browser_control.subprocess,
+        "Popen",
+        lambda args, creationflags=0: launched.append(args),
+    )
+
+    ok, message = browser_control.connect_browser()
+
+    assert ok is True
+    assert message.startswith("BRAVE // CONNECTED")
+    assert stopped == ["Chrome"]
+    assert len(launched) == 1
+    assert any(str(arg).endswith("brave.exe") for arg in launched[0][:1])
+
+
+def test_connect_browser_never_adopts_or_kills_unknown_cdp_owner(monkeypatch):
+    monkeypatch.setattr(browser_control, "choose_browser_name", lambda preferred=None: "Brave")
+    monkeypatch.setattr(browser_control, "cdp_responding", lambda: True)
+    monkeypatch.setattr(browser_control, "_active_pulse_browser_name", lambda: None)
+    stop = __import__("unittest.mock", fromlist=["Mock"]).Mock()
+    launch = __import__("unittest.mock", fromlist=["Mock"]).Mock()
+    monkeypatch.setattr(browser_control, "stop_pulse_browser", stop)
+    monkeypatch.setattr(browser_control.subprocess, "Popen", launch)
+
+    ok, message = browser_control.connect_browser()
+
+    assert ok is False
+    assert "cannot identify safely" in message
+    stop.assert_not_called()
+    launch.assert_not_called()

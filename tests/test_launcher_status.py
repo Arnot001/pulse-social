@@ -148,7 +148,7 @@ def launcher(monkeypatch):
 def test_main_page_launches_or_reuses_pulse_profile_with_bundled_pdh(
     monkeypatch, tmp_path, launcher, already_open,
 ):
-    spec = browser.BrowserSpec("Chrome", "chrome.exe", (tmp_path / "chrome.exe",))
+    spec = browser.BrowserSpec("Brave", "brave.exe", (tmp_path / "brave.exe",))
     profiles = tmp_path / "BrowserProfiles"
     extension = tmp_path / "pdh_extension"
     extension.mkdir()
@@ -158,6 +158,10 @@ def test_main_page_launches_or_reuses_pulse_profile_with_bundled_pdh(
     monkeypatch.setattr(browser, "BROWSER_PROFILE_ROOT", profiles)
     monkeypatch.setattr(browser, "_browser_specs", lambda: (spec,))
     monkeypatch.setattr(browser, "_installed_exe", lambda value: spec.paths[0])
+    monkeypatch.setattr(browser, "running_browser_names", lambda: ["Brave"])
+    monkeypatch.setattr(browser, "dedicated_browser_name", lambda: "Brave")
+    monkeypatch.setattr(browser, "_active_pulse_browser_name", lambda: "Brave")
+    launcher.namespace["pdh_browser_status"].__globals__["running_browser_names"] = lambda: ["Brave"]
     monkeypatch.setattr(browser, "_save_state", MagicMock())
     ready = already_open
     monkeypatch.setattr(browser, "cdp_responding", lambda: ready)
@@ -194,18 +198,18 @@ def test_main_page_launches_or_reuses_pulse_profile_with_bundled_pdh(
     assert process.call_count == (0 if already_open else 1)
     if not already_open:
         args = process.call_args.args[0]
-        assert f"--user-data-dir={profiles / 'chrome'}" in args
+        assert f"--user-data-dir={profiles / 'brave'}" in args
         assert "--remote-debugging-port=9222" in args
         assert f"--load-extension={extension.resolve()}" in args
         assert "--restore-last-session" in args
 
     launcher.complete(2)
     launcher.tick()
-    launcher.variable.set.assert_called_with("CHROME OPEN // WAITING FOR PDH")
+    launcher.variable.set.assert_called_with("BRAVE OPEN // WAITING FOR PDH")
     launcher.connection["pdhConnected"] = True
     launcher.complete(3)
     launcher.tick()
-    launcher.variable.set.assert_called_with("CHROME OPEN // PDH CONNECTED")
+    launcher.variable.set.assert_called_with("BRAVE OPEN // PDH CONNECTED")
 
     # A later click reuses the endpoint without spawning a second browser.
     open_button.command()
