@@ -10,7 +10,7 @@ from tkinter import messagebox
 from playwright.sync_api import sync_playwright, TimeoutError
 from platforms.browser_control import CDP_PORT, CDP_URL, cdp_responding, restart_pulse_browser
 from platforms.x.browser_session import open_x_browser
-from platforms.x.direct_cleanup import DIRECT_UNAVAILABLE, try_direct_target
+from platforms.x.direct_cleanup import DIRECT_MODE_MISMATCH, DIRECT_UNAVAILABLE, try_direct_target
 from platforms.x.profile_intelligence import ALL_TOPIC, TOPIC_LABELS, classify_text, filter_inventory, inventory_counts, ranked_inventory
 
 APP_DIR = os.path.join(os.environ["LOCALAPPDATA"], "Pulse Social")
@@ -26,7 +26,7 @@ PROFILE_SCAN_LIMIT_PER_MODE = 400
 
 BG = "#07090f"; PANEL = "#0d111b"; PANEL_2 = "#121827"; BORDER = "#20283a"; TEXT = "#f5f7fb"; MUTED = "#8993a6"; ACCENT = "#ff008c"; SUCCESS = "#35d07f"; DANGER = "#ff4057"
 DEFAULTS = {"handle":"", "mode":"posts", "dry_run":True, "run_until_empty":False, "max_actions":10, "delay":3, "refresh_every":25, "topic_filter":ALL_TOPIC, "search_query":""}
-log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue(); intel_queue = queue.Queue(); inventory_queue = queue.Queue(); unavailable_inventory_queue = queue.Queue()
+log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue(); intel_queue = queue.Queue(); inventory_queue = queue.Queue(); unavailable_inventory_queue = queue.Queue(); reclassified_inventory_queue = queue.Queue()
 selected_target_ids = set()
 category_buttons = {}
 
@@ -395,7 +395,7 @@ def cleaner_worker(settings):
                 ui_log(f"SMART TARGET // {topic_label}{search_label} // {len(target_status_ids)} scanned {mode} IDs")
             if until_empty: ui_log("Run-until-empty enabled: Pulse will stop only after repeated passes find no new matching items.")
             actions=0; stale_rounds=0; seen_items=set(); empty_threshold=8
-            remaining_target_ids=set(target_status_ids); discovered_status_ids=set(); search_exhausted=False; direct_unavailable=0
+            remaining_target_ids=set(target_status_ids); discovered_status_ids=set(); search_exhausted=False; direct_unavailable=0; direct_reclassified=0
             target_path=x_path(url)
             if smart_target:
                 ui_log(f"SMART DIRECT // {mode.upper()} // {len(target_status_ids)} exact targets")
@@ -408,13 +408,21 @@ def cleaner_worker(settings):
                         if direct_result==DIRECT_UNAVAILABLE:
                             direct_unavailable+=1
                             if not dry_run: unavailable_inventory_queue.put((handle,status_id))
+                        elif direct_result==DIRECT_MODE_MISMATCH:
+                            direct_reclassified+=1
+                            actual_mode="replies" if mode=="posts" else "posts"
+                            ui_log(f"SMART TARGET TYPE FIX // {status_id} // {mode.upper()} -> {actual_mode.upper()}")
+                            if not dry_run: reclassified_inventory_queue.put((handle,status_id,actual_mode))
                         else:
                             actions+=1
                             if not dry_run: inventory_queue.put((handle,status_id))
                         ui_log(f"SMART TARGET // {len(remaining_target_ids)} OF {len(target_status_ids)} REMAINING")
                 if not remaining_target_ids:
-                    if direct_unavailable:
-                        ui_log(f"SMART DIRECT COMPLETE // {len(target_status_ids)}/{len(target_status_ids)} resolved // {direct_unavailable} unavailable")
+                    details=[]
+                    if direct_unavailable: details.append(f"{direct_unavailable} unavailable")
+                    if direct_reclassified: details.append(f"{direct_reclassified} reclassified")
+                    if details:
+                        ui_log(f"SMART DIRECT COMPLETE // {len(target_status_ids)}/{len(target_status_ids)} resolved // " + " // ".join(details))
                     else:
                         ui_log(f"SMART DIRECT COMPLETE // {actions}/{len(target_status_ids)} processed")
                 elif not stop_event.is_set():
@@ -495,7 +503,7 @@ def cleaner_worker(settings):
                         break
             if smart_target:
                 if not remaining_target_ids:
-                    result_word="resolved" if direct_unavailable else "processed"
+                    result_word="resolved" if (direct_unavailable or direct_reclassified) else "processed"
                     ui_log(f"SMART TARGET COMPLETE // {len(target_status_ids)} OF {len(target_status_ids)} exact statuses {result_word}")
                 elif search_exhausted and not stop_event.is_set():
                     ui_log(f"SMART TARGET SEARCH EXHAUSTED // {len(remaining_target_ids)} of {len(target_status_ids)} selected IDs remain unresolved")
@@ -705,7 +713,7 @@ def copy_log():
 def clear_log_view(): log_box.delete("1.0",tk.END); status_var.set("LOG VIEW CLEARED")
 def toggle_until_empty(): max_actions_entry.config(state="disabled" if until_empty_var.get() else "normal")
 def apply_inventory_deletions():
-    deleted_ids=set(); unavailable_ids=set()
+    deleted_ids=set(); unavailable_ids=set(); reclassified_modes={}
     inventory_handle=str(profile_inventory.get("handle") or "").lstrip("@").casefold()
     while not inventory_queue.empty():
         handle,status_id=inventory_queue.get()
@@ -715,27 +723,63 @@ def apply_inventory_deletions():
         handle,status_id=unavailable_inventory_queue.get()
         if str(handle or "").lstrip("@").casefold()==inventory_handle:
             unavailable_ids.add(str(status_id))
+    while not reclassified_inventory_queue.empty():
+        handle,status_id,new_mode=reclassified_inventory_queue.get()
+        if (str(handle or "").lstrip("@").casefold()==inventory_handle
+                and new_mode in ("posts","replies")):
+            reclassified_modes[str(status_id)]=new_mode
+
     unavailable_ids.difference_update(deleted_ids)
     removable_ids=deleted_ids | unavailable_ids
-    if not removable_ids: return 0
+    for status_id in removable_ids:
+        reclassified_modes.pop(status_id,None)
+
     items=profile_inventory.get("items") or []
     removed={str(item.get("status_id")) for item in items if str(item.get("status_id")) in removable_ids}
-    if not removed: return 0
-    profile_inventory["items"]=[item for item in items if str(item.get("status_id")) not in removed]
+    updated_items=[]; changed_modes={}
+    for item in items:
+        status_id=str(item.get("status_id"))
+        if status_id in removed:
+            continue
+        current=dict(item)
+        new_mode=reclassified_modes.get(status_id)
+        if new_mode and current.get("mode")!=new_mode:
+            changed_modes[status_id]=(str(current.get("mode") or ""),new_mode)
+            current["mode"]=new_mode
+        updated_items.append(current)
+
+    if not removed and not changed_modes:
+        return 0
+
+    profile_inventory["items"]=updated_items
     save_profile_intelligence(profile_inventory)
-    selected_target_ids.difference_update(removed)
+
+    resolved_ids=removed | set(changed_modes)
+    selected_target_ids.difference_update(resolved_ids)
     if selected_target_ids:
         selection_summary_var.set(f"TARGET // {len(selected_target_ids)} exact scanned {mode_var.get()} status IDs")
     else:
         selection_summary_var.set("TARGET // all matches in current filter")
+
     refresh_topic_cards(profile_inventory); update_match_summary()
+
     removed_deleted=removed & deleted_ids
     removed_unavailable=removed & unavailable_ids
     if removed_deleted:
         ui_log(f"PROFILE INTELLIGENCE SYNC // removed {len(removed_deleted)} deleted status ID(s)")
     if removed_unavailable:
         ui_log(f"PROFILE INTELLIGENCE SYNC // pruned {len(removed_unavailable)} unavailable status ID(s)")
-    return len(removed)
+    if changed_modes:
+        transitions={}
+        for old_mode,new_mode in changed_modes.values():
+            old_label=(old_mode or "unknown").upper()
+            key=f"{old_label}->{new_mode.upper()}"
+            transitions[key]=transitions.get(key,0)+1
+        detail=", ".join(f"{key} {count}" for key,count in sorted(transitions.items()))
+        ui_log(f"PROFILE INTELLIGENCE SYNC // reclassified {len(changed_modes)} status ID(s) by X metadata // {detail}")
+
+    return len(removed)+len(changed_modes)
+
 def poll_logs():
     changed=False
     while not log_queue.empty(): log_box.insert(tk.END,log_queue.get()+"\n"); changed=True

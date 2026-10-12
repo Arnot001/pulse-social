@@ -612,7 +612,7 @@ def test_direct_navigation_verifies_and_acts_only_on_focal_article(direct_page, 
     assert page.locator('a[href="/stranger/status/8"]').count() == 1
 
 
-@pytest.mark.parametrize("problem", ["wrong_id", "wrong_author", "post_is_reply", "reply_is_post",
+@pytest.mark.parametrize("problem", ["wrong_id", "wrong_author",
                                      "missing_type", "wrong_user_id", "other_response", "no_record"])
 def test_direct_rejects_inconsistent_or_missing_status_metadata(direct_page, problem):
     import threading
@@ -622,8 +622,6 @@ def test_direct_rejects_inconsistent_or_missing_status_metadata(direct_page, pro
     mode, response_id = "posts", "1"
     if problem == "wrong_id": record = tweet_record("2")
     if problem == "wrong_author": record = tweet_record(owner="stranger")
-    if problem == "post_is_reply": record = tweet_record(reply=True)
-    if problem == "reply_is_post": mode = "replies"
     if problem == "missing_type": record["legacy"].pop("conversation_id_str")
     if problem == "wrong_user_id": record["legacy"]["user_id_str"] = "99"
     if problem == "other_response": response_id = "2"
@@ -633,7 +631,6 @@ def test_direct_rejects_inconsistent_or_missing_status_metadata(direct_page, pro
     assert not try_direct_target(page, "example", "1", mode, False, 0, threading.Event(), diagnostics, log)
     reasons = {
         "wrong_id": "focal status not found in TweetDetail", "wrong_author": "author mismatch",
-        "post_is_reply": "expected post, got reply", "reply_is_post": "expected reply, got post",
         "missing_type": "post/reply type unavailable", "wrong_user_id": "author mismatch",
         "other_response": "status ID mismatch (TweetDetail request)",
         "no_record": "focal status not found in TweetDetail",
@@ -642,6 +639,37 @@ def test_direct_rejects_inconsistent_or_missing_status_metadata(direct_page, pro
     assert page.evaluate('window.clicked') == []
     assert page.evaluate('window.deleted') == []
     log.assert_not_called()
+
+
+@pytest.mark.parametrize("requested_mode,actual_mode", [
+    ("posts", "replies"),
+    ("replies", "posts"),
+])
+def test_direct_proven_opposite_mode_is_resolved_without_delete(direct_page, requested_mode, actual_mode):
+    import threading
+    from platforms.x.direct_cleanup import DIRECT_MODE_MISMATCH, try_direct_target
+
+    page, serve = direct_page
+    record = tweet_record(reply=actual_mode == "replies")
+    if actual_mode == "replies":
+        # Real modern X shape: conversation proves reply while parent fields are omitted.
+        record["legacy"].pop("in_reply_to_status_id_str", None)
+
+    serve(status_html(), record)
+    diagnostics, action = Mock(), Mock()
+
+    result = try_direct_target(
+        page, "example", "1", requested_mode, False, 0,
+        threading.Event(), diagnostics, action,
+    )
+
+    assert result == DIRECT_MODE_MISMATCH
+    expected = "REPLY" if requested_mode == "replies" else "POST"
+    actual = "REPLY" if actual_mode == "replies" else "POST"
+    diagnostics.assert_called_once_with(f"DIRECT TYPE MISMATCH // 1 is {actual}, not {expected}")
+    action.assert_not_called()
+    assert page.evaluate("window.clicked") == []
+    assert page.evaluate("window.deleted") == []
 
 
 @pytest.mark.parametrize("problem", ["wrong_id", "wrong_author", "quoted_target", "nested_target",
@@ -698,6 +726,39 @@ def test_one_direct_fallback_does_not_block_other_targets_or_repeat_completed_id
     ns["ensure_target_timeline"].assert_called_once_with(page, expected_url, "example", mode)
     assert [ns["inventory_queue"].get_nowait() for _ in range(3)] == [("example", "2"), ("example", "3"), ("example", "1")]
     assert ns["inventory_queue"].empty()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_proven_direct_mode_mismatch_skips_fallback_and_reclassifies_only_live(worker, dry_run):
+    ns, page = worker
+    ns["try_direct_target"].return_value = ns["DIRECT_MODE_MISMATCH"]
+
+    ns["cleaner_worker"](
+        dict(
+            ns["DEFAULTS"],
+            handle="example",
+            mode="posts",
+            dry_run=dry_run,
+            target_status_ids=["1"],
+        )
+    )
+
+    ns["ensure_target_timeline"].assert_not_called()
+    ns["delete_own_post"].assert_not_called()
+    page.locator.assert_not_called()
+    assert ns["inventory_queue"].empty()
+    assert ns["unavailable_inventory_queue"].empty()
+
+    if dry_run:
+        assert ns["reclassified_inventory_queue"].empty()
+    else:
+        assert ns["reclassified_inventory_queue"].get_nowait() == ("example", "1", "replies")
+        assert ns["reclassified_inventory_queue"].empty()
+
+    logs = queued_logs(ns)
+    assert "SMART TARGET TYPE FIX // 1 // POSTS -> REPLIES" in logs
+    assert "SMART DIRECT COMPLETE // 1/1 resolved // 1 reclassified" in logs
+    assert "SMART TARGET COMPLETE // 1 OF 1 exact statuses resolved" in logs
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
@@ -990,6 +1051,25 @@ def test_explicit_unavailable_target_skips_fallback_and_prunes_only_live(worker,
         assert ns["unavailable_inventory_queue"].get_nowait() == ("example", "1")
         assert ns["unavailable_inventory_queue"].empty()
     assert "SMART DIRECT COMPLETE // 1/1 resolved // 1 unavailable" in queued_logs(ns)
+
+
+def test_inventory_sync_reclassifies_x_proven_mode_and_persists(ui):
+    ui["selected_target_ids"].add("1")
+    ui["reclassified_inventory_queue"].put(("example", "1", "replies"))
+
+    assert ui["apply_inventory_deletions"]() == 1
+
+    by_id={str(item["status_id"]): item for item in ui["profile_inventory"]["items"]}
+    assert by_id["1"]["mode"] == "replies"
+    assert "1" not in ui["selected_target_ids"]
+
+    saved={str(item["status_id"]): item for item in ui["load_profile_intelligence"]()["items"]}
+    assert saved["1"]["mode"] == "replies"
+
+    assert (
+        "PROFILE INTELLIGENCE SYNC // reclassified 1 status ID(s) by X metadata // POSTS->REPLIES 1"
+        in queued_logs(ui)
+    )
 
 
 def test_inventory_sync_prunes_confirmed_unavailable_ids_separately(ui):

@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 VERIFY_SECONDS = 5
 DIRECT_UNAVAILABLE = "unavailable"
+DIRECT_MODE_MISMATCH = "mode_mismatch"
 X_HOSTS = {"x.com", "www.x.com", "twitter.com", "www.twitter.com", "api.x.com", "api.twitter.com"}
 
 
@@ -45,12 +46,17 @@ def status_evidence(payload, handle, status_id):
             conversation = legacy.get("conversation_id_str")
             if not isinstance(conversation, str) or not conversation.isdecimal():
                 return None, "post/reply type unavailable"
-            if isinstance(parent, str) and parent.isdecimal() and parent != status_id and conversation != status_id:
-                evidence.add("replies")
-            elif parent is None and conversation == status_id:
+            # Modern TweetDetail can omit in_reply_to_status_id_str. A different
+            # conversation ID is still positive reply evidence for this exact tweet.
+            if parent is not None and (
+                    not isinstance(parent, str) or not parent.isdecimal() or parent == status_id):
+                return None, "post/reply type unavailable"
+            if conversation == status_id:
+                if parent is not None:
+                    return None, "post/reply type unavailable"
                 evidence.add("posts")
             else:
-                return None, "post/reply type unavailable"
+                evidence.add("replies")
     if not evidence:
         return None, "focal status not found in TweetDetail"
     if len(evidence) != 1:
@@ -189,6 +195,18 @@ def try_direct_target(page, handle, status_id, mode, dry_run, delay, stop_event,
                 return f"expected {expected}, got {actual}"
         return None
 
+    def proven_other_mode():
+        if not proof:
+            return None
+        values = []
+        for value, reason in proof:
+            if reason or value not in ("posts", "replies"):
+                return None
+            values.append(value)
+        if values and len(set(values)) == 1 and values[0] != mode:
+            return values[0]
+        return None
+
     def still_verified():
         if stop_event.is_set():
             return False
@@ -220,22 +238,36 @@ def try_direct_target(page, handle, status_id, mode, dry_run, delay, stop_event,
                     continue
                 return unavailable()
             if proof:
-                reason = proof_failure()
-                if reason:
-                    # A missing Tweet record can accompany X's explicit dead-status page.
-                    # Wait for that positive DOM evidence; all other failures stay fail-closed.
-                    if reason != "focal status not found in TweetDetail":
-                        return fail(reason)
-                else:
+                other_mode = proven_other_mode()
+                if other_mode:
                     candidate = page.evaluate_handle(FOCAL_MENU, args)
-                    menu_handle = candidate.as_element()
-                    if menu_handle is not None:
-                        break
+                    mismatch_menu = candidate.as_element()
+                    if mismatch_menu is not None:
+                        mismatch_menu.dispose()
+                        expected = "REPLY" if mode == "replies" else "POST"
+                        actual = "REPLY" if other_mode == "replies" else "POST"
+                        ui_log(f"DIRECT TYPE MISMATCH // {status_id} is {actual}, not {expected}")
+                        return DIRECT_MODE_MISMATCH
                     candidate.dispose()
+                else:
+                    reason = proof_failure()
+                    if reason:
+                        # A missing Tweet record can accompany X's explicit dead-status page.
+                        # Wait for that positive DOM evidence; all other failures stay fail-closed.
+                        if reason != "focal status not found in TweetDetail":
+                            return fail(reason)
+                    else:
+                        candidate = page.evaluate_handle(FOCAL_MENU, args)
+                        menu_handle = candidate.as_element()
+                        if menu_handle is not None:
+                            break
+                        candidate.dispose()
             if time.monotonic() >= deadline:
                 if explicitly_unavailable():
                     continue
                 if proof:
+                    if proven_other_mode():
+                        return fail(page.evaluate(FOCAL_REASON, args))
                     reason = proof_failure()
                     if reason:
                         return fail(reason)
