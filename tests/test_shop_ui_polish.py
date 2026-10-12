@@ -130,3 +130,18 @@ def test_control_deck_fits_supported_window_sizes(shop,size):
     assert log.winfo_rooty()+log.winfo_height() <= shop.window.winfo_rooty()+shop.window.winfo_height()
     assert shop.tree.winfo_height()>100
     assert shop.button('COLLECT CATEGORY').master.master==shop.button('CLEAR ITEMS').master.master
+
+
+@pytest.mark.parametrize("ok,message", [(True, "CONNECTED // EXISTING TIKTOK SHOP TAB"), (False, "Browser unavailable")])
+def test_shop_open_queues_browser_activation_without_blocking_dashboard(shop, monkeypatch, ok, message):
+    from unittest.mock import Mock
+    open_browser = Mock(return_value=(ok, message))
+    monkeypatch.setattr(shop_ui, "open_tiktok_browser", open_browser)
+    assert len([job for job in shop.jobs if job.target.__name__ == "open_shop_browser"]) == 1
+    open_browser.assert_not_called()
+    shop.run("open_shop_browser")
+    open_browser.assert_called_once_with(shop=True)
+    log = next(w for w in descendants(shop.window) if isinstance(w, tk.Text))
+    assert message in log.get("1.0", "end")
+    assert shop.button("COLLECT CATEGORY").cget("state") == "normal"
+    assert not any(job.target.__name__ == "collect_worker" for job in shop.jobs)

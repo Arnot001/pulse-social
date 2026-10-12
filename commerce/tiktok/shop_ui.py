@@ -10,6 +10,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from platforms.pdh_bridge import bridge_status
+from platforms.tiktok.browser_session import open_tiktok_browser
 
 from ..pc_market import fingerprint_pc, market_value
 from ..pc_market_sources import collect_market_references, market_diagnostics
@@ -597,4 +598,9 @@ def open_shop_window(parent: tk.Misc) -> tk.Toplevel:
             try: window.after_cancel(ambient_after_id[0])
             except tk.TclError: pass
         window.destroy()
+    def open_shop_browser():
+        if stop_watch.is_set(): return
+        _ok,message=open_tiktok_browser(shop=True)
+        if not stop_watch.is_set(): write(message)
+    threading.Thread(target=open_shop_browser,daemon=True).start()
     window.protocol("WM_DELETE_WINDOW",close); refresh(); poll_pdh(); return window

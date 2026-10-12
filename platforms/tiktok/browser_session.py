@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import time
 import urllib.request
+from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
 
 from platforms.browser_control import CDP_PORT, CDP_URL, connect_browser, port_open
 
 TIKTOK_URL = "https://www.tiktok.com/"
+TIKTOK_SHOP_URL = "https://shop.tiktok.com/gb/c"
 
 
 def _port_open() -> bool:
@@ -38,10 +40,12 @@ def tiktok_browser_status() -> str:
     return "CONNECTED // NO TIKTOK TAB"
 
 
-def open_tiktok_browser() -> tuple[bool, str]:
+def open_tiktok_browser(*, shop: bool = False) -> tuple[bool, str]:
     """Open or focus TikTok inside the dedicated Pulse Chromium browser."""
+    target_url = TIKTOK_SHOP_URL if shop else TIKTOK_URL
+    label = "TIKTOK SHOP" if shop else "TIKTOK"
     if not _port_open():
-        ok, message = connect_browser(start_url=TIKTOK_URL)
+        ok, message = connect_browser(start_url=target_url)
         if not ok:
             return False, message
 
@@ -58,17 +62,20 @@ def open_tiktok_browser() -> tuple[bool, str]:
                     for context in browser.contexts:
                         for page in context.pages:
                             try:
-                                if "tiktok.com" in page.url.lower():
+                                url = page.url.lower()
+                                matches = (urlparse(url).hostname == "shop.tiktok.com" if shop
+                                           else "tiktok.com" in url)
+                                if matches:
                                     page.bring_to_front()
-                                    return True, "CONNECTED // EXISTING TIKTOK TAB"
+                                    return True, f"CONNECTED // EXISTING {label} TAB"
                             except Exception:
                                 pass
 
                     context = browser.contexts[0]
                     page = context.new_page()
-                    page.goto(TIKTOK_URL, wait_until="domcontentloaded", timeout=30000)
+                    page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
                     page.bring_to_front()
-                    return True, "CONNECTED // TIKTOK OPENED"
+                    return True, f"CONNECTED // {label} OPENED"
         except Exception as exc:
             last_error = exc
 
@@ -77,6 +84,6 @@ def open_tiktok_browser() -> tuple[bool, str]:
 
     return (
         False,
-        "Could not attach TikTok to the dedicated Pulse browser after 3 attempts: "
+        f"Could not attach {label} to the dedicated Pulse browser after 3 attempts: "
         f"{last_error}",
     )
