@@ -122,8 +122,9 @@ UNAVAILABLE_EVIDENCE = r"""({handle, statusId}) => {
         .some(article => article.getClientRects().length);
     if (visibleTweet) return false;
     const text = (document.body ? document.body.innerText : '')
+        .replace(/[\u2018\u2019]/g, "'")
         .replace(/\s+/g, ' ').toLowerCase();
-    return text.includes("this page doesn't exist") || text.includes("this page doesn?t exist");
+    return text.includes("this page doesn't exist");
 }"""
 
 

@@ -586,7 +586,7 @@ def direct_page(direct_browser, monkeypatch):
             if '/graphql/' in request.request.url:
                 request.fulfill(status=200, content_type='application/json', body=json.dumps(payload))
             else:
-                request.fulfill(status=200, content_type='text/html', body=body)
+                request.fulfill(status=200, content_type='text/html; charset=utf-8', body=body)
         page.route('**/*', route)
     yield page, serve
     context.close()
@@ -928,7 +928,7 @@ def test_explicit_unavailable_direct_status_is_resolved_without_delete(direct_pa
     import threading
     from platforms.x.direct_cleanup import DIRECT_UNAVAILABLE, try_direct_target
     page, serve = direct_page
-    serve('<div>Hmm...this page doesn?t exist. Try searching for something else.</div>', {})
+    serve('<div>Hmm...this page doesn\u2019t exist. Try searching for something else.</div>', {})
     diagnostics, action = Mock(), Mock()
 
     result = try_direct_target(
@@ -948,7 +948,7 @@ def test_unavailable_words_cannot_prune_when_a_visible_tweet_exists(direct_page)
     from platforms.x.direct_cleanup import try_direct_target
     page, serve = direct_page
     serve(
-        status_html(extra="<div>Hmm...this page doesn?t exist. Try searching for something else.</div>"),
+        status_html(extra="<div>Hmm...this page doesn\u2019t exist. Try searching for something else.</div>"),
         {},
     )
     diagnostics = Mock()
