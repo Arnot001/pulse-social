@@ -15,7 +15,7 @@ def test_open_tiktok_browser_launches_pulse_browser_when_cdp_is_missing(monkeypa
 
     assert ok is False
     assert message == "launch failed"
-    assert calls == [{"start_url": browser_session.TIKTOK_URL}]
+    assert calls == [{}]
 
 
 def test_open_tiktok_browser_continues_after_successful_pulse_browser_launch(monkeypatch):
@@ -60,7 +60,7 @@ def test_open_tiktok_browser_continues_after_successful_pulse_browser_launch(mon
 
     assert ok is True
     assert message == "CONNECTED // EXISTING TIKTOK TAB"
-    assert calls == [{"start_url": browser_session.TIKTOK_URL}]
+    assert calls == [{}]
 
 
 # These tests use isolated fake browser contexts and never connect to CDP.
@@ -111,11 +111,11 @@ def test_shop_creates_then_reuses_tab_ignoring_lookalike_hosts(monkeypatch):
     browser.close.assert_not_called()
 
 
-def test_shop_starts_shared_adaptive_browser_at_shop_url(monkeypatch):
+def test_shop_starts_shared_browser_without_forcing_duplicate_start_url(monkeypatch):
     _, context, created, _, connect = shop_browser(monkeypatch, [])
     monkeypatch.setattr(browser_session, "_port_open", lambda: False)
     assert browser_session.open_tiktok_browser(shop=True)[0]
-    connect.assert_called_once_with(start_url=browser_session.TIKTOK_SHOP_URL)
+    connect.assert_called_once_with()
     context.new_page.assert_called_once()
     created.bring_to_front.assert_called_once()
 
@@ -184,3 +184,37 @@ def test_read_shop_html_never_treats_security_check_as_taxonomy(monkeypatch):
     import pytest
     with pytest.raises(RuntimeError, match="Security Check"):
         browser_session.read_tiktok_shop_html(timeout_seconds=0.2)
+
+
+
+def test_shop_launch_reuses_restored_tab_after_starting_browser(monkeypatch):
+    pages, context, _, _, connect = shop_browser(monkeypatch, [
+        "https://www.tiktok.com/",
+        "https://shop.tiktok.com/gb/c",
+        "https://x.com/home",
+    ])
+    monkeypatch.setattr(browser_session, "_port_open", lambda: False)
+
+    ok, message = browser_session.open_tiktok_browser(shop=True)
+
+    assert ok is True
+    assert message == "CONNECTED // EXISTING TIKTOK SHOP TAB"
+    connect.assert_called_once_with()
+    pages[1].bring_to_front.assert_called_once()
+    context.new_page.assert_not_called()
+
+
+def test_taxonomy_launch_reuses_restored_category_tab_without_forcing_url(monkeypatch):
+    pages, context, _, _, connect = shop_browser(monkeypatch, [
+        "https://shop.tiktok.com/gb/c",
+    ])
+    monkeypatch.setattr(browser_session, "_port_open", lambda: False)
+    pages[0].content.return_value = (
+        '<html><script>{"category_id":"1","category_name":"Phones"}</script></html>'
+    )
+
+    html = browser_session.read_tiktok_shop_html(timeout_seconds=1)
+
+    assert '"category_id":"1"' in html
+    connect.assert_called_once_with()
+    context.new_page.assert_not_called()

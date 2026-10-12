@@ -51,7 +51,7 @@ def read_tiktok_shop_html(timeout_seconds: float = 30.0) -> str:
     last_error: Exception | None = None
 
     if not _port_open():
-        ok, message = connect_browser(start_url=TIKTOK_SHOP_URL)
+        ok, message = connect_browser()
         if not ok:
             raise RuntimeError(message)
 
@@ -120,7 +120,7 @@ def open_tiktok_browser(*, shop: bool = False) -> tuple[bool, str]:
     target_url = TIKTOK_SHOP_URL if shop else TIKTOK_URL
     label = "TIKTOK SHOP" if shop else "TIKTOK"
     if not _port_open():
-        ok, message = connect_browser(start_url=target_url)
+        ok, message = connect_browser()
         if not ok:
             return False, message
 
