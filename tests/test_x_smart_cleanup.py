@@ -134,6 +134,15 @@ def test_scan_classifies_mixed_timelines_and_deduplicates_status_ids(worker):
     assert {item["status_id"]: item["mode"] for item in inventory} == {
         "1": "posts", "2": "replies", "3": "posts", "4": "replies"}
     assert len(inventory) == 4
+
+    progress=[]
+    while not ns["intel_queue"].empty():
+        kind,payload=ns["intel_queue"].get_nowait()
+        if kind=="progress":
+            progress.append(payload)
+    assert [len(payload["items"]) for payload in progress] == [2,4]
+    assert progress[-1]["handle"] == "example"
+
     ns["save_profile_intelligence"]({"handle": "example", "items": inventory})
     assert ns["load_profile_intelligence"]()["items"] == inventory
 
@@ -373,6 +382,40 @@ def test_topic_cards_lock_through_scan_or_live_cleanup_until_completion(ui, task
     ui["poll_logs"]()
     assert not ui["worker_active"].get()
     assert all(w.cget("state") == "normal" for w in ui["category_buttons"].values())
+
+
+def test_profile_scan_progress_updates_search_count_without_finishing_or_saving(ui):
+    ui["mode_var"].set("posts")
+    ui["search_var"].set("LFC")
+
+    saved={
+        "handle":"example",
+        "scanned_at":"saved",
+        "items":[{"status_id":"old","mode":"posts","topic":"other","text":"Old saved item"}],
+    }
+    ui["save_profile_intelligence"](saved)
+    before=Path(ui["PROFILE_INTELLIGENCE_FILE"]).read_bytes()
+
+    ui["worker_active"].set(True)
+    ui["set_controls_locked"](True)
+
+    progress={
+        "handle":"example",
+        "scanned_at":"live",
+        "items":[
+            {"status_id":"10","mode":"posts","topic":"football","text":"LFC first"},
+            {"status_id":"11","mode":"posts","topic":"football","text":"LFC second"},
+            {"status_id":"12","mode":"posts","topic":"football","text":"Different"},
+        ],
+    }
+    ui["intel_queue"].put(("progress",progress))
+    ui["poll_logs"]()
+
+    assert ui["worker_active"].get()
+    assert ui["search_result_var"].get() == 'MATCHES // 2 // POSTS // "LFC"'
+    assert {item["status_id"] for item in ui["profile_inventory"]["items"]} == {"10","11","12"}
+    assert Path(ui["PROFILE_INTELLIGENCE_FILE"]).read_bytes() == before
+    assert ui["intel_summary_var"].get() == "@example // 3 FOUND // SCANNING"
 
 
 def queued_logs(ns):

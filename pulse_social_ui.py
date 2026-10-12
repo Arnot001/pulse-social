@@ -278,6 +278,13 @@ def scan_authored_timeline(page,target_url,handle,mode,seen,items,max_items):
         if added:
             stale_rounds=0
             ui_log(f"PROFILE SCAN // {mode.upper()} // +{added} // {mode_added} THIS TIMELINE // {len(items)} UNIQUE TOTAL")
+            # Send an immutable snapshot to Tk's main thread so search/match
+            # counts can climb live without saving a partial scan to disk.
+            intel_queue.put(("progress", {
+                "handle":handle.strip().lstrip("@"),
+                "scanned_at":datetime.now().isoformat(timespec="seconds"),
+                "items":[dict(item) for item in items],
+            }))
         else:
             stale_rounds+=1
             ui_log(f"PROFILE SCAN // {mode.upper()} // loading older items {stale_rounds}/{empty_threshold}")
@@ -551,7 +558,16 @@ def start_profile_scan():
     if worker_active.get(): ui_log("Another Pulse Social task is already active."); return
     handle=handle_var.get().strip()
     if not handle: messagebox.showerror("Missing handle","Enter your X handle first."); return
-    worker_active.set(True); stop_event.clear(); set_controls_locked(True); arm_btn.config(state="disabled"); stop_btn.config(state="normal")
+    clean=handle.lstrip("@")
+    worker_active.set(True); stop_event.clear()
+    # Start the visible scan at zero. This is only an in-memory preview;
+    # profile_intelligence.json is not replaced until the worker completes/stops.
+    profile_inventory.clear()
+    profile_inventory.update({"handle":clean,"scanned_at":"","items":[]})
+    clear_selected_targets(quiet=True)
+    intel_summary_var.set(f"@{clean} // 0 FOUND // SCANNING")
+    update_match_summary()
+    set_controls_locked(True); arm_btn.config(state="disabled"); stop_btn.config(state="normal")
     status_var.set("PROFILE INTELLIGENCE // SCANNING // READ ONLY"); status_label.config(fg=SUCCESS)
     threading.Thread(target=profile_scan_worker,args=(handle,),daemon=True).start()
 
@@ -605,7 +621,8 @@ def current_inventory_matches():
     )
 
 def update_match_summary():
-    if not profile_inventory.get("items"):
+    items=profile_inventory.get("items") or []
+    if not items and not profile_inventory.get("handle"):
         search_result_var.set("SEARCH // scan the profile to build the local inventory")
         return
     matches=current_inventory_matches()
@@ -786,11 +803,26 @@ def poll_logs():
     if changed: log_box.see(tk.END)
     while not intel_queue.empty():
         kind,payload=intel_queue.get()
+        if kind=="progress":
+            if worker_active.get():
+                scan_handle=str(payload.get("handle") or "").lstrip("@").casefold()
+                active_handle=handle_var.get().strip().lstrip("@").casefold()
+                if scan_handle and scan_handle==active_handle:
+                    profile_inventory.clear(); profile_inventory.update(payload)
+                    intel_summary_var.set(
+                        f"@{payload.get('handle')} // {len(payload.get('items') or [])} FOUND // SCANNING"
+                    )
+                    update_match_summary()
+            continue
         worker_active.set(False); set_controls_locked(False); toggle_until_empty(); arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
         if kind=="done":
             profile_inventory.clear(); profile_inventory.update(payload); clear_selected_targets(quiet=True); refresh_topic_cards(profile_inventory); update_match_summary()
             status_var.set(f"PROFILE INTELLIGENCE READY // {len(profile_inventory.get('items',[]))} ITEMS"); status_label.config(fg=SUCCESS)
         else:
+            # A failed scan never replaces the last successfully saved inventory.
+            saved=load_profile_intelligence()
+            profile_inventory.clear(); profile_inventory.update(saved)
+            clear_selected_targets(quiet=True); refresh_topic_cards(profile_inventory); update_match_summary()
             status_var.set("PROFILE INTELLIGENCE FAILED"); status_label.config(fg=DANGER)
     while not run_state_queue.empty():
         state,dry_run,mode,limit_label=run_state_queue.get()
