@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from .category_collector import extract_json_payloads, fetch_category_page
+from platforms.tiktok.browser_session import read_tiktok_shop_html
+
+from .category_collector import extract_json_payloads
 
 ALL_CATEGORIES_URL = "https://shop.tiktok.com/gb/c"
 
@@ -56,7 +58,9 @@ def categories_from_payloads(payloads: list[Any]) -> list[TikTokCategory]:
 
 
 def fetch_categories(url: str = ALL_CATEGORIES_URL) -> list[TikTokCategory]:
-    html = fetch_category_page(url)
+    if url.rstrip("/") != ALL_CATEGORIES_URL:
+        raise ValueError("TikTok taxonomy must be loaded from the UK all-categories page.")
+    html = read_tiktok_shop_html()
     return categories_from_payloads(extract_json_payloads(html))
 
 

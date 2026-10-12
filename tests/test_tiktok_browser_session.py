@@ -128,3 +128,59 @@ def test_shop_launch_failure_is_reported_without_attaching(monkeypatch):
     monkeypatch.setattr(browser_session, "sync_playwright", playwright)
     assert browser_session.open_tiktok_browser(shop=True) == (False, "launch failed")
     playwright.assert_not_called()
+
+
+
+def test_read_shop_html_uses_existing_category_tab_without_touching_other_tabs(monkeypatch):
+    pages, context, _, browser, connect = shop_browser(monkeypatch, [
+        "https://www.tiktok.com/",
+        "https://x.com/home",
+        "https://shop.tiktok.com/gb/c",
+    ])
+    pages[2].content.return_value = (
+        '<html><script>{"category_id":"1","category_name":"Phones"}</script></html>'
+    )
+
+    html = browser_session.read_tiktok_shop_html(timeout_seconds=1)
+
+    assert '"category_id":"1"' in html
+    pages[2].goto.assert_not_called()
+    pages[0].goto.assert_not_called()
+    pages[1].goto.assert_not_called()
+    context.new_page.assert_not_called()
+    connect.assert_not_called()
+    browser.close.assert_not_called()
+
+
+def test_read_shop_html_opens_new_category_tab_without_hijacking_product_tab(monkeypatch):
+    pages, context, created, _, _ = shop_browser(monkeypatch, [
+        "https://www.tiktok.com/",
+        "https://shop.tiktok.com/gb/pdp/123",
+        "https://x.com/home",
+    ])
+    created.content.return_value = (
+        '<html><script>{"category_id":"1","category_name":"Phones"}</script></html>'
+    )
+
+    html = browser_session.read_tiktok_shop_html(timeout_seconds=1)
+
+    assert '"category_name":"Phones"' in html
+    context.new_page.assert_called_once()
+    created.goto.assert_called_once_with(
+        browser_session.TIKTOK_SHOP_URL,
+        wait_until="domcontentloaded",
+        timeout=30000,
+    )
+    for page in pages[:3]:
+        page.goto.assert_not_called()
+
+
+def test_read_shop_html_never_treats_security_check_as_taxonomy(monkeypatch):
+    pages, _, _, _, _ = shop_browser(monkeypatch, [
+        "https://shop.tiktok.com/gb/c",
+    ])
+    pages[0].content.return_value = "<html><title>Security Check</title></html>"
+
+    import pytest
+    with pytest.raises(RuntimeError, match="Security Check"):
+        browser_session.read_tiktok_shop_html(timeout_seconds=0.2)
