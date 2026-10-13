@@ -46,22 +46,43 @@ class PCMarketTests(unittest.TestCase):
         self.assertEqual(value["typical_price"], 2300)
         self.assertGreater(value["saving_pct"], 17)
         self.assertEqual(value["verdict"], "MARKET DEAL")
-        self.assertEqual(value["rejected_count"], 1)
+        self.assertEqual(value["comparison_basis"], "STRONG")
+        self.assertEqual(value["rejected_count"], 0)
 
-    def test_gpu_variant_mismatch_is_rejected(self):
+    def test_gpu_variant_mismatch_is_related_not_like_for_like(self):
         target = fingerprint_pc("Ryzen 7 7800X3D RTX 5070 Ti 32GB DDR5 1TB SSD")
         other = fingerprint_pc("Ryzen 7 7800X3D RTX 5070 32GB DDR5 1TB SSD")
         score, tier, reasons = comparison_score(target, other)
-        self.assertEqual(score, 0)
-        self.assertEqual(tier, "REJECT")
-        self.assertIn("GPU mismatch", reasons)
+        self.assertGreaterEqual(score, 60)
+        self.assertEqual(tier, "RELATED")
+        self.assertIn("GPU close variant", reasons)
 
-    def test_lower_ram_is_not_used_as_strong_comparable(self):
+    def test_lower_ram_can_still_be_strong_when_cpu_gpu_match(self):
         target = fingerprint_pc("Ryzen 7 7800X3D RTX 5060 Ti 32GB DDR5 1TB SSD")
         other = fingerprint_pc("Ryzen 7 7800X3D RTX 5060 Ti 16GB DDR5 1TB SSD")
-        score, tier, _ = comparison_score(target, other)
-        self.assertLess(score, 75)
-        self.assertEqual(tier, "REJECT")
+        score, tier, reasons = comparison_score(target, other)
+        self.assertGreaterEqual(score, 75)
+        self.assertEqual(tier, "STRONG")
+        self.assertIn("RAM lower", reasons)
+
+    def test_invalid_modern_gtx_label_is_normalised_to_rtx(self):
+        fp = fingerprint_pc("Gaming PC Intel Core i5-12400F GTX 3050 16GB DDR4 1TB SSD")
+        self.assertEqual(fp.gpu, "RTX 3050")
+
+    def test_market_value_falls_back_to_related_products(self):
+        target = fingerprint_pc("Intel Core i5-12400F RTX 3050 16GB DDR4 1TB SSD")
+        listings = [
+            MarketListing("A", "Intel Core i5-12400 RTX 3050 16GB DDR4 1TB SSD", 699),
+            MarketListing("B", "Intel Core i5-12400F RTX 3060 16GB DDR4 1TB SSD", 749),
+        ]
+
+        value = market_value(599, target, listings)
+
+        self.assertEqual(value["status"], "OK")
+        self.assertEqual(value["comparison_basis"], "RELATED_FALLBACK")
+        self.assertEqual(value["related_count"], 2)
+        self.assertEqual(len(value["comparables"]), 2)
+        self.assertLessEqual(value["confidence"], 65)
 
 
 if __name__ == "__main__":

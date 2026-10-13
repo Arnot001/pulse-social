@@ -77,7 +77,11 @@ def fingerprint_pc(title: str, specs: dict | None = None, raw: dict | None = Non
             cpu=token; break
 
     gpu=""; gpu_match=re.search(r"\b((?:rtx|gtx)\s*\d{3,4}(?:\s*ti|\s*super)?|rx\s*\d{4}(?:\s*xt|\s*gre)?)\b",lower,re.I)
-    if gpu_match: gpu=re.sub(r"\s+"," ",gpu_match.group(1)).upper()
+    if gpu_match:
+        gpu=re.sub(r"\s+"," ",gpu_match.group(1)).upper()
+        modern_gtx=re.fullmatch(r"GTX\s+(\d{4})(.*)",gpu,re.I)
+        if modern_gtx and int(modern_gtx.group(1)) >= 2000:
+            gpu=f"RTX {modern_gtx.group(1)}{modern_gtx.group(2)}".strip()
 
     ram=None; ram_values=[]
     for pattern in (r"(?:ram|memory)\D{0,18}(8|12|16|24|32|48|64|96|128)\s*gb",r"\b(8|12|16|24|32|48|64|96|128)\s*gb\s*ddr[345]\b",r"\b(8|12|16|24|32|48|64|96|128)\s*gb\s*(?:ram|memory)\b"):
@@ -97,28 +101,142 @@ def fingerprint_pc(title: str, specs: dict | None = None, raw: dict | None = Non
     return PCFingerprint(cpu=cpu,gpu=gpu,ram_gb=ram,storage_tb=storage,gpu_vram_gb=gpu_vram)
 
 
-def comparison_score(target: PCFingerprint, other: PCFingerprint) -> tuple[int,str,list[str]]:
-    score=0; reasons=[]
-    if not target.cpu or not target.gpu or not other.cpu or not other.gpu: return 0,"REJECT",["missing CPU/GPU"]
-    if _component_token(target.cpu)==_component_token(other.cpu): score+=40; reasons.append("CPU exact")
-    else: return 0,"REJECT",["CPU mismatch"]
-    if _component_token(target.gpu)==_component_token(other.gpu): score+=40; reasons.append("GPU exact")
-    else: return 0,"REJECT",["GPU mismatch"]
-    if target.gpu_vram_gb is not None and other.gpu_vram_gb is not None:
-        if target.gpu_vram_gb==other.gpu_vram_gb: score+=5; reasons.append("VRAM exact")
-        elif other.gpu_vram_gb<target.gpu_vram_gb: return 0,"REJECT",["VRAM lower"]
-        else: score+=2; reasons.append("VRAM higher")
-    if target.ram_gb is not None and other.ram_gb is not None:
-        if other.ram_gb<target.ram_gb: return 0,"REJECT",["RAM lower"]
-        if target.ram_gb==other.ram_gb: score+=7; reasons.append("RAM exact")
-        else: score+=4; reasons.append("RAM higher")
-    if target.storage_tb is not None and other.storage_tb is not None:
-        if other.storage_tb<target.storage_tb: return 0,"REJECT",["storage lower"]
-        if abs(target.storage_tb-other.storage_tb)<0.01: score+=5; reasons.append("storage exact")
-        else: score+=3; reasons.append("storage higher")
-    score=max(0,min(100,score)); tier="EXACT" if score>=90 else "STRONG" if score>=75 else "RELATED" if score>=60 else "REJECT"
-    return score,tier,reasons
+def _cpu_similarity(left: str, right: str) -> tuple[int, str, bool]:
+    a=_component_token(left); b=_component_token(right)
+    if a==b:
+        return 40,"CPU exact",True
 
+    intel_a=re.fullmatch(r"i([3579])(\d{4,5})([a-z0-9]*)",a)
+    intel_b=re.fullmatch(r"i([3579])(\d{4,5})([a-z0-9]*)",b)
+    if intel_a and intel_b:
+        class_a,model_a,suffix_a=intel_a.groups()
+        class_b,model_b,suffix_b=intel_b.groups()
+        if class_a==class_b and model_a==model_b:
+            return 35,"CPU close variant",False
+        gen_a=model_a[:2] if len(model_a)==5 else model_a[:1]
+        gen_b=model_b[:2] if len(model_b)==5 else model_b[:1]
+        if gen_a==gen_b and class_a==class_b:
+            return 28,"CPU same generation/class",False
+        if gen_a==gen_b and abs(int(class_a)-int(class_b)) <= 2:
+            return 20,"CPU same generation",False
+        return 0,"CPU mismatch",False
+
+    amd_a=re.fullmatch(r"ryzen([3579])(\d{4,5})([a-z0-9]*)",a)
+    amd_b=re.fullmatch(r"ryzen([3579])(\d{4,5})([a-z0-9]*)",b)
+    if amd_a and amd_b:
+        class_a,model_a,suffix_a=amd_a.groups()
+        class_b,model_b,suffix_b=amd_b.groups()
+        if class_a==class_b and model_a==model_b:
+            return 35,"CPU close variant",False
+        if model_a[:1]==model_b[:1] and class_a==class_b:
+            return 28,"CPU same generation/class",False
+        if model_a[:1]==model_b[:1] and abs(int(class_a)-int(class_b)) <= 2:
+            return 20,"CPU same generation",False
+        return 0,"CPU mismatch",False
+
+    return 0,"CPU mismatch",False
+
+
+def _gpu_similarity(left: str, right: str) -> tuple[int, str, bool]:
+    a=_component_token(left); b=_component_token(right)
+    if a==b:
+        return 40,"GPU exact",True
+
+    pattern=r"(rtx|gtx|rx)(\d{3,4})(ti|super|xt|gre)?"
+    match_a=re.fullmatch(pattern,a)
+    match_b=re.fullmatch(pattern,b)
+    if not match_a or not match_b:
+        return 0,"GPU mismatch",False
+
+    family_a,model_a,suffix_a=match_a.groups()
+    family_b,model_b,suffix_b=match_b.groups()
+    if family_a != family_b:
+        return 0,"GPU mismatch",False
+
+    if model_a==model_b:
+        return 32,"GPU close variant",False
+
+    if len(model_a)==4 and len(model_b)==4 and model_a[:2]==model_b[:2]:
+        delta=abs(int(model_a[-2:])-int(model_b[-2:]))
+        if delta <= 10:
+            return 24,"GPU adjacent tier",False
+        if delta <= 20:
+            return 18,"GPU nearby tier",False
+
+    return 0,"GPU mismatch",False
+
+
+def comparison_score(target: PCFingerprint, other: PCFingerprint) -> tuple[int,str,list[str]]:
+    if not target.cpu or not target.gpu or not other.cpu or not other.gpu:
+        return 0,"REJECT",["missing CPU/GPU"]
+
+    cpu_score,cpu_reason,cpu_exact=_cpu_similarity(target.cpu,other.cpu)
+    gpu_score,gpu_reason,gpu_exact=_gpu_similarity(target.gpu,other.gpu)
+    if cpu_score == 0:
+        return 0,"REJECT",[cpu_reason]
+    if gpu_score == 0:
+        return 0,"REJECT",[gpu_reason]
+
+    score=cpu_score+gpu_score
+    reasons=[cpu_reason,gpu_reason]
+
+    if target.gpu_vram_gb is not None and other.gpu_vram_gb is not None:
+        if target.gpu_vram_gb==other.gpu_vram_gb:
+            score+=5; reasons.append("VRAM exact")
+        elif other.gpu_vram_gb>target.gpu_vram_gb:
+            score+=3; reasons.append("VRAM higher")
+        else:
+            score+=1; reasons.append("VRAM lower")
+
+    if target.ram_gb is not None and other.ram_gb is not None:
+        if target.ram_gb==other.ram_gb:
+            score+=8; reasons.append("RAM exact")
+        elif other.ram_gb>target.ram_gb:
+            score+=5; reasons.append("RAM higher")
+        elif other.ram_gb >= target.ram_gb/2:
+            score+=3; reasons.append("RAM lower")
+        else:
+            reasons.append("RAM much lower")
+
+    if target.storage_tb is not None and other.storage_tb is not None:
+        if abs(target.storage_tb-other.storage_tb)<0.01:
+            score+=7; reasons.append("storage exact")
+        elif other.storage_tb>target.storage_tb:
+            score+=4; reasons.append("storage higher")
+        elif other.storage_tb >= target.storage_tb/2:
+            score+=2; reasons.append("storage lower")
+        else:
+            reasons.append("storage much lower")
+
+    score=max(0,min(100,score))
+
+    # Exact means the core components match and every target supporting spec
+    # that we know can also be verified as equal on the retailer listing.
+    # Different/missing RAM, storage or VRAM may still be a strong comparable,
+    # but must never masquerade as an exact like-for-like machine.
+    core_exact=cpu_exact and gpu_exact
+    supporting_exact=True
+
+    for target_value, other_value in (
+        (target.gpu_vram_gb, other.gpu_vram_gb),
+        (target.ram_gb, other.ram_gb),
+        (target.storage_tb, other.storage_tb),
+    ):
+        if target_value is not None:
+            if other_value is None or abs(float(target_value)-float(other_value)) >= 0.01:
+                supporting_exact=False
+                break
+
+    if core_exact and supporting_exact and score>=90:
+        tier="EXACT"
+    elif core_exact and score>=75:
+        tier="STRONG"
+    elif score>=60:
+        tier="RELATED"
+    else:
+        tier="REJECT"
+
+    return score,tier,reasons
 
 def comparable(target: PCFingerprint,other: PCFingerprint)->bool:
     score,tier,_=comparison_score(target,other); return score>=75 and tier in {"EXACT","STRONG"}
@@ -128,14 +246,68 @@ def market_value(tiktok_price:float,target:PCFingerprint,listings:list[MarketLis
     ranked=[]; rejected=0
     for listing in listings:
         fp=listing.fingerprint or fingerprint_pc(listing.title); listing.fingerprint=fp; score,tier,reasons=comparison_score(target,fp)
-        if score>=75 and tier in {"EXACT","STRONG"} and listing.price>0: ranked.append((listing,score,tier,reasons))
-        else: rejected+=1
-    if not ranked: return {"status":"NO_COMPARABLES","confidence":0,"comparables":[],"ranked_comparables":[],"rejected_count":rejected}
+        if score>=60 and tier in {"EXACT","STRONG","RELATED"} and listing.price>0:
+            ranked.append((listing,score,tier,reasons))
+        else:
+            rejected+=1
+
+    if not ranked:
+        return {
+            "status":"NO_COMPARABLES",
+            "confidence":0,
+            "comparables":[],
+            "ranked_comparables":[],
+            "rejected_count":rejected,
+        }
+
     deduped=[]; seen=set()
     for row in sorted(ranked,key=lambda x:x[1],reverse=True):
         listing=row[0]; key=(listing.retailer.lower(),_compact(listing.title),round(listing.price,2))
-        if key not in seen: seen.add(key); deduped.append(row)
-    exact=[r for r in deduped if r[2]=="EXACT"]; used=exact if len(exact)>=2 else deduped; prices=[r[0].price for r in used]
-    typical=float(median(prices)); saving=typical-tiktok_price; saving_pct=saving/typical*100 if typical else 0; avg=sum(r[1] for r in used)/len(used); confidence=min(100,round(30+min(len(used),5)*8+avg*.3))
+        if key not in seen:
+            seen.add(key); deduped.append(row)
+
+    exact=[r for r in deduped if r[2]=="EXACT"]
+    strong=[r for r in deduped if r[2] in {"EXACT","STRONG"}]
+
+    if len(exact)>=2:
+        used=exact
+        basis="EXACT"
+    elif len(strong)>=2:
+        used=strong
+        basis="STRONG"
+    else:
+        used=deduped[:5]
+        basis="RELATED_FALLBACK"
+
+    prices=[r[0].price for r in used]
+    typical=float(median(prices))
+    saving=typical-tiktok_price
+    saving_pct=saving/typical*100 if typical else 0
+    avg=sum(r[1] for r in used)/len(used)
+    confidence=min(100,round(30+min(len(used),5)*8+avg*.3))
+
+    if basis=="RELATED_FALLBACK":
+        confidence=min(confidence,65)
+
     verdict="EXCEPTIONAL MARKET VALUE" if saving_pct>=20 else "MARKET DEAL" if saving_pct>=10 else "GOOD VALUE" if saving_pct>=3 else "ABOVE MARKET" if saving_pct<=-10 else "AROUND MARKET"
-    return {"status":"OK","typical_price":typical,"market_low":min(prices),"market_high":max(prices),"saving":saving,"saving_pct":saving_pct,"verdict":verdict,"confidence":confidence,"comparables":[r[0] for r in used],"ranked_comparables":[{"listing":r[0],"match_score":r[1],"match_tier":r[2],"match_reasons":r[3]} for r in used],"exact_count":sum(1 for r in used if r[2]=="EXACT"),"strong_count":sum(1 for r in used if r[2]=="STRONG"),"rejected_count":rejected}
+
+    return {
+        "status":"OK",
+        "typical_price":typical,
+        "market_low":min(prices),
+        "market_high":max(prices),
+        "saving":saving,
+        "saving_pct":saving_pct,
+        "verdict":verdict,
+        "confidence":confidence,
+        "comparison_basis":basis,
+        "comparables":[r[0] for r in used],
+        "ranked_comparables":[
+            {"listing":r[0],"match_score":r[1],"match_tier":r[2],"match_reasons":r[3]}
+            for r in used
+        ],
+        "exact_count":sum(1 for r in used if r[2]=="EXACT"),
+        "strong_count":sum(1 for r in used if r[2]=="STRONG"),
+        "related_count":sum(1 for r in used if r[2]=="RELATED"),
+        "rejected_count":rejected,
+    }

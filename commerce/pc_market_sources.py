@@ -52,7 +52,8 @@ def _looks_like_search_or_listing(title,url):return any(x in (title+" "+url).low
 def _has_target_components(text,target):
     fp=fingerprint_pc(text)
     if not fp.cpu or not fp.gpu:return False
-    score,tier,_=comparison_score(target,fp);return score>=75 and tier in {"EXACT","STRONG"}
+    score,tier,_=comparison_score(target,fp)
+    return score>=60 and tier in {"EXACT","STRONG","RELATED"}
 def _jsonld_products(html,retailer,domain,page_url="",target=None):
     found=[]
     for raw in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',html,re.I|re.S):
@@ -108,7 +109,7 @@ def _gotraka_catalog(target):
                 evidence=" ".join((title,option_text,body))
                 vfp=fingerprint_pc(evidence)
                 score,tier,_=comparison_score(target,vfp)
-                if score<75 or tier not in {"EXACT","STRONG"}:continue
+                if score<60 or tier not in {"EXACT","STRONG","RELATED"}:continue
                 matching+=1
                 try:price=float(str(variant.get("price") or "0").replace(",",""))
                 except (ValueError,TypeError):continue
