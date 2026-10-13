@@ -218,3 +218,151 @@ def test_taxonomy_launch_reuses_restored_category_tab_without_forcing_url(monkey
     assert '"category_id":"1"' in html
     connect.assert_called_once_with()
     context.new_page.assert_not_called()
+
+
+
+def test_shop_self_heal_closes_only_exact_root_category_targets(monkeypatch):
+    targets = [
+        {"id": "ROOT1", "type": "page", "url": "https://shop.tiktok.com/gb/c"},
+        {"id": "PRODUCT", "type": "page", "url": "https://shop.tiktok.com/gb/c/desktop-computers/123"},
+        {"id": "TIKTOK", "type": "page", "url": "https://www.tiktok.com/"},
+        {"id": "X", "type": "page", "url": "https://x.com/home"},
+        {"id": "LOOKALIKE", "type": "page", "url": "https://shop.tiktok.com.example.org/gb/c"},
+        {"id": "WORKER", "type": "service_worker", "url": "chrome-extension://example/background.js"},
+    ]
+
+    monkeypatch.setattr(browser_session, "_targets", lambda: targets)
+
+    calls = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"Target is closing"
+
+    def fake_urlopen(url, timeout=0):
+        calls.append((url, timeout))
+        return Response()
+
+    monkeypatch.setattr(browser_session.urllib.request, "urlopen", fake_urlopen)
+
+    closed = browser_session._close_exact_shop_category_targets()
+
+    assert closed == 1
+    assert calls == [
+        (f"{browser_session.CDP_URL}/json/close/ROOT1", 2),
+    ]
+
+
+def test_shop_attach_timeout_closes_stale_root_and_retries(monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    page = Mock(url="https://shop.tiktok.com/gb/c/desktop-computers/123")
+    context = SimpleNamespace(pages=[page])
+    browser = SimpleNamespace(contexts=[context])
+
+    class Chromium:
+        def __init__(self):
+            self.calls = 0
+
+        def connect_over_cdp(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise browser_session.PlaywrightTimeoutError("stale restored Shop tab")
+            return browser
+
+    chromium = Chromium()
+
+    monkeypatch.setattr(
+        browser_session,
+        "sync_playwright",
+        lambda: nullcontext(SimpleNamespace(chromium=chromium)),
+    )
+    monkeypatch.setattr(browser_session, "_port_open", lambda: True)
+
+    heal = Mock(return_value=1)
+    monkeypatch.setattr(browser_session, "_close_exact_shop_category_targets", heal)
+    monkeypatch.setattr(browser_session.time, "sleep", lambda *_args: None)
+
+    ok, message = browser_session.open_tiktok_browser(shop=True)
+
+    assert ok is True
+    assert message == "CONNECTED // EXISTING TIKTOK SHOP TAB"
+    assert chromium.calls == 2
+    heal.assert_called_once()
+    page.bring_to_front.assert_called_once()
+
+
+def test_taxonomy_attach_timeout_closes_stale_root_and_retries(monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    page = Mock(url="https://shop.tiktok.com/gb/c")
+    page.content.return_value = (
+        '<html><script>{"category_id":"1","category_name":"Phones"}</script></html>'
+    )
+    context = SimpleNamespace(pages=[page])
+    browser = SimpleNamespace(contexts=[context])
+
+    class Chromium:
+        def __init__(self):
+            self.calls = 0
+
+        def connect_over_cdp(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise browser_session.PlaywrightTimeoutError("stale restored Shop tab")
+            return browser
+
+    chromium = Chromium()
+
+    monkeypatch.setattr(
+        browser_session,
+        "sync_playwright",
+        lambda: nullcontext(SimpleNamespace(chromium=chromium)),
+    )
+    monkeypatch.setattr(browser_session, "_port_open", lambda: True)
+
+    heal = Mock(return_value=1)
+    monkeypatch.setattr(browser_session, "_close_exact_shop_category_targets", heal)
+    monkeypatch.setattr(browser_session.time, "sleep", lambda *_args: None)
+
+    html = browser_session.read_tiktok_shop_html(timeout_seconds=1)
+
+    assert '"category_name":"Phones"' in html
+    assert chromium.calls == 2
+    heal.assert_called_once()
+
+
+def test_plain_tiktok_timeout_never_closes_shop_tabs(monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    class Chromium:
+        def connect_over_cdp(self, *_args, **_kwargs):
+            raise browser_session.PlaywrightTimeoutError("attach timeout")
+
+    monkeypatch.setattr(
+        browser_session,
+        "sync_playwright",
+        lambda: nullcontext(SimpleNamespace(chromium=Chromium())),
+    )
+    monkeypatch.setattr(browser_session, "_port_open", lambda: True)
+    monkeypatch.setattr(browser_session.time, "sleep", lambda *_args: None)
+
+    heal = Mock(return_value=1)
+    monkeypatch.setattr(browser_session, "_close_exact_shop_category_targets", heal)
+
+    ok, _ = browser_session.open_tiktok_browser(shop=False)
+
+    assert ok is False
+    heal.assert_not_called()

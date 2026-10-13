@@ -26,7 +26,7 @@ def test_release_child_entrypoints_are_declared():
 
 def test_release_build_script_pins_pdh_version():
     script = Path("release/build_beta.ps1").read_text(encoding="utf-8")
-    assert "0.11.100" in script
+    assert "0.12.1" in script
     assert "--onedir" in script
     assert "pdh_extension" in script
     assert "tests/test_pulse_splash.py" in script

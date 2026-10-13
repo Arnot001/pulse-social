@@ -28,4 +28,4 @@ BETA NOTES
 
 BUILD ID
 Pulse Social beta release candidate.
-PDH bundled version: 0.11.100
+PDH bundled version: 0.12.1

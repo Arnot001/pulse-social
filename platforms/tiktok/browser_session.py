@@ -5,7 +5,7 @@ import time
 import urllib.request
 from urllib.parse import urlparse
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 from platforms.browser_control import CDP_PORT, CDP_URL, connect_browser, port_open
 
@@ -27,6 +27,51 @@ def _targets() -> list[dict]:
     except Exception:
         return []
 
+
+
+def _is_exact_shop_category_target(target: dict) -> bool:
+    if str(target.get("type") or "").lower() != "page":
+        return False
+
+    try:
+        parsed = urlparse(str(target.get("url") or ""))
+    except Exception:
+        return False
+
+    return (
+        parsed.hostname == "shop.tiktok.com"
+        and parsed.path.rstrip("/") == "/gb/c"
+    )
+
+
+def _close_exact_shop_category_targets() -> int:
+    """Close only restored TikTok Shop root-category tabs.
+
+    A frozen restored /gb/c target can prevent Playwright from completing its
+    whole-browser CDP attach. This deliberately leaves X, normal TikTok,
+    product/category-detail pages and unrelated tabs untouched.
+    """
+    closed = 0
+
+    for target in _targets():
+        if not _is_exact_shop_category_target(target):
+            continue
+
+        target_id = str(target.get("id") or "").strip()
+        if not target_id:
+            continue
+
+        try:
+            with urllib.request.urlopen(
+                f"{CDP_URL}/json/close/{target_id}",
+                timeout=2,
+            ) as response:
+                response.read()
+            closed += 1
+        except Exception:
+            continue
+
+    return closed
 
 def tiktok_browser_status() -> str:
     if not _port_open():
@@ -58,7 +103,15 @@ def read_tiktok_shop_html(timeout_seconds: float = 30.0) -> str:
     while time.time() < deadline:
         try:
             with sync_playwright() as p:
-                browser = p.chromium.connect_over_cdp(CDP_URL, timeout=10000)
+                try:
+                    browser = p.chromium.connect_over_cdp(CDP_URL, timeout=10000)
+                except PlaywrightTimeoutError as exc:
+                    last_error = exc
+                    if _close_exact_shop_category_targets():
+                        time.sleep(0.4)
+                        continue
+                    raise
+
                 if not browser.contexts:
                     raise RuntimeError("Browser connected, but no browser context was available.")
 
@@ -128,7 +181,15 @@ def open_tiktok_browser(*, shop: bool = False) -> tuple[bool, str]:
     for attempt in range(1, 4):
         try:
             with sync_playwright() as p:
-                browser = p.chromium.connect_over_cdp(CDP_URL, timeout=10000)
+                try:
+                    browser = p.chromium.connect_over_cdp(CDP_URL, timeout=10000)
+                except PlaywrightTimeoutError as exc:
+                    last_error = exc
+                    if shop and _close_exact_shop_category_targets():
+                        time.sleep(0.4)
+                        continue
+                    raise
+
                 if not browser.contexts:
                     last_error = RuntimeError(
                         "Browser connected, but no browser context was available."

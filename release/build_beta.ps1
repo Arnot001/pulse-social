@@ -37,8 +37,8 @@ if (-not (Test-Path (Join-Path $PdhRepo "manifest.json"))) {
 }
 
 $pdhManifest = Get-Content (Join-Path $PdhRepo "manifest.json") -Raw | ConvertFrom-Json
-if ($pdhManifest.version -ne "0.11.100") {
-    throw "Release beta expects PDH 0.11.100 but found '$($pdhManifest.version)'."
+if ($pdhManifest.version -ne "0.12.1") {
+    throw "Release beta expects PDH 0.12.1 but found '$($pdhManifest.version)'."
 }
 
 if (-not $SkipTests) {
@@ -101,7 +101,7 @@ if (-not (Test-Path (Join-Path $AppOutput "Pulse Social.exe"))) {
     throw "Build completed without Pulse Social.exe."
 }
 
-Write-Host "[4/5] Bundling PDH 0.11.100..." -ForegroundColor Cyan
+Write-Host "[4/5] Bundling PDH 0.12.1..." -ForegroundColor Cyan
 $PdhOutput = Join-Path $AppOutput "pdh_extension"
 New-Item $PdhOutput -ItemType Directory -Force | Out-Null
 
