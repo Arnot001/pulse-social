@@ -84,6 +84,30 @@ class PCMarketTests(unittest.TestCase):
         self.assertEqual(len(value["comparables"]), 2)
         self.assertLessEqual(value["confidence"], 65)
 
+    def test_ram_does_not_capture_following_ssd_capacity(self):
+        fp = fingerprint_pc(
+            "Savitar Neo White Gaming Tower only- Core i7 16GB Ram "
+            "128GB SSD 1000GB HDD GTX 3050 6GB"
+        )
+        self.assertEqual(fp.ram_gb, 16)
+        self.assertEqual(fp.storage_tb, 1.0)
+        self.assertEqual(fp.gpu, "RTX 3050")
+
+    def test_ram_accepts_frequency_between_capacity_and_ram(self):
+        fp = fingerprint_pc(
+            "GTR Gaming PC | Intel Core i5-12400F | Radeon RX 9070 XT | "
+            "32GB 3600MHz RAM | 1TB NVMe SSD"
+        )
+        self.assertEqual(fp.ram_gb, 32)
+        self.assertEqual(fp.storage_tb, 1.0)
+
+    def test_small_ssd_and_hdd_capacities_are_recognised(self):
+        fp = fingerprint_pc(
+            "Core i5 PC 16GB RAM 128GB SSD 500GB HDD"
+        )
+        self.assertEqual(fp.ram_gb, 16)
+        self.assertEqual(fp.storage_tb, 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -83,16 +83,44 @@ def fingerprint_pc(title: str, specs: dict | None = None, raw: dict | None = Non
         if modern_gtx and int(modern_gtx.group(1)) >= 2000:
             gpu=f"RTX {modern_gtx.group(1)}{modern_gtx.group(2)}".strip()
 
-    ram=None; ram_values=[]
-    for pattern in (r"(?:ram|memory)\D{0,18}(8|12|16|24|32|48|64|96|128)\s*gb",r"\b(8|12|16|24|32|48|64|96|128)\s*gb\s*ddr[345]\b",r"\b(8|12|16|24|32|48|64|96|128)\s*gb\s*(?:ram|memory)\b"):
-        ram_values.extend(int(x) for x in re.findall(pattern,lower,re.I))
-    if ram_values: ram=max(ram_values)
+    # Parse storage before RAM so phrases such as
+    # "16GB RAM 128GB SSD" cannot turn the SSD capacity into fake RAM.
+    storage=None
+    storage_media=r"(?:nvme|m\.?2|ssd|hdd|storage|hard\s*drive|hard\s*disk|emmc)"
+    storage_values=[]
 
-    storage=None; storage_tb=re.findall(r"\b(1|2|4|8)\s*tb\s*(?:nvme|m\.?2|ssd|storage|hard\s*drive)",lower,re.I)
-    if storage_tb: storage=max(float(x) for x in storage_tb)
-    else:
-        storage_gb=re.findall(r"\b(256|512|1000|2000|4000)\s*gb\s*(?:nvme|m\.?2|ssd|storage)",lower,re.I)
-        if storage_gb: storage=max(float(x)/1000 for x in storage_gb)
+    storage_patterns=(
+        (rf"\b(1|2|4|8)\s*tb\s*{storage_media}\b", 1.0),
+        (
+            rf"\b(64|120|128|240|250|256|480|500|512|960|1000|2000|4000|8000)"
+            rf"\s*gb\s*{storage_media}\b",
+            0.001,
+        ),
+    )
+
+    for pattern, multiplier in storage_patterns:
+        for raw in re.findall(pattern,lower,re.I):
+            storage_values.append(float(raw)*multiplier)
+
+    if storage_values:
+        storage=max(storage_values)
+
+    # Remove recognised storage capacities before looking for memory. This
+    # prevents "RAM 128GB SSD" from being interpreted as 128GB of RAM.
+    ram_text=lower
+    for pattern, _ in storage_patterns:
+        ram_text=re.sub(pattern," ",ram_text,flags=re.I)
+
+    ram=None; ram_values=[]
+    ram_patterns=(
+        r"\b(?:ram|memory)\s*[:\-]?\s*(8|12|16|24|32|48|64|96|128)\s*gb\b",
+        r"\b(8|12|16|24|32|48|64|96|128)\s*gb\s*ddr[345]\b",
+        r"\b(8|12|16|24|32|48|64|96|128)\s*gb(?:\s+\d{3,5}\s*mhz)?\s*(?:ram|memory)\b",
+    )
+    for pattern in ram_patterns:
+        ram_values.extend(int(x) for x in re.findall(pattern,ram_text,re.I))
+    if ram_values:
+        ram=max(ram_values)
 
     gpu_vram=None
     if gpu_match:
