@@ -12,6 +12,7 @@ from tkinter import messagebox
 from platforms.browser_control import connect_browser, running_browser_names
 from platforms.common.onboarding import open_get_started
 from platforms.pdh_bridge import bridge_status, ensure_bridge_server
+from pulse_license_gate import require_licence
 
 BG = "#070910"
 SURFACE = "#0a0f18"
@@ -270,6 +271,9 @@ def button(parent, text, command, accent=False, danger=False):
     btn.bind("<Leave>", leave)
     return btn
 
+
+if not require_licence():
+    raise SystemExit(0)
 
 root = tk.Tk()
 root.title("Pulse Social")

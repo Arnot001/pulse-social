@@ -5,9 +5,11 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Pulse Social"
@@ -17,6 +19,16 @@ BROWSER_PROFILE_ROOT = APP_DIR / "BrowserProfiles"
 
 CDP_PORT = 9222
 CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
+_CONNECT_BROWSER_LOCK = threading.Lock()
+
+
+def _serialized_browser_connection(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        with _CONNECT_BROWSER_LOCK:
+            return func(*args, **kwargs)
+
+    return wrapped
 
 
 @dataclass(frozen=True)
@@ -367,6 +379,7 @@ def restart_pulse_browser(
     return connect_browser(chosen, start_url=start_url)
 
 
+@_serialized_browser_connection
 def connect_browser(
     browser_name: str | None = None,
     *,
