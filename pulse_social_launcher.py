@@ -13,6 +13,7 @@ from platforms.browser_control import connect_browser, running_browser_names
 from platforms.common.onboarding import open_get_started
 from platforms.pdh_bridge import bridge_status, ensure_bridge_server
 from pulse_license_gate import require_licence
+from pulse_license_account import open_licence_account
 
 BG = "#070910"
 SURFACE = "#0a0f18"
@@ -688,6 +689,10 @@ tk.Label(
     bg=BG,
     font=("Segoe UI", 8, "bold"),
 ).pack(side="right")
+
+licence_button = button(footer, "LICENCE", lambda: open_licence_account(root, close_all))
+licence_button.configure(padx=10, pady=1, font=("Segoe UI", 8, "bold"))
+licence_button.pack(side="right", padx=(0, 12))
 
 root.protocol("WM_DELETE_WINDOW", close_all)
 ambient.start()

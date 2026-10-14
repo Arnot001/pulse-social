@@ -263,3 +263,20 @@ def test_close_cancels_poll_and_queued_browser_work(launcher):
     launcher.executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
     launcher.root.destroy.assert_called_once()
     launcher.error.assert_not_called()
+
+
+def test_licence_button_uses_existing_shutdown_for_owned_tools(launcher):
+    from unittest.mock import Mock
+    opened = Mock()
+    callback = launcher.buttons["LICENCE"].command
+    callback.__globals__["open_licence_account"] = opened
+    callback()
+    opened.assert_called_once_with(launcher.root, launcher.namespace["close_all"])
+    running, finished = Mock(), Mock()
+    running.poll.return_value = None
+    finished.poll.return_value = 0
+    launcher.namespace["children"].extend([running, finished])
+    opened.call_args.args[1]()
+    running.terminate.assert_called_once()
+    finished.terminate.assert_not_called()
+    launcher.root.destroy.assert_called_once()
