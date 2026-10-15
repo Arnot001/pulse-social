@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import inspect
 
 import pytest
 
@@ -223,6 +224,24 @@ def test_missing_prepared_sound_session_refuses_reupload(monkeypatch):
             object(),
             "media-key",
         )
+
+
+def test_sound_preview_reuses_prepared_tab_without_reupload():
+    source = inspect.getsource(browser_post.preview_tiktok_sound)
+
+    assert "_require_prepared_sound_page" in source
+    assert "_sound_preview_page" not in source
+    assert "set_input_files" not in source
+    assert "page.goto" not in source
+
+
+def test_publish_reuses_prepared_tab_without_reupload():
+    source = inspect.getsource(browser_post.publish_browser_post)
+
+    assert "_require_prepared_sound_page" in source
+    assert "_posting_page" not in source
+    assert "set_input_files" not in source
+    assert "page.goto" not in source
 
 
 def test_activity_log_has_readable_minimum_height():
