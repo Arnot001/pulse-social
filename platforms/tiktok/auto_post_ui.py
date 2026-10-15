@@ -853,7 +853,18 @@ class TikTokAutoPostView(tk.Frame):
         if self.embedded:
             activity.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         else:
-            activity.pack(fill="both", expand=True, padx=outer_pad, pady=(0, 14))
+            # Reserve a genuinely readable Activity panel. A Text height alone
+            # is only a geometry request and the composer/queue can otherwise
+            # squeeze this area down to a single visible line.
+            activity.configure(height=150)
+            activity.pack_propagate(False)
+            activity.pack(
+                side="bottom",
+                fill="x",
+                padx=outer_pad,
+                pady=(0, 14),
+                before=top,
+            )
         activity_head = tk.Frame(activity, bg=PANEL)
         activity_head.pack(
             fill="x",

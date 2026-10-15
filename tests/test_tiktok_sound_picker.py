@@ -248,4 +248,7 @@ def test_activity_log_has_readable_minimum_height():
     source = Path(r"platforms\tiktok\auto_post_ui.py").read_text(encoding="utf-8")
 
     assert "height=5" in source
-    assert 'activity.pack(fill="both"' in source
+    assert "activity.configure(height=150)" in source
+    assert "activity.pack_propagate(False)" in source
+    assert 'side="bottom"' in source
+    assert "before=top" in source
