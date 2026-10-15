@@ -302,6 +302,8 @@ def _music_search_input(page: Page) -> Locator | None:
         'input[aria-label*="search" i]',
         'input[data-e2e*="search" i]',
     )
+    music_terms = ("sound", "music", "song", "audio")
+
     for selector in selectors:
         try:
             locator = page.locator(selector)
@@ -309,6 +311,29 @@ def _music_search_input(page: Page) -> Locator | None:
                 item = locator.nth(index)
                 if not item.is_visible():
                     continue
+
+                # Current TikTok Studio exposes the picker as a side panel whose
+                # visible input says "Search sounds". That label alone is strong,
+                # specific evidence that this is the sound picker search box.
+                own_label = " ".join(
+                    part
+                    for part in (
+                        item.get_attribute("placeholder") or "",
+                        item.get_attribute("aria-label") or "",
+                        item.get_attribute("title") or "",
+                        item.get_attribute("data-e2e") or "",
+                    )
+                    if part
+                ).casefold()
+
+                if (
+                    "search" in own_label
+                    and any(term in own_label for term in music_terms)
+                ):
+                    return item
+
+                # Keep the older surrounding-context fallback for TikTok builds
+                # whose search input itself has only a generic "Search" label.
                 context_text = ""
                 try:
                     context_text = item.evaluate(
@@ -316,32 +341,151 @@ def _music_search_input(page: Page) -> Locator | None:
                     )
                 except Exception:
                     pass
-                if any(word in str(context_text).lower() for word in ("sound", "music", "song", "audio")):
+
+                if any(
+                    term in str(context_text).casefold()
+                    for term in music_terms
+                ):
                     return item
         except Exception:
             pass
+
     return None
 
 
-def _open_sound_picker(page: Page) -> None:
+def _dismiss_sound_picker_overlays(page: Page) -> bool:
+    dismissed = False
+
+    # TikTok Studio can show a first-run "automatic content checks" modal
+    # after media loads. Do not opt the user into anything; dismiss it safely.
+    try:
+        dialogs = page.locator('[role="dialog"]')
+        for index in range(dialogs.count() - 1, -1, -1):
+            dialog = dialogs.nth(index)
+            if not dialog.is_visible():
+                continue
+
+            try:
+                dialog_text = " ".join(dialog.inner_text(timeout=500).split()).lower()
+            except Exception:
+                dialog_text = ""
+
+            if "automatic content checks" not in dialog_text:
+                continue
+
+            cancel = dialog.get_by_role("button", name="Cancel", exact=True)
+            for button_index in range(min(cancel.count(), 4)):
+                button = cancel.nth(button_index)
+                if button.is_visible():
+                    button.click(timeout=3000)
+                    dismissed = True
+                    page.wait_for_timeout(250)
+                    break
+
+            if dismissed:
+                break
+    except Exception:
+        pass
+
+    # TikTok also shows a harmless Studio onboarding hint over the editor.
+    try:
+        got_it = page.get_by_role("button", name="Got it", exact=True)
+        for index in range(min(got_it.count(), 6)):
+            button = got_it.nth(index)
+            if button.is_visible():
+                button.click(timeout=3000)
+                dismissed = True
+                page.wait_for_timeout(250)
+                break
+    except Exception:
+        pass
+
+    return dismissed
+
+
+def _click_sound_picker_trigger(page: Page) -> bool:
+    names = (
+        "Add sound",
+        "Add music",
+        "Choose sound",
+        "Choose music",
+        "Sounds",
+        "Music",
+    )
+
+    for name in names:
+        for role in ("button", "tab"):
+            try:
+                controls = page.get_by_role(role, name=name, exact=True)
+                for index in range(min(controls.count(), 8)):
+                    item = controls.nth(index)
+                    if not item.is_visible():
+                        continue
+
+                    label = " ".join(
+                        part
+                        for part in (
+                            item.get_attribute("aria-label") or "",
+                            item.get_attribute("title") or "",
+                            item.inner_text(timeout=400) or "",
+                        )
+                        if part
+                    ).casefold()
+
+                    if "royalty-free" in label:
+                        continue
+
+                    item.click(timeout=3000)
+                    page.wait_for_timeout(500)
+                    return True
+            except Exception:
+                pass
+
+    return False
+
+
+def _open_sound_picker(page: Page, *, timeout_seconds: float = 20.0) -> None:
+    deadline = time.time() + max(0.5, float(timeout_seconds))
+    picker_opened = False
+
+    while time.time() < deadline:
+        if _music_search_input(page) is not None:
+            return
+
+        error = _visible_error(page)
+        if error:
+            raise RuntimeError(
+                f"TikTok rejected the media while preparing its sound picker: {error}"
+            )
+
+        if _dismiss_sound_picker_overlays(page):
+            page.wait_for_timeout(250)
+            continue
+
+        if not picker_opened:
+            picker_opened = _click_sound_picker_trigger(page)
+
+        page.wait_for_timeout(350)
+
     if _music_search_input(page) is not None:
         return
 
-    opened = _click_first_visible(
-        page,
-        (
-            "Add sound",
-            "Add music",
-            "Choose sound",
-            "Choose music",
-            "Sounds",
-            "Music",
-        ),
-    )
-    if not opened:
+    error = _visible_error(page)
+    if error:
         raise RuntimeError(
-            "SOUND PICKER NOT FOUND. TikTok did not expose an Add sound/music control on this upload page."
+            f"TikTok rejected the media while preparing its sound picker: {error}"
         )
+
+    if picker_opened:
+        raise RuntimeError(
+            "SOUND SEARCH NOT READY. TikTok opened the sound picker but its search "
+            "box did not become ready before the timeout."
+        )
+
+    raise RuntimeError(
+        "SOUND PICKER NOT FOUND. TikTok did not expose an Add sound/music control "
+        "after the media finished processing."
+    )
 
 
 def _search_sound_picker(page: Page, query: str) -> None:
@@ -500,6 +644,45 @@ def _sound_result_texts(page: Page, limit: int = 25) -> list[str]:
     return results
 
 
+def _wait_for_settled_sound_results(
+    page: Page,
+    *,
+    max_polls: int = 60,
+    stable_polls: int = 4,
+    limit: int = 100,
+) -> list[str]:
+    collected: list[str] = []
+    seen: set[str] = set()
+    stable = 0
+
+    for _ in range(max(1, int(max_polls))):
+        current = _sound_result_texts(page, limit=max(1, int(limit)))
+        added = False
+
+        for item in current:
+            key = " ".join(item.split()).casefold()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            collected.append(item)
+            added = True
+
+            if len(collected) >= limit:
+                return collected[:limit]
+
+        if collected and not added:
+            stable += 1
+        else:
+            stable = 0
+
+        if collected and stable >= max(1, int(stable_polls)):
+            return collected[:limit]
+
+        page.wait_for_timeout(500)
+
+    return collected[:limit]
+
+
 def _sound_name_from_href(href: str) -> str:
     value = unquote((href or "").split("?", 1)[0]).rstrip("/")
     if not value:
@@ -581,6 +764,148 @@ def _search_page_sound_results(page: Page, limit: int = 25) -> list[str]:
     return results
 
 
+def _sound_media_key(paths: list[Path]) -> str:
+    parts = []
+    for path in paths:
+        stat = path.stat()
+        parts.append(
+            f"{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
+        )
+    return "\n".join(parts)
+
+
+def _prepared_sound_media_matches(page: Page, key: str) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                "(key) => window.__pulseSoundMediaKey === key",
+                key,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _mark_prepared_sound_media(page: Page, key: str) -> None:
+    try:
+        page.evaluate(
+            "(key) => { window.__pulseSoundMediaKey = key; }",
+            key,
+        )
+    except Exception:
+        pass
+
+
+def _prepare_sound_media_on_page(
+    page: Page,
+    paths: list[Path],
+    kind: str,
+    *,
+    log: Callable[[str], None] | None = None,
+    timeout_seconds: float = 180.0,
+) -> None:
+    page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_timeout(1400)
+
+    if _looks_logged_out(page):
+        raise RuntimeError(
+            "TikTok is not logged in in the controlled Brave profile. "
+            "Log in once in the TikTok tab, then retry."
+        )
+
+    if kind == "image":
+        _select_photo_mode(page)
+
+    file_input = _file_input_for_kind(page, kind)
+
+    if log:
+        media_note = (
+            f"{len(paths)} image(s)"
+            if kind == "image"
+            else paths[0].name
+        )
+        log(f"TIKTOK MEDIA PREP | uploading {media_note}")
+
+    file_input.set_input_files([str(path) for path in paths])
+
+    # Do not guess how long TikTok needs. Wait until its real post sound picker
+    # becomes usable. Large videos can take substantially longer than images.
+    _open_sound_picker(page, timeout_seconds=timeout_seconds)
+
+    error = _visible_error(page)
+    if error:
+        raise RuntimeError(
+            f"TikTok rejected the media while preparing sounds: {error}"
+        )
+
+    key = _sound_media_key(paths)
+    _mark_prepared_sound_media(page, key)
+
+    if log:
+        log("TIKTOK MEDIA PREP | READY FOR MUSIC")
+
+
+def prepare_tiktok_sound_media(
+    media_paths: list[str],
+    log: Callable[[str], None] | None = None,
+) -> None:
+    if not media_paths:
+        raise RuntimeError("Add the image/video first.")
+
+    paths = [Path(path) for path in media_paths]
+    missing = [str(path) for path in paths if not path.exists()]
+    if missing:
+        raise RuntimeError(
+            "TikTok media file missing: " + ", ".join(missing)
+        )
+
+    suffixes = {path.suffix.lower() for path in paths}
+    image_only = bool(suffixes) and suffixes.issubset(IMAGE_SUFFIXES)
+    video_only = (
+        len(paths) == 1
+        and paths[0].suffix.lower() in VIDEO_SUFFIXES
+    )
+
+    if not image_only and not video_only:
+        raise RuntimeError(
+            "Choose either one video or one/more images before preparing sounds."
+        )
+
+    kind = "image" if image_only else "video"
+
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.connect_over_cdp(
+                CDP_URL,
+                timeout=5000,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "TikTok browser is not controllable. "
+                "Connect the Pulse Brave browser first."
+            ) from exc
+
+        context = _existing_tiktok_context(browser)
+        if context is None:
+            raise RuntimeError("Controlled browser has no usable context.")
+
+        page, _created = _sound_search_page(browser, context)
+        key = _sound_media_key(paths)
+
+        if _prepared_sound_media_matches(page, key):
+            if log:
+                log("TIKTOK MEDIA PREP | already ready")
+            return
+
+        _prepare_sound_media_on_page(
+            page,
+            paths,
+            kind,
+            log=log,
+            timeout_seconds=180.0,
+        )
+
+
 def search_tiktok_sounds(
     query: str,
     media_paths: list[str] | None = None,
@@ -598,23 +923,35 @@ def search_tiktok_sounds(
     paths = [Path(path) for path in media_paths]
     missing = [str(path) for path in paths if not path.exists()]
     if missing:
-        raise RuntimeError("TikTok media file missing: " + ", ".join(missing))
+        raise RuntimeError(
+            "TikTok media file missing: " + ", ".join(missing)
+        )
 
     suffixes = {path.suffix.lower() for path in paths}
     image_only = bool(suffixes) and suffixes.issubset(IMAGE_SUFFIXES)
-    video_only = len(paths) == 1 and paths[0].suffix.lower() in VIDEO_SUFFIXES
+    video_only = (
+        len(paths) == 1
+        and paths[0].suffix.lower() in VIDEO_SUFFIXES
+    )
+
     if not image_only and not video_only:
         raise RuntimeError(
             "Choose either one video or one/more images before searching sounds."
         )
+
     kind = "image" if image_only else "video"
+    media_key = _sound_media_key(paths)
 
     with sync_playwright() as playwright:
         try:
-            browser = playwright.chromium.connect_over_cdp(CDP_URL, timeout=5000)
+            browser = playwright.chromium.connect_over_cdp(
+                CDP_URL,
+                timeout=5000,
+            )
         except Exception as exc:
             raise RuntimeError(
-                "TikTok browser is not controllable. Connect the Pulse Brave browser first."
+                "TikTok browser is not controllable. "
+                "Connect the Pulse Brave browser first."
             ) from exc
 
         context = _existing_tiktok_context(browser)
@@ -622,85 +959,65 @@ def search_tiktok_sounds(
             raise RuntimeError("Controlled browser has no usable context.")
 
         page, _created = _sound_search_page(browser, context)
-        try:
-            page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1400)
 
-            if _looks_logged_out(page):
-                raise RuntimeError(
-                    "TikTok is not logged in in the controlled Brave profile. "
-                    "Log in once in the TikTok tab, then retry."
-                )
+        if not _prepared_sound_media_matches(page, media_key):
+            _prepare_sound_media_on_page(
+                page,
+                paths,
+                kind,
+                log=log,
+                timeout_seconds=180.0,
+            )
+        elif log:
+            log("TIKTOK SOUND SEARCH | reusing prepared media")
 
-            if kind == "image":
-                _select_photo_mode(page)
+        _search_sound_picker(page, clean_query)
 
-            file_input = _file_input_for_kind(page, kind)
-            if log:
-                media_note = (
-                    f"{len(paths)} image(s)"
-                    if kind == "image"
-                    else paths[0].name
-                )
-                log(f"TIKTOK SOUND PREP | loading {media_note}")
+        # Keep collecting while TikTok is still adding results rather than
+        # returning the first partial batch. Allow substantially more than 25.
+        results = _wait_for_settled_sound_results(
+            page,
+            max_polls=60,
+            stable_polls=4,
+            limit=100,
+        )
 
-            file_input.set_input_files([str(path) for path in paths])
-            page.wait_for_timeout(2600)
-
-            error = _visible_error(page)
-            if error:
-                raise RuntimeError(
-                    f"TikTok rejected the media while opening its sound picker: {error}"
-                )
-
-            _search_sound_picker(page, clean_query)
-
-            # TikTok's sound search is asynchronous and can take several seconds
-            # even after the search box has accepted the query.
-            results: list[str] = []
-            deadline = time.time() + 12
-            while time.time() < deadline:
-                results = _sound_result_texts(page)
-                if results:
-                    break
-                page.wait_for_timeout(500)
-
-            if not results:
-                try:
-                    dialog_text = " ".join(
-                        page.locator('[role="dialog"]').last.inner_text(timeout=1000).split()
-                    )
-                except Exception:
-                    dialog_text = ""
-                try:
-                    candidate_count = _sound_candidate_locator(page).count()
-                except Exception:
-                    candidate_count = -1
-                detail = (
-                    f" | picker={dialog_text[:220]}"
-                    if dialog_text
-                    else ""
-                )
-                raise RuntimeError(
-                    f'SOUND RESULTS EMPTY | TikTok opened the post sound picker for '
-                    f'"{clean_query}" but Pulse found no selectable sound rows'
-                    f'{detail} | candidates={candidate_count}'
-                )
-
-            if log:
-                log(
-                    f'TIKTOK SOUND SEARCH | "{clean_query}" | '
-                    f'{len(results)} result(s) from post sound picker'
-                )
-            return results
-        finally:
-            # This page exists only to query the same picker TikTok will use at
-            # post time. Close it so ADD MUSIC does not leave stray Studio tabs.
+        if not results:
             try:
-                if not page.is_closed():
-                    page.close()
+                dialog_text = " ".join(
+                    page.locator('[role="dialog"]').last.inner_text(
+                        timeout=1000
+                    ).split()
+                )
             except Exception:
-                pass
+                dialog_text = ""
+
+            try:
+                candidate_count = _sound_candidate_locator(page).count()
+            except Exception:
+                candidate_count = -1
+
+            detail = (
+                f" | picker={dialog_text[:220]}"
+                if dialog_text
+                else ""
+            )
+
+            raise RuntimeError(
+                f'SOUND RESULTS EMPTY | TikTok opened the post sound picker for '
+                f'"{clean_query}" but Pulse found no selectable sound rows'
+                f'{detail} | candidates={candidate_count}'
+            )
+
+        if log:
+            log(
+                f'TIKTOK SOUND SEARCH | "{clean_query}" | '
+                f'{len(results)} settled result(s)'
+            )
+
+        # Deliberately leave this prepared Studio page alive. ADD MUSIC can
+        # search it again without re-uploading the selected media.
+        return results
 
 
 def _find_sound_result(page: Page, selection: str) -> Locator | None:

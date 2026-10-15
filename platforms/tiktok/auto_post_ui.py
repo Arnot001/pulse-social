@@ -19,6 +19,7 @@ from .auto_post import (
     run_scheduler,
 )
 from .browser_post import (
+    prepare_tiktok_sound_media,
     preview_tiktok_sound,
     search_tiktok_sounds,
     stop_tiktok_sound_preview,
@@ -136,6 +137,9 @@ class TikTokAutoPostView(tk.Frame):
         self.music_query = ""
         self.music_search = ""
         self.music_var = tk.StringVar(value="NO MUSIC")
+        self.media_prepare_var = tk.StringVar(value="NOT READY")
+        self.media_prepare_worker: threading.Thread | None = None
+        self.media_prepare_generation = 0
         self.next_var = tk.StringVar(value="No posts queued")
         self.schedule_mode = tk.StringVar(value="delay")
         self.delay_var = tk.StringVar(value="1")
@@ -461,10 +465,26 @@ class TikTokAutoPostView(tk.Frame):
 
         media_row = tk.Frame(compose, bg="#121827")
         media_row.pack(fill="x", padx=16, pady=(0, 5 if self.embedded else 8))
-        self._button(media_row, "ADD VIDEO", self._choose_video, compact=True).pack(side="left")
-        self._button(media_row, "ADD IMAGES", self._choose_images, compact=True).pack(side="left", padx=(6, 0))
-        self._button(media_row, "ADD MUSIC", self._choose_music, compact=True).pack(side="left", padx=(6, 0))
-        self._button(media_row, "CLEAR", self._clear_media, compact=True).pack(side="left", padx=(6, 0))
+        self.video_button = self._button(
+            media_row, "ADD VIDEO", self._choose_video, compact=True
+        )
+        self.video_button.pack(side="left")
+
+        self.images_button = self._button(
+            media_row, "ADD IMAGES", self._choose_images, compact=True
+        )
+        self.images_button.pack(side="left", padx=(6, 0))
+
+        self.music_button = self._button(
+            media_row, "ADD MUSIC", self._choose_music, compact=True
+        )
+        self.music_button.configure(state="disabled")
+        self.music_button.pack(side="left", padx=(6, 0))
+
+        self.clear_button = self._button(
+            media_row, "CLEAR", self._clear_media, compact=True
+        )
+        self.clear_button.pack(side="left", padx=(6, 0))
 
         media_state = tk.Frame(compose, bg=SURFACE, highlightthickness=1, highlightbackground="#1b2738")
         media_state.pack(fill="x", padx=16, pady=(0, 6 if self.embedded else 10))
@@ -482,6 +502,21 @@ class TikTokAutoPostView(tk.Frame):
             bg=SURFACE,
             font=("Segoe UI", 8),
         ).pack(side="left", pady=7)
+        tk.Frame(media_state, bg=BORDER, width=1, height=14).pack(side="left", padx=10)
+        tk.Label(
+            media_state,
+            text="TIKTOK",
+            fg=MUTED,
+            bg=SURFACE,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", pady=7)
+        tk.Label(
+            media_state,
+            textvariable=self.media_prepare_var,
+            fg=ACCENT,
+            bg=SURFACE,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=8, pady=7)
         tk.Frame(media_state, bg=BORDER, width=1, height=14).pack(side="left", padx=10)
         tk.Label(
             media_state,
@@ -818,7 +853,7 @@ class TikTokAutoPostView(tk.Frame):
         if self.embedded:
             activity.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         else:
-            activity.pack(fill="x", padx=outer_pad, pady=(0, 14))
+            activity.pack(fill="both", expand=True, padx=outer_pad, pady=(0, 14))
         activity_head = tk.Frame(activity, bg=PANEL)
         activity_head.pack(
             fill="x",
@@ -860,7 +895,7 @@ class TikTokAutoPostView(tk.Frame):
 
         self.log = tk.Text(
             log_body,
-            height=7 if self.embedded else 3,
+            height=5 if not self.embedded else 7,
             bg=SURFACE,
             fg="#cbd3df",
             insertbackground=TEXT,
@@ -900,6 +935,7 @@ class TikTokAutoPostView(tk.Frame):
         if path:
             self.selected_media = [str(path)]
             self.media_var.set(f"VIDEO // {Path(path).name}")
+            self._begin_media_prepare()
 
     def _choose_images(self):
         paths = filedialog.askopenfilenames(
@@ -917,10 +953,73 @@ class TikTokAutoPostView(tk.Frame):
             if len(names) > 3:
                 preview += f" +{len(names) - 3} more"
             self.media_var.set(f"IMAGES {len(names)} // {preview}")
+            self._begin_media_prepare()
+
+    def _set_media_controls_busy(self, busy: bool) -> None:
+        state = "disabled" if busy else "normal"
+        self.video_button.configure(state=state)
+        self.images_button.configure(state=state)
+        self.clear_button.configure(state=state)
+
+    def _begin_media_prepare(self) -> None:
+        if not self.selected_media:
+            return
+
+        self.media_prepare_generation += 1
+        generation = self.media_prepare_generation
+        media_snapshot = list(self.selected_media)
+
+        self._clear_music()
+        self.media_prepare_var.set("UPLOADING...")
+        self.music_button.configure(state="disabled")
+        self._set_media_controls_busy(True)
+        self.write("TIKTOK MEDIA PREP | starting")
+
+        def apply_ready():
+            if self._destroyed or generation != self.media_prepare_generation:
+                return
+            if media_snapshot != self.selected_media:
+                return
+            self.media_prepare_var.set("READY")
+            self.music_button.configure(state="normal")
+            self._set_media_controls_busy(False)
+            self.write("TIKTOK MEDIA PREP | media ready ? ADD MUSIC enabled")
+
+        def apply_error(message: str):
+            if self._destroyed or generation != self.media_prepare_generation:
+                return
+            if media_snapshot != self.selected_media:
+                return
+            self.media_prepare_var.set("ERROR")
+            self.music_button.configure(state="disabled")
+            self._set_media_controls_busy(False)
+            self.status_var.set("MEDIA ERROR")
+            self.write(f"TIKTOK MEDIA PREP ERROR | {message}")
+
+        def worker():
+            try:
+                prepare_tiktok_sound_media(
+                    media_snapshot,
+                    log=self.write,
+                )
+                self.after(0, apply_ready)
+            except Exception as exc:
+                message = str(exc)
+                self.after(0, lambda msg=message: apply_error(msg))
+
+        self.media_prepare_worker = threading.Thread(
+            target=worker,
+            daemon=True,
+        )
+        self.media_prepare_worker.start()
 
     def _clear_media(self):
+        self.media_prepare_generation += 1
         self.selected_media = []
         self.media_var.set("NO MEDIA")
+        self.media_prepare_var.set("NOT READY")
+        self.music_button.configure(state="disabled")
+        self._set_media_controls_busy(False)
 
     def _choose_music(self):
         if not self.selected_media:
@@ -954,8 +1053,8 @@ class TikTokAutoPostView(tk.Frame):
         tk.Label(
             dialog,
             text=(
-                "Pulse loads your selected media into TikTok's real post sound picker, "
-                "then returns the exact sounds TikTok offers for that post."
+                "Your media is already prepared in TikTok. Pulse searches the real "
+                "post sound picker and returns the sounds TikTok offers for that post."
             ),
             fg=TEXT,
             bg=PANEL,
@@ -1039,7 +1138,7 @@ class TikTokAutoPostView(tk.Frame):
                 status_var.set("Type something to search for first.")
                 return
             search_button.configure(state="disabled")
-            status_var.set(f'Loading media + searching TikTok for "{query}"...')
+            status_var.set(f'Searching TikTok for "{query}"...')
             threading.Thread(target=search_worker, args=(query,), daemon=True).start()
 
         search_button.configure(command=run_search)
