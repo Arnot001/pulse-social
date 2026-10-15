@@ -18,6 +18,9 @@ SOUND_SEARCH_PAGE_NAME = "pulse-social-tiktok-sound-search"
 SOUND_PREVIEW_PAGE_NAME = "pulse-social-tiktok-sound-preview"
 DELETE_PAGE_NAME = "pulse-social-tiktok-auto-delete"
 
+_PREPARED_SOUND_TARGET_ID: str | None = None
+_PREPARED_SOUND_MEDIA_KEY: str | None = None
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 
@@ -774,6 +777,71 @@ def _sound_media_key(paths: list[Path]) -> str:
     return "\n".join(parts)
 
 
+def _page_target_id(page: Page) -> str | None:
+    session = None
+    try:
+        session = page.context.new_cdp_session(page)
+        info = session.send("Target.getTargetInfo")
+        target_id = str(
+            (info.get("targetInfo") or {}).get("targetId") or ""
+        ).strip()
+        return target_id or None
+    except Exception:
+        return None
+    finally:
+        if session is not None:
+            try:
+                session.detach()
+            except Exception:
+                pass
+
+
+def _remember_prepared_sound_page(page: Page, key: str) -> None:
+    global _PREPARED_SOUND_TARGET_ID
+    global _PREPARED_SOUND_MEDIA_KEY
+
+    target_id = _page_target_id(page)
+    if not target_id:
+        raise RuntimeError(
+            "PREPARED MEDIA TARGET LOST | Pulse could not identify the exact "
+            "TikTok Studio tab after upload."
+        )
+
+    _PREPARED_SOUND_TARGET_ID = target_id
+    _PREPARED_SOUND_MEDIA_KEY = key
+
+
+def _prepared_sound_page(context, key: str) -> Page | None:
+    if (
+        not key
+        or not _PREPARED_SOUND_TARGET_ID
+        or _PREPARED_SOUND_MEDIA_KEY != key
+    ):
+        return None
+
+    for page in context.pages:
+        try:
+            if page.is_closed():
+                continue
+            if _page_target_id(page) == _PREPARED_SOUND_TARGET_ID:
+                return page
+        except Exception:
+            continue
+
+    return None
+
+
+def _require_prepared_sound_page(context, key: str) -> Page:
+    page = _prepared_sound_page(context, key)
+    if page is None:
+        raise RuntimeError(
+            "PREPARED MEDIA SESSION LOST | TikTok's prepared upload tab is no "
+            "longer available. Re-add the image/video so Pulse can prepare it "
+            "again. Pulse will not silently re-upload during music search."
+        )
+    return page
+
+
 def _prepared_sound_media_matches(page: Page, key: str) -> bool:
     try:
         return bool(
@@ -840,6 +908,7 @@ def _prepare_sound_media_on_page(
 
     key = _sound_media_key(paths)
     _mark_prepared_sound_media(page, key)
+    _remember_prepared_sound_page(page, key)
 
     if log:
         log("TIKTOK MEDIA PREP | READY FOR MUSIC")
@@ -889,10 +958,18 @@ def prepare_tiktok_sound_media(
         if context is None:
             raise RuntimeError("Controlled browser has no usable context.")
 
-        page, _created = _sound_search_page(browser, context)
         key = _sound_media_key(paths)
 
+        prepared = _prepared_sound_page(context, key)
+        if prepared is not None:
+            if log:
+                log("TIKTOK MEDIA PREP | already ready")
+            return
+
+        page, _created = _sound_search_page(browser, context)
+
         if _prepared_sound_media_matches(page, key):
+            _remember_prepared_sound_page(page, key)
             if log:
                 log("TIKTOK MEDIA PREP | already ready")
             return
@@ -958,18 +1035,10 @@ def search_tiktok_sounds(
         if context is None:
             raise RuntimeError("Controlled browser has no usable context.")
 
-        page, _created = _sound_search_page(browser, context)
+        page = _require_prepared_sound_page(context, media_key)
 
-        if not _prepared_sound_media_matches(page, media_key):
-            _prepare_sound_media_on_page(
-                page,
-                paths,
-                kind,
-                log=log,
-                timeout_seconds=180.0,
-            )
-        elif log:
-            log("TIKTOK SOUND SEARCH | reusing prepared media")
+        if log:
+            log("TIKTOK SOUND SEARCH | reusing exact prepared Studio tab")
 
         _search_sound_picker(page, clean_query)
 

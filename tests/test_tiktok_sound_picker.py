@@ -163,6 +163,68 @@ def test_sound_results_wait_for_full_list_to_settle(monkeypatch):
     assert page.waits
 
 
+def test_prepared_sound_page_is_bound_to_exact_cdp_target(monkeypatch):
+    class FakePreparedPage:
+        def __init__(self, target_id):
+            self.target_id = target_id
+
+        def is_closed(self):
+            return False
+
+    class FakeContext:
+        def __init__(self, pages):
+            self.pages = pages
+
+    first = FakePreparedPage("target-a")
+    prepared = FakePreparedPage("target-b")
+    context = FakeContext([first, prepared])
+
+    monkeypatch.setattr(
+        browser_post,
+        "_PREPARED_SOUND_TARGET_ID",
+        "target-b",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        browser_post,
+        "_PREPARED_SOUND_MEDIA_KEY",
+        "media-key",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        browser_post,
+        "_page_target_id",
+        lambda page: page.target_id,
+        raising=False,
+    )
+
+    result = browser_post._prepared_sound_page(
+        context,
+        "media-key",
+    )
+
+    assert result is prepared
+    assert browser_post._prepared_sound_page(
+        context,
+        "different-media",
+    ) is None
+
+
+def test_missing_prepared_sound_session_refuses_reupload(monkeypatch):
+    monkeypatch.setattr(
+        browser_post,
+        "_prepared_sound_page",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="PREPARED MEDIA SESSION LOST"):
+        browser_post._require_prepared_sound_page(
+            object(),
+            "media-key",
+        )
+
+
 def test_activity_log_has_readable_minimum_height():
     source = Path(r"platforms\tiktok\auto_post_ui.py").read_text(encoding="utf-8")
 
