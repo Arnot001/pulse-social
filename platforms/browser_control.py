@@ -94,29 +94,67 @@ def _running(image_name: str) -> bool:
         return False
 
 
-def _visible_process_names() -> set[str]:
-    """Return process names that own a visible top-level Windows window."""
-    script = (
-        "Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | "
-        "ForEach-Object { $_.ProcessName }"
-    )
+def _process_image_name(pid: int) -> str | None:
+    """Return the executable image name for a Windows process ID."""
+    if os.name != "nt" or not pid:
+        return None
+    process_query_limited_information = 0x1000
     try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True,
-            text=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            timeout=5,
+        handle = ctypes.windll.kernel32.OpenProcess(
+            process_query_limited_information,
+            False,
+            int(pid),
         )
-        if result.returncode != 0:
-            return set()
-        return {
-            line.strip().casefold()
-            for line in result.stdout.splitlines()
-            if line.strip()
-        }
+        if not handle:
+            return None
+        try:
+            buffer = ctypes.create_unicode_buffer(32768)
+            size = ctypes.c_ulong(len(buffer))
+            ok = ctypes.windll.kernel32.QueryFullProcessImageNameW(
+                handle,
+                0,
+                buffer,
+                ctypes.byref(size),
+            )
+            if not ok:
+                return None
+            return Path(buffer.value).name.casefold()
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _visible_process_names() -> set[str]:
+    """Return executable names that own a real visible top-level Windows window."""
+    if os.name != "nt":
+        return set()
+
+    names: set[str] = set()
+    try:
+        user32 = ctypes.windll.user32
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def visit(hwnd, _lparam):
+            try:
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                if user32.GetWindowTextLengthW(hwnd) <= 0:
+                    return True
+                pid = ctypes.c_ulong()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                image = _process_image_name(pid.value)
+                if image:
+                    names.add(Path(image).stem.casefold())
+            except Exception:
+                pass
+            return True
+
+        callback = callback_type(visit)
+        user32.EnumWindows(callback, 0)
     except Exception:
         return set()
+    return names
 
 
 def _foreground_browser_name() -> str | None:
@@ -129,18 +167,11 @@ def _foreground_browser_name() -> str | None:
             return None
         pid = ctypes.c_ulong()
         ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if not pid.value:
+        image = _process_image_name(pid.value)
+        if not image:
             return None
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid.value}"],
-            capture_output=True,
-            text=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            timeout=3,
-        )
-        output = result.stdout.casefold()
         for spec in _browser_specs():
-            if spec.image.casefold() in output and _installed_exe(spec) is not None:
+            if spec.image.casefold() == image and _installed_exe(spec) is not None:
                 return spec.name
     except Exception:
         return None
