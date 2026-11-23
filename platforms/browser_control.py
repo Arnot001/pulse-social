@@ -308,14 +308,19 @@ def choose_browser_name(preferred: str | None = None) -> str | None:
         )
 
     preferred_spec = browser_spec(preferred)
-    if preferred_spec is not None and eligible(preferred_spec.name):
+    if preferred_spec is not None:
         return preferred_spec.name
 
     # What the user is visibly using now wins over an old saved choice.
     # Background-only Chromium helper processes are deliberately ignored.
-    running = [name for name in running_browser_names() if eligible(name)]
+    #
+    # Do not reject a visible/manual Chrome choice merely because the packaged
+    # PDH extension cannot be side-loaded automatically on newer Chrome builds.
+    # Browser intent wins here; PDH compatibility only affects unattended
+    # fallback selection when no visible browser preference exists.
+    running = running_browser_names()
     foreground = _foreground_browser_name()
-    if foreground and foreground in running and eligible(foreground):
+    if foreground and foreground in running:
         return foreground
     if running:
         return running[0]
