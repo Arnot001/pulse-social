@@ -74,6 +74,61 @@ def test_open_browser_wins_over_saved_browser(monkeypatch):
     assert browser_control.choose_browser_name() == "Brave"
 
 
+def test_running_browser_names_ignores_background_only_edge(monkeypatch):
+    specs = (
+        browser_control.BrowserSpec("Brave", "brave.exe", (Path("brave.exe"),)),
+        browser_control.BrowserSpec("Chrome", "chrome.exe", (Path("chrome.exe"),)),
+        browser_control.BrowserSpec("Edge", "msedge.exe", (Path("msedge.exe"),)),
+    )
+    monkeypatch.setattr(browser_control, "_browser_specs", lambda: specs)
+    monkeypatch.setattr(browser_control, "_installed_exe", lambda spec: spec.paths[0])
+    monkeypatch.setattr(browser_control, "_visible_process_names", lambda: {"chrome"})
+
+    assert browser_control.running_browser_names() == ["Chrome"]
+
+
+def test_foreground_visible_browser_wins_when_multiple_are_open(monkeypatch):
+    monkeypatch.setattr(browser_control, "bundled_pdh_extension_dir", lambda: None)
+    monkeypatch.setattr(browser_control, "running_browser_names", lambda: ["Brave", "Chrome"])
+    monkeypatch.setattr(browser_control, "_foreground_browser_name", lambda: "Chrome")
+    monkeypatch.setattr(browser_control, "dedicated_browser_name", lambda: "Edge")
+    monkeypatch.setattr(
+        browser_control,
+        "installed_browser_names",
+        lambda: ["Brave", "Chrome", "Edge"],
+    )
+
+    assert browser_control.choose_browser_name() == "Chrome"
+
+
+def test_background_edge_cannot_beat_visible_brave(monkeypatch):
+    monkeypatch.setattr(browser_control, "bundled_pdh_extension_dir", lambda: None)
+    monkeypatch.setattr(browser_control, "running_browser_names", lambda: ["Brave"])
+    monkeypatch.setattr(browser_control, "_foreground_browser_name", lambda: None)
+    monkeypatch.setattr(browser_control, "dedicated_browser_name", lambda: "Edge")
+    monkeypatch.setattr(
+        browser_control,
+        "installed_browser_names",
+        lambda: ["Brave", "Chrome", "Edge"],
+    )
+
+    assert browser_control.choose_browser_name() == "Brave"
+
+
+def test_saved_browser_is_fallback_when_no_visible_browser(monkeypatch):
+    monkeypatch.setattr(browser_control, "bundled_pdh_extension_dir", lambda: None)
+    monkeypatch.setattr(browser_control, "running_browser_names", lambda: [])
+    monkeypatch.setattr(browser_control, "_foreground_browser_name", lambda: None)
+    monkeypatch.setattr(browser_control, "dedicated_browser_name", lambda: "Chrome")
+    monkeypatch.setattr(
+        browser_control,
+        "installed_browser_names",
+        lambda: ["Brave", "Chrome", "Edge"],
+    )
+
+    assert browser_control.choose_browser_name() == "Chrome"
+
+
 def test_dedicated_browser_name_only_returns_saved_choice(monkeypatch):
     monkeypatch.setattr(browser_control, "_load_state", lambda: {})
     monkeypatch.setattr(browser_control, "running_browser_names", lambda: ["Brave"])
