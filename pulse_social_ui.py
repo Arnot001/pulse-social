@@ -27,7 +27,7 @@ PROFILE_SCAN_LIMIT_PER_MODE = 400
 
 BG = "#07090f"; PANEL = "#0d111b"; PANEL_2 = "#121827"; BORDER = "#20283a"; TEXT = "#f5f7fb"; MUTED = "#8993a6"; ACCENT = "#ff008c"; SUCCESS = "#35d07f"; DANGER = "#ff4057"
 DEFAULTS = {"handle":"", "mode":"posts", "dry_run":True, "run_until_empty":False, "max_actions":10, "delay":3, "refresh_every":25, "topic_filter":ALL_TOPIC, "search_query":""}
-log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue(); intel_queue = queue.Queue(); inventory_queue = queue.Queue(); unavailable_inventory_queue = queue.Queue(); reclassified_inventory_queue = queue.Queue()
+log_queue = queue.Queue(); continue_event = threading.Event(); stop_event = threading.Event(); run_state_queue = queue.Queue(); intel_queue = queue.Queue(); inventory_queue = queue.Queue(); unavailable_inventory_queue = queue.Queue(); reclassified_inventory_queue = queue.Queue(); mode_mismatch_notice_queue = queue.Queue()
 selected_target_ids = set()
 category_buttons = {}
 
@@ -419,7 +419,11 @@ def cleaner_worker(settings):
                         elif direct_result==DIRECT_MODE_MISMATCH:
                             direct_reclassified+=1
                             actual_mode="replies" if mode=="posts" else "posts"
-                            ui_log(f"SMART TARGET TYPE FIX // {status_id} // {mode.upper()} -> {actual_mode.upper()}")
+                            ui_log(
+                                f"SMART TARGET TYPE FIX // {status_id} // {mode.upper()} -> {actual_mode.upper()} "
+                                f"// NOT DELETED // SWITCH MODE TO {actual_mode.upper()}"
+                            )
+                            mode_mismatch_notice_queue.put((status_id,mode,actual_mode,dry_run))
                             if not dry_run: reclassified_inventory_queue.put((handle,status_id,actual_mode))
                         else:
                             actions+=1
@@ -430,7 +434,11 @@ def cleaner_worker(settings):
                     if direct_unavailable: details.append(f"{direct_unavailable} unavailable")
                     if direct_reclassified: details.append(f"{direct_reclassified} reclassified")
                     if details:
-                        ui_log(f"SMART DIRECT COMPLETE // {len(target_status_ids)}/{len(target_status_ids)} resolved // " + " // ".join(details))
+                        suffix=" // NOT DELETED" if direct_reclassified and actions==0 else ""
+                        ui_log(
+                            f"SMART DIRECT COMPLETE // {len(target_status_ids)}/{len(target_status_ids)} checked // "
+                            + " // ".join(details) + suffix
+                        )
                     else:
                         ui_log(f"SMART DIRECT COMPLETE // {actions}/{len(target_status_ids)} processed")
                 elif not stop_event.is_set():
@@ -511,8 +519,14 @@ def cleaner_worker(settings):
                         break
             if smart_target:
                 if not remaining_target_ids:
-                    result_word="resolved" if (direct_unavailable or direct_reclassified) else "processed"
-                    ui_log(f"SMART TARGET COMPLETE // {len(target_status_ids)} OF {len(target_status_ids)} exact statuses {result_word}")
+                    if direct_reclassified:
+                        ui_log(
+                            f"SMART TARGET CHECK COMPLETE // {direct_reclassified} TYPE MISMATCH"
+                            f"{'ES' if direct_reclassified!=1 else ''} // NOT DELETED // SWITCH MODE"
+                        )
+                    else:
+                        result_word="resolved" if direct_unavailable else "processed"
+                        ui_log(f"SMART TARGET COMPLETE // {len(target_status_ids)} OF {len(target_status_ids)} exact statuses {result_word}")
                 elif search_exhausted and not stop_event.is_set():
                     ui_log(f"SMART TARGET SEARCH EXHAUSTED // {len(remaining_target_ids)} of {len(target_status_ids)} selected IDs remain unresolved")
                 else:
@@ -798,6 +812,52 @@ def apply_inventory_deletions():
 
     return len(removed)+len(changed_modes)
 
+def surface_mode_mismatch_notices():
+    notices=[]
+    while not mode_mismatch_notice_queue.empty():
+        notices.append(mode_mismatch_notice_queue.get())
+    if not notices:
+        return 0
+
+    actual_modes={str(actual_mode) for _status_id,_old_mode,actual_mode,_dry_run in notices}
+    old_modes={str(old_mode) for _status_id,old_mode,_actual_mode,_dry_run in notices}
+    count=len(notices)
+    if len(actual_modes)==1 and len(old_modes)==1:
+        actual_mode=next(iter(actual_modes))
+        old_mode=next(iter(old_modes))
+        noun="REPLY" if actual_mode=="replies" else "POST"
+        plural="" if count==1 else "S"
+        ids=[str(status_id) for status_id,_old,_actual,_dry in notices]
+        shown=", ".join(ids[:3])
+        if len(ids)>3:
+            shown+=f" (+{len(ids)-3} more)"
+        status_var.set(f"MODE MISMATCH // {count} {noun}{plural} // NOT DELETED")
+        status_label.config(fg=DANGER)
+        selection_summary_var.set(
+            f"NOTICE // switch MODE to {actual_mode.upper()} for {count} reclassified item{'s' if count!=1 else ''}"
+        )
+        messagebox.showinfo(
+            "Switch cleanup mode",
+            f"Pulse verified that {count} selected item{'s are' if count!=1 else ' is'} "
+            f"{noun}{plural}, not {old_mode.upper()}.\n\n"
+            f"{'They were' if count!=1 else 'It was'} NOT deleted in the current mode.\n\n"
+            f"Switch MODE to {actual_mode.upper()}, review the matches there, then run cleanup again.\n\n"
+            f"Status ID{'s' if count!=1 else ''}: {shown}",
+            parent=root,
+        )
+        return count
+
+    status_var.set(f"MODE MISMATCH // {count} ITEMS // NOT DELETED")
+    status_label.config(fg=DANGER)
+    selection_summary_var.set(f"NOTICE // {count} items need a different cleanup mode")
+    messagebox.showinfo(
+        "Switch cleanup mode",
+        f"Pulse verified that {count} selected items do not belong to the current cleanup mode.\n\n"
+        "They were NOT deleted. Switch between Posts and Replies, review the matches again, then rerun cleanup.",
+        parent=root,
+    )
+    return count
+
 def poll_logs():
     changed=False
     while not log_queue.empty(): log_box.insert(tk.END,log_queue.get()+"\n"); changed=True
@@ -828,7 +888,7 @@ def poll_logs():
     while not run_state_queue.empty():
         state,dry_run,mode,limit_label=run_state_queue.get()
         if state=="idle":
-            worker_active.set(False); set_controls_locked(False); toggle_until_empty(); apply_inventory_deletions(); show_run_mode("idle"); arm_btn.config(state="disabled"); stop_btn.config(state="disabled")
+            worker_active.set(False); set_controls_locked(False); toggle_until_empty(); apply_inventory_deletions(); show_run_mode("idle"); arm_btn.config(state="disabled"); stop_btn.config(state="disabled"); surface_mode_mismatch_notices()
         else: show_run_mode(state,dry_run,mode,limit_label); arm_btn.config(state="normal" if state=="armed" else "disabled"); stop_btn.config(state="normal")
     root.after(150,poll_logs)
 def button(parent,text,command,bg=PANEL_2,fg=TEXT,width=None): return tk.Button(parent,text=text,command=command,bg=bg,fg=fg,activebackground=ACCENT,activeforeground="white",relief="flat",bd=0,padx=14,pady=8,width=width,font=("Segoe UI",9,"bold"),cursor="hand2")
