@@ -195,13 +195,32 @@ def test_stop_pulse_browser_kills_profile_pid_not_browser_image(monkeypatch):
 
 
 
-def test_packaged_pdh_skips_official_chrome_and_chooses_brave(monkeypatch, tmp_path):
+def test_packaged_pdh_keeps_visible_chrome_choice(monkeypatch, tmp_path):
     monkeypatch.setattr(
         browser_control,
         "bundled_pdh_extension_dir",
         lambda: tmp_path / "pdh_extension",
     )
     monkeypatch.setattr(browser_control, "running_browser_names", lambda: ["Chrome"])
+    monkeypatch.setattr(browser_control, "_foreground_browser_name", lambda: "Chrome")
+    monkeypatch.setattr(browser_control, "dedicated_browser_name", lambda: "Edge")
+    monkeypatch.setattr(
+        browser_control,
+        "installed_browser_names",
+        lambda: ["Brave", "Chrome", "Edge"],
+    )
+
+    assert browser_control.choose_browser_name() == "Chrome"
+
+
+def test_packaged_pdh_still_uses_compatible_fallback_when_nothing_visible(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        browser_control,
+        "bundled_pdh_extension_dir",
+        lambda: tmp_path / "pdh_extension",
+    )
+    monkeypatch.setattr(browser_control, "running_browser_names", lambda: [])
+    monkeypatch.setattr(browser_control, "_foreground_browser_name", lambda: None)
     monkeypatch.setattr(browser_control, "dedicated_browser_name", lambda: "Chrome")
     monkeypatch.setattr(
         browser_control,
