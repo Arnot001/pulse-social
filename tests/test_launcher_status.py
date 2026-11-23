@@ -113,6 +113,7 @@ def launcher(monkeypatch):
     monkeypatch.setattr(tkinter, "Tk", lambda: root)
     monkeypatch.setattr(tkinter, "StringVar", lambda **kw: variable)
     monkeypatch.setattr(browser, "running_browser_names", lambda: ["Chrome"])
+    monkeypatch.setattr(browser, "_foreground_browser_name", lambda: None)
     connection = {"pdhConnected": False}
     monkeypatch.setattr(bridge, "bridge_status", lambda: connection)
     monkeypatch.setattr(bridge, "ensure_bridge_server", lambda: True)
