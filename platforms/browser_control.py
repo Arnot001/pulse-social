@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import socket
@@ -91,6 +92,59 @@ def _running(image_name: str) -> bool:
         return image_name.lower() in result.stdout.lower()
     except Exception:
         return False
+
+
+def _visible_process_names() -> set[str]:
+    """Return process names that own a visible top-level Windows window."""
+    script = (
+        "Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | "
+        "ForEach-Object { $_.ProcessName }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return set()
+        return {
+            line.strip().casefold()
+            for line in result.stdout.splitlines()
+            if line.strip()
+        }
+    except Exception:
+        return set()
+
+
+def _foreground_browser_name() -> str | None:
+    """Return the supported browser owning the current foreground window."""
+    if os.name != "nt":
+        return None
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        pid = ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return None
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid.value}"],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=3,
+        )
+        output = result.stdout.casefold()
+        for spec in _browser_specs():
+            if spec.image.casefold() in output and _installed_exe(spec) is not None:
+                return spec.name
+    except Exception:
+        return None
+    return None
 
 
 def port_open(port: int = CDP_PORT) -> bool:
@@ -192,10 +246,12 @@ def installed_browser_names() -> list[str]:
 
 
 def running_browser_names() -> list[str]:
+    visible = _visible_process_names()
     return [
         spec.name
         for spec in _browser_specs()
-        if _installed_exe(spec) is not None and _running(spec.image)
+        if _installed_exe(spec) is not None
+        and Path(spec.image).stem.casefold() in visible
     ]
 
 
@@ -224,9 +280,12 @@ def choose_browser_name(preferred: str | None = None) -> str | None:
     if preferred_spec is not None and eligible(preferred_spec.name):
         return preferred_spec.name
 
-    # What the user is actually running now wins over an old saved choice,
-    # provided that browser can load the bundled PDH extension.
+    # What the user is visibly using now wins over an old saved choice.
+    # Background-only Chromium helper processes are deliberately ignored.
     running = [name for name in running_browser_names() if eligible(name)]
+    foreground = _foreground_browser_name()
+    if foreground and foreground in running and eligible(foreground):
+        return foreground
     if running:
         return running[0]
 
