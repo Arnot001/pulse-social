@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from tkinter import messagebox
 
 from pulse_license_gate import (ACCENT, ACCENT_2, BG, MUTED, PANEL, TEXT,
-                                clear_saved_licence_key, load_saved_licence_key)
+                                clear_saved_licence_key, load_saved_licence_key, link_recovery_email)
 from pulse_licensing import LicensingError, LicensingUnavailable, deactivate
 
 RELEASED_MESSAGE = "Licence released. You can now activate Pulse Social on another PC."
@@ -69,7 +69,7 @@ def open_licence_account(parent: tk.Misc, on_released) -> tk.Toplevel:
     window = tk.Toplevel(parent)
     parent._pulse_licence_account = window
     window.title("Pulse Social // Licence")
-    window.geometry("500x280")
+    window.geometry("500x340")
     window.resizable(False, False)
     window.configure(bg=BG)
     window.transient(parent)
@@ -119,6 +119,7 @@ def open_licence_account(parent: tk.Misc, on_released) -> tk.Toplevel:
         busy = False
         status.set(result.message)
         deactivate_button.configure(state="normal")
+        link_button.configure(state="normal")
 
     def submit():
         nonlocal busy, timer
@@ -134,6 +135,7 @@ def open_licence_account(parent: tk.Misc, on_released) -> tk.Toplevel:
             busy = False
             return
         deactivate_button.configure(state="disabled")
+        link_button.configure(state="disabled")
         status.set("Releasing this device...")
         threading.Thread(target=lambda: results.put(release_this_device()), daemon=True).start()
         timer = window.after(100, poll)
@@ -143,6 +145,10 @@ def open_licence_account(parent: tk.Misc, on_released) -> tk.Toplevel:
                                   activeforeground=TEXT, relief="flat", padx=18, pady=10,
                                   font=("Segoe UI", 9, "bold"), cursor="hand2")
     deactivate_button.pack(pady=(4, 14))
+    link_button = tk.Button(panel, text="LINK EMAIL FOR RECOVERY", command=lambda: link_recovery_email(window),
+                            bg=BG, fg=TEXT, relief="flat", padx=18, pady=10,
+                            font=("Segoe UI", 9, "bold"), cursor="hand2")
+    link_button.pack(pady=(0, 12))
     window.protocol("WM_DELETE_WINDOW", close)
     window.bind("<Destroy>", destroyed, add="+")
     return window

@@ -12,6 +12,10 @@ settings.json
 
 .env
 
+# Never commit saved customer activation credentials.
+licence.json
+licence.tmp
+
 *.lnk
 
 # Pulse Commerce local/runtime data

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -71,6 +72,10 @@ def _post(path: str, licence_key: str, device_id: str | None = None) -> dict:
         "product": PRODUCT,
         "device_id": device_id or windows_device_id(),
     }
+    return _request(path, payload)
+
+
+def _request(path: str, payload: dict) -> dict:
 
     request = urllib.request.Request(
         f"{API_BASE}{path}",
@@ -85,15 +90,17 @@ def _post(path: str, licence_key: str, device_id: str | None = None) -> dict:
 
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-            body = response.read().decode("utf-8")
+            body = response.read(65537).decode("utf-8")
+            if len(body) > 65536:
+                raise ValueError("Response too large")
             data = json.loads(body)
     except urllib.error.HTTPError as exc:
         try:
-            data = json.loads(exc.read().decode("utf-8"))
+            data = json.loads(exc.read(65536).decode("utf-8"))
         except Exception:
             data = {}
 
-        code = str(data.get("error") or f"HTTP_{exc.code}")
+        code = _error_code(data, f"HTTP_{exc.code}")
         raise LicensingError(code, code, exc.code) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise LicensingUnavailable(
@@ -106,15 +113,52 @@ def _post(path: str, licence_key: str, device_id: str | None = None) -> dict:
             "Pulse Licensing returned an invalid response.",
         ) from exc
 
-    if not data.get("ok"):
-        code = str(data.get("error") or "LICENSING_ERROR")
+    if not isinstance(data, dict):
+        raise LicensingUnavailable("INVALID_SERVER_RESPONSE")
+    if data.get("ok") is not True:
+        code = _error_code(data, "LICENSING_ERROR")
         raise LicensingError(code)
 
     return data
 
 
+def _error_code(data, fallback):
+    codes = {"LICENCE_ALREADY_ACTIVE", "LICENCE_INVALID", "LICENCE_NOT_FOUND", "LICENCE_NOT_ACTIVE",
+             "LICENCE_EXPIRED", "LICENCE_REVOKED", "LICENCE_DISABLED", "DEVICE_MISMATCH",
+             "INVALID_REQUEST", "INVALID_EMAIL", "INVALID_CODE", "RATE_LIMITED", "TRANSFER_LIMITED",
+             "LINK_UNAVAILABLE", "RECOVERY_NOT_FOUND", "EMAIL_UNAVAILABLE", "REGISTRATION_UNAVAILABLE",
+             "LICENSING_UNAVAILABLE", "LICENCE_KEY_REQUIRED"}
+    value = data.get("error") if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value in codes else fallback
+
+
+def start_registration(email: str, intent: str = "access", licence_key: str = "") -> str:
+    data = _request("/registration/start", {
+        "email": email.strip(), "intent": intent, "licence_key": licence_key.strip(),
+        "product": PRODUCT, "device_id": windows_device_id(),
+    })
+    challenge = data.get("challenge_id")
+    if not isinstance(challenge, str) or not re.fullmatch(r"[a-f0-9]{64}", challenge):
+        raise LicensingUnavailable("INVALID_SERVER_RESPONSE")
+    return challenge
+
+
+def verify_registration(challenge: str, code: str, licence_key: str = "") -> str:
+    data = _request("/registration/verify", {
+        "challenge_id": challenge, "code": code.strip(), "licence_key": licence_key.strip(),
+        "product": PRODUCT, "device_id": windows_device_id(),
+    })
+    key = data.get("licence_key")
+    if (data.get("status") != "ACTIVE" or not isinstance(key, str) or not 1 <= len(key) <= 128
+            or not data.get("licence_id") or not data.get("activation_id")):
+        raise LicensingUnavailable("INVALID_SERVER_RESPONSE")
+    return key
+
+
 def activate(licence_key: str, device_id: str | None = None) -> ActivationResult:
     data = _post("/activate", licence_key, device_id)
+    if data.get("status") != "ACTIVE" or not data.get("licence_id") or not data.get("activation_id"):
+        raise LicensingUnavailable("INVALID_SERVER_RESPONSE")
     return ActivationResult(
         status=str(data["status"]),
         licence_id=str(data["licence_id"]),
