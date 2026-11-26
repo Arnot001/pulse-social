@@ -9,6 +9,18 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoRoot
 
+$PythonExe = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $PythonExe)) {
+    $command = Get-Command py -ErrorAction SilentlyContinue
+    if (-not $command) {
+        $command = Get-Command python -ErrorAction SilentlyContinue
+    }
+    if (-not $command) {
+        throw "Python is required to build Pulse Social."
+    }
+    $PythonExe = $command.Source
+}
+
 if (-not $PdhRepo) {
     $PdhRepo = Join-Path (Split-Path $RepoRoot -Parent) "pulse-data-hunter"
 }
@@ -37,13 +49,13 @@ if (-not (Test-Path (Join-Path $PdhRepo "manifest.json"))) {
 }
 
 $pdhManifest = Get-Content (Join-Path $PdhRepo "manifest.json") -Raw | ConvertFrom-Json
-if ($pdhManifest.version -ne "0.12.1") {
-    throw "Release beta expects PDH 0.12.1 but found '$($pdhManifest.version)'."
+if ($pdhManifest.version -ne "0.12.6") {
+    throw "Release beta expects PDH 0.12.6 but found '$($pdhManifest.version)'."
 }
 
 if (-not $SkipTests) {
     Write-Host "[1/5] Focused release tests..." -ForegroundColor Cyan
-    python -m pytest `
+    & $PythonExe -m pytest `
         tests/test_launcher_status.py `
         tests/test_browser_control.py `
         tests/test_tiktok_browser_session.py `
@@ -92,7 +104,7 @@ $pyiArgs = @(
     "--hidden-import", "tiktok_cleanup_ui",
     "release_bootstrap.py"
 )
-python @pyiArgs
+& $PythonExe @pyiArgs
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller build failed."
 }
@@ -101,7 +113,7 @@ if (-not (Test-Path (Join-Path $AppOutput "Pulse Social.exe"))) {
     throw "Build completed without Pulse Social.exe."
 }
 
-Write-Host "[4/5] Bundling PDH 0.12.1..." -ForegroundColor Cyan
+Write-Host "[4/5] Bundling PDH 0.12.6..." -ForegroundColor Cyan
 $PdhOutput = Join-Path $AppOutput "pdh_extension"
 New-Item $PdhOutput -ItemType Directory -Force | Out-Null
 
